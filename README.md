@@ -1,7 +1,6 @@
 # Gleek3Deek
 
-<img width="982" height="624" alt="gleek3deek-05 235235" src="https://github.com/user-attachments/assets/4476916a-3f80-4fda-a77a-eea7e2065feb" />
-
+<img width="910" height="614" alt="gleek-11-06 143727" src="https://github.com/user-attachments/assets/24706292-1109-472e-90a7-ab46fd9a2ba6" />
 
 A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
