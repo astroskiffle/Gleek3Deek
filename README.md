@@ -60,6 +60,7 @@ python main.py
 | Wireframe | `W` (press again to return to shaded) |
 | Point cloud | `P` (press again to return to shaded) |
 | Shaded surface | `S` |
+| Red Wax MatCap | `M` (press again to return to shaded) |
 | Reset camera | `R` |
 | Close viewer | `Esc` or the ✕ button |
 
