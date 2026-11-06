@@ -1,12 +1,10 @@
 # Gleek3Deek
 
+<img width="910" height="614" alt="gleek-11-06 143727" src="https://github.com/user-attachments/assets/be47b2c2-252e-4f56-ac3a-fcee5d8d6552" />
+
 A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
-
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
 
 ## Features
 
@@ -17,6 +15,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+
+<img width="977" height="621" alt="gleek3deek 235119" src="https://github.com/user-attachments/assets/a0fcbfac-fbad-4fa7-87c9-0055dd4dc288" />
 
 ## Quick start
 
