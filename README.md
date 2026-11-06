@@ -13,7 +13,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Folder tree + visual gallery:** nested folder navigation on the left, a grid of cards on the right. Only 3D formats are shown. The last opened folder is remembered.
 - **Real thumbnails:** rendered in the background and cached on disk, so revisiting a folder is instant.
 - **Instant viewer:** double-click a card (or a file in the tree). Auto-fits the camera to the model.
-- **MatCap shading:** press `M` to cycle five ZBrush-style MatCap materials (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal). They are original procedural shaders, not copies of ZBrush's images.
+- **MatCap shading:** press `M` to cycle MatCap materials.
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
