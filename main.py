@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ import threading
 import traceback
 from collections import deque
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +33,9 @@ from PySide6.QtCore import (QDir, QObject, QRunnable, QSettings, QSize,
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter,
                            QPen, QPixmap, QPolygonF, QShortcut)
 from PySide6.QtCore import QPointF
+from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QFileDialog, QLineEdit,
+                               QMenu, QSlider)
 from PySide6.QtWidgets import (QApplication, QFileSystemModel, QFrame,
                                QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QListView, QMainWindow,
@@ -40,6 +45,9 @@ from PySide6.QtWidgets import (QApplication, QFileSystemModel, QFrame,
 # --- VTK (import only what we need: faster startup than `import vtk`) -------
 import vtkmodules.vtkRenderingOpenGL2  # noqa: F401  (registers GL backend)
 import vtkmodules.vtkInteractionStyle  # noqa: F401  (registers styles)
+import vtkmodules.vtkRenderingFreeType  # noqa: F401  (text for the axes gizmo)
+from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
+from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.util import numpy_support
 from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
@@ -871,6 +879,74 @@ def asset_icon(ext: str) -> QIcon:
 
 
 # ---------------------------------------------------------------------------
+# Small shared helpers
+# ---------------------------------------------------------------------------
+def human_size(n: float) -> str:
+    for unit in ("B", "KB", "MB"):
+        if n < 1024:
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def scan_assets(folder: str) -> list[str]:
+    try:
+        names = sorted(os.listdir(folder), key=str.lower)
+    except OSError:
+        return []
+    out = []
+    for n in names:
+        p = os.path.join(folder, n)
+        if asset_ext(n) in ALL_EXTS and os.path.isfile(p):
+            out.append(p)
+    return out
+
+
+class OrientStore:
+    """Remembers whether a file is Y-up (default) or Z-up, keyed by path."""
+
+    def __init__(self):
+        self._s = None
+
+    def _settings(self):
+        if self._s is None:
+            self._s = QSettings("Gleek3Deek", "Gleek3Deek")
+        return self._s
+
+    @staticmethod
+    def _key(path: str) -> str:
+        return "up/" + hashlib.sha1(os.path.normcase(path).encode("utf-8", "replace")).hexdigest()[:20]
+
+    def get(self, path: str) -> str:
+        return "Z" if str(self._settings().value(self._key(path), "Y")) == "Z" else "Y"
+
+    def set(self, path: str, up: str):
+        if up == "Z":
+            self._settings().setValue(self._key(path), "Z")
+        else:
+            self._settings().remove(self._key(path))
+
+
+ORIENT = OrientStore()
+
+
+def iso_camera(ren, up: str = "Y"):
+    """Three-quarter view from front-right-above, for a Y-up or Z-up model."""
+    ren.ResetCamera()
+    cam = ren.GetActiveCamera()
+    fp = np.array(cam.GetFocalPoint())
+    dist = cam.GetDistance()
+    if up == "Z":
+        d, vup = np.array((0.8, -1.0, 0.6)), (0, 0, 1)
+    else:
+        d, vup = np.array((0.8, 0.6, 1.0)), (0, 1, 0)
+    d = d / np.linalg.norm(d)
+    cam.SetPosition(*(fp + d * dist))
+    cam.SetViewUp(*vup)
+    ren.ResetCamera()
+
+
+# ---------------------------------------------------------------------------
 # Thumbnails: parse on worker threads, render on ONE shared offscreen window
 # (main thread, one model per tick), cache PNGs on disk keyed by path+mtime+size.
 # ---------------------------------------------------------------------------
@@ -936,6 +1012,13 @@ class ThumbnailManager(QObject):
                 self.pending.append((p, cf))
         self._pump()
 
+    def refresh(self, path: str):
+        """Re-render one thumbnail now (e.g. after its up-axis changed)."""
+        cf = self._cache_file(path)
+        if cf is not None and not self._disabled:
+            self.pending.appendleft((path, cf))
+            self._pump()
+
     def shutdown(self):
         self.gen += 1
         self.pending.clear()
@@ -952,7 +1035,7 @@ class ThumbnailManager(QObject):
             return None
         if st.st_size > MAX_THUMB_BYTES:
             return None
-        key = hashlib.sha1(f"{path}|{st.st_mtime_ns}|{st.st_size}|v1".encode()).hexdigest()[:24]
+        key = hashlib.sha1(f"{path}|{st.st_mtime_ns}|{st.st_size}|{ORIENT.get(path)}|v2".encode()).hexdigest()[:24]
         return self.cache_dir / f"{key}.png"
 
     def _pump(self):
@@ -997,7 +1080,7 @@ class ThumbnailManager(QObject):
             return
         path, pd = self.render_q.popleft()
         try:
-            img = self._render(pd)
+            img = self._render(pd, ORIENT.get(path))
             cf = self._cache_file(path)
             if cf is not None:
                 img.save(str(cf), "PNG")
@@ -1026,19 +1109,14 @@ class ThumbnailManager(QObject):
         self._ren, self._mapper = ren, vtkPolyDataMapper()
         self._rw = rw
 
-    def _render(self, actors) -> QImage:
+    def _render(self, actors, up: str = "Y") -> QImage:
         self._ensure_window()
         ren, rw = self._ren, self._rw
         for a in actors:
             ren.AddActor(a)
         try:
-            ren.ResetCamera()
-            cam = ren.GetActiveCamera()
-            cam.Azimuth(35)
-            cam.Elevation(25)
-            cam.OrthogonalizeViewUp()
-            ren.ResetCamera()
-            cam.Zoom(1.1)
+            iso_camera(ren, up)
+            ren.GetActiveCamera().Zoom(1.1)
             rw.Render()
             w2i = vtkWindowToImageFilter()
             w2i.SetInput(rw)
@@ -1058,17 +1136,35 @@ class ThumbnailManager(QObject):
 # ---------------------------------------------------------------------------
 # Gallery
 # ---------------------------------------------------------------------------
+SORTS = [
+    ("Name A–Z", lambda e: e["name"].lower(), False),
+    ("Name Z–A", lambda e: e["name"].lower(), True),
+    ("Newest first", lambda e: e["mtime"], True),
+    ("Oldest first", lambda e: e["mtime"], False),
+    ("Largest first", lambda e: e["size"], True),
+    ("Smallest first", lambda e: e["size"], False),
+    ("Type", lambda e: (e["ext"], e["name"].lower()), False),
+]
+
+
+def _setting_int(settings, key: str, default: int) -> int:
+    try:
+        return int(settings.value(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
 class Gallery(QListWidget):
     open_asset = Signal(str)
     open_folder = Signal(str)
+    counts = Signal(int, int)          # models shown, models total
 
     def __init__(self):
         super().__init__()
         self.setViewMode(QListView.IconMode)
         self.setResizeMode(QListView.Adjust)
         self.setMovement(QListView.Static)
-        self.setIconSize(QSize(88, 88))
-        self.setGridSize(QSize(132, 138))
+        self.set_card_size(88)
         self.setUniformItemSizes(True)
         self.setWordWrap(True)
         self.setTextElideMode(Qt.ElideMiddle)
@@ -1076,39 +1172,99 @@ class Gallery(QListWidget):
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setFrameShape(QFrame.NoFrame)
         self.itemDoubleClicked.connect(self._activated)
+        self.folder = ""
+        self._entries: list[dict] = []
+        self._filter = ""
+        self._sort = 0
+        self._thumbs: dict[str, QPixmap] = {}
         self._items: dict[str, QListWidgetItem] = {}
+        self._order: list[str] = []
+
+    # ----- view options
+    def set_card_size(self, px: int):
+        self.setIconSize(QSize(px, px))
+        self.setGridSize(QSize(px + 44, px + 50))
+
+    def set_filter(self, text: str):
+        self._filter = text
+        self._rebuild()
+
+    def set_sort(self, idx: int):
+        self._sort = max(0, min(idx, len(SORTS) - 1))
+        self._rebuild()
+
+    def asset_paths(self) -> list[str]:
+        """Models currently shown, in display order."""
+        return list(self._order)
+
+    def select_path(self, path: str):
+        it = self._items.get(path)
+        if it is not None:
+            self.setCurrentItem(it)
+            self.scrollToItem(it)
 
     def set_thumb(self, path: str, pm: QPixmap):
+        self._thumbs[path] = pm
         it = self._items.get(path)
         if it is not None:
             it.setIcon(QIcon(pm))
 
+    # ----- content
     def populate(self, folder: str) -> list[str]:
+        self.folder = folder
+        self._filter = ""
+        self._thumbs = {}
+        entries = []
+        try:
+            with os.scandir(folder) as scan:
+                for e in scan:
+                    if e.name.startswith("."):
+                        continue
+                    try:
+                        if e.is_dir():
+                            entries.append({"path": e.path, "name": e.name, "ext": "",
+                                            "dir": True, "size": 0, "mtime": 0.0})
+                        else:
+                            ext = asset_ext(e.name)
+                            if ext in ALL_EXTS:
+                                st = e.stat()
+                                entries.append({"path": e.path, "name": e.name, "ext": ext,
+                                                "dir": False, "size": st.st_size,
+                                                "mtime": st.st_mtime})
+                    except OSError:
+                        continue
+        except OSError:
+            entries = []
+        self._entries = entries
+        self._rebuild()
+        return [e["path"] for e in entries if not e["dir"]]
+
+    def _rebuild(self):
+        f = self._filter.strip().lower()
+        shown = [e for e in self._entries if not f or f in e["name"].lower()]
+        _label, key, rev = SORTS[self._sort]
+        dirs = sorted((e for e in shown if e["dir"]), key=lambda e: e["name"].lower())
+        files = sorted((e for e in shown if not e["dir"]), key=key, reverse=rev)
+        self.setUpdatesEnabled(False)
         self.clear()
         self._items = {}
-        try:
-            entries = sorted(os.scandir(folder),
-                             key=lambda e: (not e.is_dir(), e.name.lower()))
-        except OSError:
-            return []
-        self.setUpdatesEnabled(False)
-        for e in entries:
-            if e.name.startswith("."):
-                continue
-            if e.is_dir():
-                it = QListWidgetItem(asset_icon("folder"), e.name)
-                it.setData(Qt.UserRole, (e.path, True))
-                self.addItem(it)
+        self._order = []
+        for e in dirs + files:
+            if e["dir"]:
+                it = QListWidgetItem(asset_icon("folder"), e["name"])
+                it.setData(Qt.UserRole, (e["path"], True))
             else:
-                ext = asset_ext(e.name)
-                if ext in ALL_EXTS:
-                    it = QListWidgetItem(asset_icon(ext), e.name)
-                    it.setData(Qt.UserRole, (e.path, False))
-                    it.setToolTip(e.path)
-                    self.addItem(it)
-                    self._items[e.path] = it
+                pm = self._thumbs.get(e["path"])
+                it = QListWidgetItem(QIcon(pm) if pm is not None else asset_icon(e["ext"]), e["name"])
+                it.setData(Qt.UserRole, (e["path"], False))
+                when = datetime.fromtimestamp(e["mtime"]).strftime("%Y-%m-%d %H:%M")
+                it.setToolTip(f'{e["path"]}\n{human_size(e["size"])}  ·  {when}')
+                self._items[e["path"]] = it
+                self._order.append(e["path"])
+            self.addItem(it)
         self.setUpdatesEnabled(True)
-        return list(self._items)
+        total = sum(1 for e in self._entries if not e["dir"])
+        self.counts.emit(len(files), total)
 
     def _activated(self, item: QListWidgetItem):
         path, is_dir = item.data(Qt.UserRole)
@@ -1146,14 +1302,41 @@ class Overlay(QLabel):
         self.move((p.width() - self.width()) // 2, (p.height() - self.height()) // 2)
 
 
+# (name, bottom colour, top colour); equal colours = flat background
+BACKGROUNDS = [
+    ("Dark gradient", (0.07, 0.08, 0.10), (0.17, 0.19, 0.23)),
+    ("Mid grey", (0.30, 0.31, 0.33), (0.45, 0.46, 0.49)),
+    ("Light grey", (0.74, 0.76, 0.80), (0.92, 0.93, 0.95)),
+    ("White", (1.0, 1.0, 1.0), (1.0, 1.0, 1.0)),
+    ("Black", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+]
+CUSTOM_BG = len(BACKGROUNDS)
+ORBIT_SPEEDS = [("Slow", 12.0), ("Medium", 30.0), ("Fast", 60.0)]   # degrees per second
+VIEW_LABELS = [("front", "Front\t1"), ("back", "Back\t2"), ("right", "Right\t3"),
+               ("left", "Left\t4"), ("top", "Top\t5"), ("bottom", "Bottom\t6"),
+               ("iso", "Isometric\t7")]
+
+
 class Viewer(QWidget):
     closed = Signal()
+    step = Signal(int)                    # -1 previous model, +1 next model
+    message = Signal(str)                 # short status text for the main window
+    orientation_changed = Signal(str)     # path whose up-axis changed
 
     def __init__(self):
         super().__init__()
+        self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
         self.mode = "surface"
         self.actors: list = []
         self.matcap_idx = 0
+        self.path = ""
+        self.up_axis = "Y"
+        self.bg_idx = _setting_int(self.settings, "bg_idx", 0)
+        self.axes_on = str(self.settings.value("axes_on", "true")).lower() in ("1", "true")
+        self.orbit_speed_idx = min(_setting_int(self.settings, "orbit_speed", 1), len(ORBIT_SPEEDS) - 1)
+        self._dragging = False
+        self._axes_widget = None
+        self._axes_actor = None
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1161,16 +1344,19 @@ class Viewer(QWidget):
         lay.addWidget(self.vtk_widget)
 
         self.renderer = vtkRenderer()
-        self.renderer.GradientBackgroundOn()
-        self.renderer.SetBackground(0.07, 0.08, 0.10)
-        self.renderer.SetBackground2(0.17, 0.19, 0.23)
         self.rw = self.vtk_widget.GetRenderWindow()
         self.rw.AddRenderer(self.renderer)
         self.rw.SetMultiSamples(4)
         self.iren = self.rw.GetInteractor()
         # Trackball: LMB orbit, RMB zoom, MMB pan
-        self.iren.SetInteractorStyle(vtkInteractorStyleTrackballCamera())
+        self.style = vtkInteractorStyleTrackballCamera()
+        self.style.AddObserver("StartInteractionEvent", lambda *a: setattr(self, "_dragging", True))
+        self.style.AddObserver("EndInteractionEvent", lambda *a: setattr(self, "_dragging", False))
+        self.iren.SetInteractorStyle(self.style)
         self.iren.Initialize()
+
+        self._orbit_timer = QTimer(self)
+        self._orbit_timer.timeout.connect(self._orbit_tick)
 
         # ----- floating HUD (native child so it sits above the GL surface)
         self.hud = QFrame(self)
@@ -1179,70 +1365,137 @@ class Viewer(QWidget):
         h = QHBoxLayout(self.hud)
         h.setContentsMargins(8, 4, 6, 4)
         h.setSpacing(4)
+        h.addWidget(self._btn("‹", "Previous model (←)", lambda: self.step.emit(-1)))
+        h.addWidget(self._btn("›", "Next model (→)", lambda: self.step.emit(1)))
         self.title = QLabel("")
         self.title.setObjectName("hudTitle")
         h.addWidget(self.title)
         for text, tip, fn in (("Wire", "Wireframe (W)", lambda: self.set_mode("wire")),
                               ("Points", "Point cloud (P)", lambda: self.set_mode("points")),
                               ("Shaded", "Shaded surface (S)", lambda: self.set_mode("surface")),
-                              ("MatCap", "Cycle MatCaps (M)", lambda: self.cycle_matcap()),
-                              ("Reset", "Reset camera (R)", self.reset_camera)):
-            b = QToolButton()
-            b.setText(text)
+                              ("MatCap", "Cycle MatCaps (M)", lambda: self.cycle_matcap())):
+            b = self._btn(text, tip, fn)
             if text == "MatCap":
                 self.matcap_btn = b
-            b.setToolTip(tip)
-            b.clicked.connect(fn)
             h.addWidget(b)
-        x = QToolButton()
-        x.setText("✕")
+        self.orbit_btn = self._btn("Orbit", "Auto-orbit (O)", None, checkable=True)
+        self.orbit_btn.toggled.connect(self.set_orbit)
+        h.addWidget(self.orbit_btn)
+        h.addWidget(self._btn("Reset", "Reset camera (R)", self.reset_camera))
+        h.addWidget(self._build_view_button())
+        x = self._btn("✕", "Close (Esc)", self.closed.emit)
         x.setObjectName("hudClose")
-        x.setToolTip("Close (Esc)")
-        x.clicked.connect(self.closed.emit)
         h.addWidget(x)
 
         self.overlay = Overlay(self)
+        self.set_background(self.bg_idx, announce=False)
+
+    # ----- HUD construction -------------------------------------------------
+    def _btn(self, text, tip, fn, checkable=False) -> QToolButton:
+        b = QToolButton()
+        b.setText(text)
+        b.setToolTip(tip)
+        b.setCheckable(checkable)
+        if fn is not None:
+            b.clicked.connect(fn)
+        return b
+
+    def _build_view_button(self) -> QToolButton:
+        menu = QMenu(self)
+        bg = menu.addMenu("Background\tB")
+        for i, (name, _c1, _c2) in enumerate(BACKGROUNDS):
+            bg.addAction(name, lambda _=False, i=i: self.set_background(i))
+        bg.addSeparator()
+        bg.addAction("Custom colour…", lambda _=False: self.pick_background())
+
+        self.act_axes = QAction("Axes gizmo\tA", menu, checkable=True)
+        self.act_axes.setChecked(self.axes_on)
+        self.act_axes.toggled.connect(self.set_axes)
+        menu.addAction(self.act_axes)
+        self.act_ortho = QAction("Orthographic\tC", menu, checkable=True)
+        self.act_ortho.toggled.connect(self.set_ortho)
+        menu.addAction(self.act_ortho)
+        self.act_upz = QAction("Z-up model\tU", menu, checkable=True)
+        self.act_upz.toggled.connect(lambda _=False: self.toggle_up_axis())
+        menu.addAction(self.act_upz)
+
+        views = menu.addMenu("Standard views")
+        for key, label in VIEW_LABELS:
+            views.addAction(label, lambda _=False, k=key: self.set_view(k))
+
+        speed = menu.addMenu("Orbit speed")
+        group = QActionGroup(speed)
+        for i, (name, _dps) in enumerate(ORBIT_SPEEDS):
+            a = QAction(name, speed, checkable=True)
+            a.setChecked(i == self.orbit_speed_idx)
+            a.triggered.connect(lambda _=False, i=i: self.set_orbit_speed(i))
+            group.addAction(a)
+            speed.addAction(a)
+
+        menu.addSeparator()
+        menu.addAction("Save screenshot…\tF12", lambda _=False: self.save_screenshot())
+        menu.addAction("Copy screenshot\tCtrl+C", lambda _=False: self.copy_screenshot())
+
+        b = QToolButton()
+        b.setText("View ▾")
+        b.setToolTip("View options")
+        b.setMenu(menu)
+        b.setPopupMode(QToolButton.InstantPopup)
+        return b
 
     # ----- layout -----------------------------------------------------------
+    def _place_hud(self):
+        self.hud.adjustSize()
+        self.hud.move(max(8, self.width() - self.hud.width() - 12), 12)
+        self.hud.raise_()
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self.hud.adjustSize()
-        self.hud.move(self.width() - self.hud.width() - 12, 12)
-        self.hud.raise_()
+        self._place_hud()
         if self.overlay.isVisible():
             self.overlay.reposition()
 
-    # ----- state ------------------------------------------------------------
+    def _set_title(self, text: str):
+        self.title.setText(self.title.fontMetrics().elidedText(text, Qt.ElideMiddle, 300))
+        self.title.setToolTip(text)
+
+    # ----- scene state ------------------------------------------------------
     def clear_scene(self):
         for a in self.actors:
             self.renderer.RemoveActor(a)
         self.actors = []
         self.overlay.hide()
+        self._sync_axes()
         self.rw.Render()
 
     def show_loading(self, name: str):
         self.clear_scene()
-        self.title.setText(name)
+        self._set_title(name)
         self.overlay.show_text(f"Loading {name} …", error=False)
 
     def show_error(self, msg: str):
         self.overlay.show_text("⚠  Could not open asset\n\n" + msg, error=True)
 
-    def show_model(self, actors: list, name: str):
+    def show_model(self, actors: list, name: str, path: str = ""):
         self.clear_scene()
+        self.path = path
+        self.up_axis = ORIENT.get(path) if path else "Y"
+        self.act_upz.blockSignals(True)
+        self.act_upz.setChecked(self.up_axis == "Z")
+        self.act_upz.blockSignals(False)
         faces = 0
         for a in actors:
             a.GetProperty().SetPointSize(2.5)
             self.renderer.AddActor(a)
             faces += _cells(a)
         self.actors = actors
-        self.title.setText(f"{name} · {faces:,} faces")
+        self._set_title(f"{name} · {faces:,} faces")
         self.set_mode("surface")
-        self.reset_camera()
-        self.hud.adjustSize()
-        self.hud.move(self.width() - self.hud.width() - 12, 12)
-        self.hud.raise_()
+        self.set_view("front")
+        self._sync_axes()
+        self._place_hud()
 
+    # ----- shading modes ----------------------------------------------------
     def cycle_matcap(self):
         """M: Red Wax -> Clay Green -> RealSkin -> Framer -> RoughMetal -> normal shading."""
         if not self.actors:
@@ -1279,17 +1532,218 @@ class Viewer(QWidget):
                     mode = "surface"
         self.mode = mode
         self.matcap_btn.setText(MATCAPS[self.matcap_idx][0] if mode == "matcap" else "MatCap")
-        self.hud.adjustSize()
-        self.hud.move(self.width() - self.hud.width() - 12, 12)
+        self._place_hud()
         self.rw.Render()
 
-    def reset_camera(self):
+    # ----- camera -----------------------------------------------------------
+    def _axes_vectors(self):
+        if self.up_axis == "Z":
+            u, f, r = (0, 0, 1), (0, -1, 0), (1, 0, 0)
+        else:
+            u, f, r = (0, 1, 0), (0, 0, 1), (1, 0, 0)
+        return np.array(u, float), np.array(f, float), np.array(r, float)
+
+    def set_view(self, name: str):
+        """Front/back/left/right/top/bottom/iso relative to the model's up axis."""
+        if not self.actors:
+            return
+        u, f, r = self._axes_vectors()
+        views = {"front": (f, u), "back": (-f, u), "right": (r, u), "left": (-r, u),
+                 "top": (u, -f), "bottom": (-u, f), "iso": (f + r + u, u)}
+        d, up = views.get(name, views["front"])
+        d = d / np.linalg.norm(d)
+        self.renderer.ResetCamera()                      # recentre on the model
+        cam = self.renderer.GetActiveCamera()
+        fp = np.array(cam.GetFocalPoint())
+        dist = cam.GetDistance()
+        cam.SetPosition(*(fp + d * dist))
+        cam.SetViewUp(*up)
         self.renderer.ResetCamera()
-        self.renderer.GetActiveCamera().Zoom(1.05)
+        cam.Zoom(1.05)
         self.renderer.ResetCameraClippingRange()
         self.rw.Render()
 
+    def reset_camera(self):
+        self.set_view("front")
+
+    def set_ortho(self, on: bool):
+        cam = self.renderer.GetActiveCamera()
+        cam.SetParallelProjection(bool(on))
+        if on:
+            cam.SetParallelScale(cam.GetDistance() * math.tan(math.radians(cam.GetViewAngle() / 2)))
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+        self.message.emit("Orthographic view" if on else "Perspective view")
+
+    def toggle_up_axis(self):
+        """U: treat the model as Z-up (CAD/Blender) or Y-up; remembered per file."""
+        if not self.actors:
+            return
+        self.up_axis = "Y" if self.up_axis == "Z" else "Z"
+        self.act_upz.blockSignals(True)
+        self.act_upz.setChecked(self.up_axis == "Z")
+        self.act_upz.blockSignals(False)
+        if self.path:
+            ORIENT.set(self.path, self.up_axis)
+            self.orientation_changed.emit(self.path)
+        self.set_view("front")
+        self.message.emit(f"{self.up_axis}-up (remembered for this file)")
+
+    # ----- auto-orbit -------------------------------------------------------
+    def toggle_orbit(self):
+        self.orbit_btn.toggle()
+
+    def set_orbit(self, on: bool):
+        if on:
+            self._orbit_timer.start(20)
+        else:
+            self._orbit_timer.stop()
+
+    def set_orbit_speed(self, idx: int):
+        self.orbit_speed_idx = idx
+        self.settings.setValue("orbit_speed", idx)
+
+    def _orbit_tick(self):
+        if self._dragging or not self.actors or not self.isVisible():
+            return
+        theta = math.radians(ORBIT_SPEEDS[self.orbit_speed_idx][1] * 0.02)
+        u, _f, _r = self._axes_vectors()
+        cam = self.renderer.GetActiveCamera()
+        fp = np.array(cam.GetFocalPoint())
+        rel = np.array(cam.GetPosition()) - fp
+        rel = (rel * math.cos(theta) + np.cross(u, rel) * math.sin(theta)
+               + u * np.dot(u, rel) * (1 - math.cos(theta)))     # turntable about the up axis
+        cam.SetPosition(*(fp + rel))
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+
+    # ----- background + axes gizmo -----------------------------------------
+    def set_background(self, idx: int, announce: bool = True):
+        if idx >= CUSTOM_BG:
+            c = QColor(str(self.settings.value("bg_custom", "#202428")))
+            col = (c.redF(), c.greenF(), c.blueF())
+            name, c1, c2 = "Custom", col, col
+            idx = CUSTOM_BG
+        else:
+            idx = max(0, idx)
+            name, c1, c2 = BACKGROUNDS[idx]
+        self.bg_idx = idx
+        self.settings.setValue("bg_idx", idx)
+        self.renderer.SetBackground(*c1)
+        self.renderer.SetBackground2(*c2)
+        self.renderer.SetGradientBackground(tuple(c1) != tuple(c2))
+        self._style_axes()
+        self.rw.Render()
+        if announce:
+            self.message.emit(f"Background: {name}")
+
+    def cycle_background(self):
+        self.set_background(0 if self.bg_idx >= len(BACKGROUNDS) - 1 else self.bg_idx + 1)
+
+    def pick_background(self):
+        initial = QColor(str(self.settings.value("bg_custom", "#202428")))
+        c = QColorDialog.getColor(initial, self, "Background colour")
+        if c.isValid():
+            self.settings.setValue("bg_custom", c.name())
+            self.set_background(CUSTOM_BG)
+
+    def _style_axes(self):
+        if self._axes_actor is None:
+            return
+        c1 = self.renderer.GetBackground()
+        c2 = self.renderer.GetBackground2()
+        lum = sum(c1) / 6 + sum(c2) / 6
+        text = (0.08, 0.08, 0.1) if lum > 0.55 else (0.92, 0.94, 0.97)
+        for cap in (self._axes_actor.GetXAxisCaptionActor2D(),
+                    self._axes_actor.GetYAxisCaptionActor2D(),
+                    self._axes_actor.GetZAxisCaptionActor2D()):
+            tp = cap.GetCaptionTextProperty()
+            tp.SetColor(*text)
+            tp.ShadowOff()
+
+    def _sync_axes(self):
+        want = self.axes_on and bool(self.actors)
+        if want and self._axes_widget is None:
+            try:
+                self._axes_actor = vtkAxesActor()
+                w = vtkOrientationMarkerWidget()
+                w.SetOrientationMarker(self._axes_actor)
+                w.SetInteractor(self.iren)
+                w.SetViewport(0.0, 0.0, 0.16, 0.26)
+                w.SetEnabled(1)
+                w.InteractiveOff()
+                self._axes_widget = w
+                self._style_axes()
+            except Exception:
+                self._axes_widget = None
+                self.axes_on = False
+                return
+        if self._axes_widget is not None:
+            self._axes_widget.SetEnabled(1 if want else 0)
+
+    def set_axes(self, on: bool):
+        self.axes_on = bool(on)
+        self.settings.setValue("axes_on", "true" if on else "false")
+        self._sync_axes()
+        self.rw.Render()
+
+    # ----- screenshots ------------------------------------------------------
+    def grab_image(self):
+        if not self.actors:
+            return None
+        axes_were_on = self._axes_widget is not None and self.axes_on
+        if axes_were_on:
+            self._axes_widget.SetEnabled(0)               # clean shot without the gizmo
+        self.rw.Render()
+        try:
+            for scale in (2, 1):
+                try:
+                    w2i = vtkWindowToImageFilter()
+                    w2i.SetInput(self.rw)
+                    w2i.SetScale(scale)
+                    w2i.SetInputBufferTypeToRGB()
+                    w2i.ReadFrontBufferOff()
+                    w2i.Update()
+                    vimg = w2i.GetOutput()
+                    w, h, _ = vimg.GetDimensions()
+                    if w == 0 or h == 0:
+                        continue
+                    arr = numpy_support.vtk_to_numpy(vimg.GetPointData().GetScalars())
+                    arr = np.ascontiguousarray(arr.reshape(h, w, 3)[::-1])
+                    return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+                except Exception:
+                    continue
+            return None
+        finally:
+            if axes_were_on:
+                self._axes_widget.SetEnabled(1)
+                self.rw.Render()
+
+    def save_screenshot(self):
+        img = self.grab_image()
+        if img is None:
+            self.message.emit("Nothing to capture yet")
+            return
+        pics = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation) or str(Path.home())
+        stem = Path(self.path).stem if self.path else "screenshot"
+        fn, _ = QFileDialog.getSaveFileName(self, "Save screenshot",
+                                            os.path.join(pics, f"{stem}.png"), "PNG image (*.png)")
+        if fn:
+            if not fn.lower().endswith(".png"):
+                fn += ".png"
+            ok = img.save(fn, "PNG")
+            self.message.emit(f"Saved {fn}" if ok else "Could not save the screenshot")
+
+    def copy_screenshot(self):
+        img = self.grab_image()
+        if img is None:
+            self.message.emit("Nothing to capture yet")
+            return
+        QApplication.clipboard().setImage(img)
+        self.message.emit("Screenshot copied to clipboard")
+
     def shutdown(self):
+        self._orbit_timer.stop()
         self.vtk_widget.Finalize()
 
 
@@ -1310,10 +1764,23 @@ QScrollBar::handle:vertical { background:#2c3542; border-radius:5px; min-height:
 QScrollBar::add-line, QScrollBar::sub-line { height:0; }
 QToolTip { background:#1b2028; color:#e0e6ed; border:1px solid #3a4656; }
 #hud { background:#1b2028; border:1px solid #2f3947; border-radius:10px; }
-#hudTitle { color:#8d99a8; font-size:11px; padding-right:8px; background:transparent; }
+#hudTitle { color:#8d99a8; font-size:11px; padding:0 8px; background:transparent; }
 #hud QToolButton { background:#252d38; border:none; border-radius:6px; padding:4px 9px; color:#d5dbe3; }
 #hud QToolButton:hover { background:#34506f; }
+#hud QToolButton:checked { background:#3d6fa5; color:#fff; }
+#hud QToolButton::menu-indicator { image:none; }
 #hudClose { color:#9aa5b2; } #hudClose:hover { background:#8e2a2a !important; color:#fff; }
+QMenu { background:#1b2028; border:1px solid #2f3947; color:#d5dbe3; padding:4px; }
+QMenu::item { padding:5px 24px 5px 12px; border-radius:4px; }
+QMenu::item:selected { background:#34506f; }
+QMenu::separator { height:1px; background:#2f3947; margin:4px 8px; }
+#galleryBar { background:#10141a; border-bottom:1px solid #0b0e12; }
+QLineEdit, QComboBox { background:#1b2028; border:1px solid #2f3947; border-radius:6px; padding:4px 8px; color:#d5dbe3; }
+QLineEdit:focus, QComboBox:focus { border-color:#3d6fa5; }
+QComboBox QAbstractItemView { background:#1b2028; selection-background-color:#34506f; border:1px solid #2f3947; }
+QSlider::groove:horizontal { height:4px; background:#2c3542; border-radius:2px; }
+QSlider::handle:horizontal { width:12px; margin:-5px 0; background:#6aa8e8; border-radius:6px; }
+#barLabel { color:#7c8794; background:transparent; }
 """
 
 
@@ -1325,6 +1792,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
         self.pool = QThreadPool.globalInstance()
         self.token = 0
+        self.current_path = ""
         self._tasks: dict[int, LoadTask] = {}
 
         # ---- left: file tree
@@ -1344,16 +1812,61 @@ class MainWindow(QMainWindow):
         self.tree.selectionModel().currentChanged.connect(self._tree_changed)
         self.tree.doubleClicked.connect(self._tree_double)
 
-        # ---- right: stacked gallery / viewer
+        # ---- right: gallery page (toolbar + grid) and viewer, stacked
         self.gallery = Gallery()
         self.gallery.open_asset.connect(self.open_asset)
         self.gallery.open_folder.connect(self.goto_folder)
         self.thumbs = ThumbnailManager()
         self.thumbs.ready.connect(self.gallery.set_thumb)
+
+        self.gallery_page = QWidget()
+        gl = QVBoxLayout(self.gallery_page)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setSpacing(0)
+        bar = QFrame()
+        bar.setObjectName("galleryBar")
+        bl = QHBoxLayout(bar)
+        bl.setContentsMargins(10, 6, 10, 6)
+        bl.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search models…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setMaximumWidth(260)
+        self.search.textChanged.connect(self.gallery.set_filter)
+        self.sort_box = QComboBox()
+        self.sort_box.addItems([s[0] for s in SORTS])
+        self.sort_box.setCurrentIndex(min(_setting_int(self.settings, "sort_idx", 0), len(SORTS) - 1))
+        self.gallery.set_sort(self.sort_box.currentIndex())
+        self.sort_box.currentIndexChanged.connect(self._sort_changed)
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("barLabel")
+        self.gallery.counts.connect(self._counts_changed)
+        size_label = QLabel("Size")
+        size_label.setObjectName("barLabel")
+        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider.setRange(64, 192)
+        self.size_slider.setFixedWidth(120)
+        self.size_slider.setToolTip("Card size")
+        card = _setting_int(self.settings, "card_px", 88)
+        self.size_slider.setValue(max(64, min(card, 192)))
+        self.gallery.set_card_size(self.size_slider.value())
+        self.size_slider.valueChanged.connect(self._size_changed)
+        bl.addWidget(self.search)
+        bl.addWidget(self.sort_box)
+        bl.addStretch(1)
+        bl.addWidget(self.count_label)
+        bl.addWidget(size_label)
+        bl.addWidget(self.size_slider)
+        gl.addWidget(bar)
+        gl.addWidget(self.gallery)
+
         self.viewer = Viewer()
         self.viewer.closed.connect(self.close_viewer)
+        self.viewer.step.connect(self._step)
+        self.viewer.message.connect(lambda m: self.statusBar().showMessage(m, 6000))
+        self.viewer.orientation_changed.connect(self.thumbs.refresh)
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.gallery)
+        self.stack.addWidget(self.gallery_page)
         self.stack.addWidget(self.viewer)
 
         split = QSplitter()
@@ -1364,22 +1877,45 @@ class MainWindow(QMainWindow):
         split.setChildrenCollapsible(False)
         self.setCentralWidget(split)
 
-        # ---- hotkeys (only act while viewer is visible)
-        for key, fn in (("W", lambda: self.viewer.set_mode("wire")),
-                        ("P", lambda: self.viewer.set_mode("points")),
-                        ("S", lambda: self.viewer.set_mode("surface")),
-                        ("M", self.viewer.cycle_matcap),
-                        ("R", self.viewer.reset_camera),
-                        ("Esc", self.close_viewer)):
-            QShortcut(QKeySequence(key), self, activated=self._guard(fn))
+        # ---- viewer hotkeys: only enabled while the viewer is showing, so the
+        #      tree and gallery keep normal keyboard navigation (arrows, type-ahead)
+        v = self.viewer
+        bindings = [
+            ("W", lambda: v.set_mode("wire")), ("P", lambda: v.set_mode("points")),
+            ("S", lambda: v.set_mode("surface")), ("M", v.cycle_matcap),
+            ("R", v.reset_camera), ("O", v.toggle_orbit), ("B", v.cycle_background),
+            ("A", v.act_axes.toggle), ("C", v.act_ortho.toggle), ("U", v.toggle_up_axis),
+            ("F12", v.save_screenshot), ("Ctrl+C", v.copy_screenshot),
+            ("Left", lambda: self._step(-1)), ("Right", lambda: self._step(1)),
+            ("Esc", self.close_viewer),
+        ]
+        for i, key in enumerate(("front", "back", "right", "left", "top", "bottom", "iso"), 1):
+            bindings.append((str(i), lambda k=key: v.set_view(k)))
+        self._viewer_shortcuts = [QShortcut(QKeySequence(k), self, activated=fn)
+                                  for k, fn in bindings]
+        self._sync_shortcuts()
 
         self.statusBar().setStyleSheet("color:#7c8794;")
         self._restore(start)
 
-    # ----- helpers
-    def _guard(self, fn):
-        return lambda: fn() if self.stack.currentWidget() is self.viewer else None
+    # ----- toolbar slots
+    def _sort_changed(self, idx: int):
+        self.settings.setValue("sort_idx", idx)
+        self.gallery.set_sort(idx)
 
+    def _size_changed(self, px: int):
+        self.settings.setValue("card_px", px)
+        self.gallery.set_card_size(px)
+
+    def _counts_changed(self, shown: int, total: int):
+        self.count_label.setText(f"{total} models" if shown == total else f"{shown} of {total} models")
+
+    def _sync_shortcuts(self):
+        on = self.stack.currentWidget() is self.viewer
+        for sc in self._viewer_shortcuts:
+            sc.setEnabled(on)
+
+    # ----- helpers
     def _restore(self, start: str | None):
         target = start or self.settings.value("last_dir", str(Path.home()))
         if os.path.isfile(target):
@@ -1402,6 +1938,9 @@ class MainWindow(QMainWindow):
         path = self.fs.filePath(cur)
         if os.path.isdir(path):
             self.settings.setValue("last_dir", path)
+            self.search.blockSignals(True)
+            self.search.clear()
+            self.search.blockSignals(False)
             self.thumbs.request_batch(self.gallery.populate(path))
             self.statusBar().showMessage(path)
             if self.stack.currentWidget() is self.viewer:
@@ -1412,11 +1951,13 @@ class MainWindow(QMainWindow):
         if os.path.isfile(path):
             self.open_asset(path)
 
-    # ----- open / close
+    # ----- open / close / step
     def open_asset(self, path: str):
         self.token += 1
+        self.current_path = path
         name = os.path.basename(path)
         self.stack.setCurrentWidget(self.viewer)
+        self._sync_shortcuts()
         self.viewer.show_loading(name)
         self.setWindowTitle(f"{name} — {APP_NAME}")
         task = LoadTask(self.token, path)
@@ -1425,12 +1966,29 @@ class MainWindow(QMainWindow):
         self._tasks[self.token] = task   # keep signal QObject alive until delivered
         self.pool.start(task)
 
+    def _step(self, delta: int):
+        """Open the previous/next model in the folder (as sorted/filtered in the gallery)."""
+        if self.stack.currentWidget() is not self.viewer:
+            return
+        paths = self.gallery.asset_paths()
+        cur_dir = os.path.dirname(self.current_path)
+        if self.current_path not in paths:
+            paths = scan_assets(cur_dir) if cur_dir else []
+        if not paths:
+            return
+        if self.current_path in paths:
+            nxt = paths[(paths.index(self.current_path) + delta) % len(paths)]
+        else:
+            nxt = paths[0] if delta > 0 else paths[-1]
+        self.open_asset(nxt)
+        self.gallery.select_path(nxt)
+
     def _on_loaded(self, token: int, actors, path: str):
         self._tasks.pop(token, None)
         if token != self.token or self.stack.currentWidget() is not self.viewer:
             return
         try:
-            self.viewer.show_model(actors, os.path.basename(path))
+            self.viewer.show_model(actors, os.path.basename(path), path)
         except Exception as e:
             self.viewer.show_error(f"Render failed:\n{e}")
 
@@ -1442,9 +2000,12 @@ class MainWindow(QMainWindow):
     def close_viewer(self):
         self.token += 1                  # invalidate in-flight loads
         self.viewer.clear_scene()
-        self.stack.setCurrentWidget(self.gallery)
+        self.stack.setCurrentWidget(self.gallery_page)
+        self._sync_shortcuts()
         self.setWindowTitle(APP_NAME)
         self.gallery.setFocus()
+        if self.current_path:
+            self.gallery.select_path(self.current_path)
 
     def closeEvent(self, e):
         self.thumbs.shutdown()

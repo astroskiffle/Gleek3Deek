@@ -2,19 +2,23 @@
 
 A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
-<img width="910" height="614" alt="gleek-11-06 143727" src="https://github.com/user-attachments/assets/2f432399-4c52-45cb-b2b1-cb46fe5a8327" />
+> **Status:** early release. Expect rough edges, and please report them in the Issues tab.
+
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
 - **Folder tree + visual gallery:** nested folder navigation on the left, a grid of cards on the right. Only 3D formats are shown. The last opened folder is remembered.
 - **Real thumbnails:** rendered in the background and cached on disk, so revisiting a folder is instant.
+- **Gallery tools:** search, sort, and a card-size slider.
+- **Viewer tools:** auto-orbit, backgrounds, axes gizmo, standard views, orthographic mode, Z-up fix, screenshots, and previous/next browsing with the arrow keys.
 - **Instant viewer:** double-click a card (or a file in the tree). Auto-fits the camera to the model.
 - **MatCap shading:** press `M` to cycle five ZBrush-style MatCap materials (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal). They are original procedural shaders, not copies of ZBrush's images.
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
-
-<img width="977" height="621" alt="gleek3deek 235119" src="https://github.com/user-attachments/assets/af79a92a-7a91-4bd2-b224-96955fe2cc5d" />
 
 ## Download (Windows, no Python needed)
 
@@ -52,16 +56,31 @@ python main.py
 
 ## Controls
 
+**Gallery**
+
 | Action | Input |
 |---|---|
 | Open an asset | Double-click a card or a file in the tree |
-| Orbit | Left mouse drag |
-| Zoom | Right mouse drag (or scroll) |
-| Pan | Middle mouse drag |
-| Wireframe | `W` (press again to return to shaded) |
-| Point cloud | `P` (press again to return to shaded) |
-| Shaded surface | `S` |
-| Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal, then back to normal shading) |
+| Search | Type in the search box (matches name and extension) |
+| Sort | Drop-down: name, date, size or type |
+| Card size | Slider at the right of the toolbar (remembered) |
+
+**Viewer**
+
+| Action | Input |
+|---|---|
+| Orbit / Zoom / Pan | Left / Right / Middle mouse drag (scroll also zooms) |
+| Previous / next model in the folder | `←` / `→` (or the ‹ › buttons) |
+| Auto-orbit turntable | `O` (pauses while you drag; speed is in the **View** menu) |
+| Cycle background | `B` (more options, including a custom colour, in the **View** menu) |
+| Axes gizmo on/off | `A` |
+| Perspective / orthographic | `C` |
+| Standard views | `1` Front, `2` Back, `3` Right, `4` Left, `5` Top, `6` Bottom, `7` Isometric |
+| Z-up model fix | `U` (remembered per file; also fixes its thumbnail) |
+| Save screenshot | `F12` (2x resolution PNG, without the gizmo) |
+| Copy screenshot | `Ctrl+C` |
+| Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
+| Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal, then normal shading) |
 | Reset camera | `R` |
 | Close viewer | `Esc` or the ✕ button |
 
