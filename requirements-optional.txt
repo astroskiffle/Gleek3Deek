@@ -1,3 +1,0 @@
-# Optional extras. Gleek3Deek runs without these, but some formats need them.
-assimp-py      # in-process FBX / DAE / LWO / 3DS / etc.
-cadquery       # STEP / STP fallback when your VTK build has no OpenCASCADE module
