@@ -2,8 +2,6 @@
 
 A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
-> **Status:** early release. Expect rough edges, and please report them in the Issues tab.
-
 <img width="910" height="614" alt="gleek-11-06 143727" src="https://github.com/user-attachments/assets/2f432399-4c52-45cb-b2b1-cb46fe5a8327" />
 
 ## Features
