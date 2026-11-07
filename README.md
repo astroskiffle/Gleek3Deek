@@ -18,6 +18,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
 
+<img width="1066" height="697" alt="Gleek3Deek-11-07 213237" src="https://github.com/user-attachments/assets/152adf56-c701-478b-a510-0523ec324dc1" />
+
 ## Download (Windows, no Python needed)
 
 Go to the **[Releases](../../releases)** page, download `Gleek3Deek.exe` and double-click it. Nothing to install.
