@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="910" height="614" alt="Gleek3d-cb46fe5a8327" src="https://github.com/user-attachments/assets/d1880097-6b3f-4bf6-a2a5-0ef1ab2a1804" />
 
 ## Features
 
