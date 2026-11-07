@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="910" height="614" alt="gleek-11-06 143727" src="https://github.com/user-attachments/assets/2f432399-4c52-45cb-b2b1-cb46fe5a8327" />
 
 ## Features
 
@@ -17,6 +15,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+
+<img width="977" height="621" alt="gleek3deek 235119" src="https://github.com/user-attachments/assets/af79a92a-7a91-4bd2-b224-96955fe2cc5d" />
 
 ## Download (Windows, no Python needed)
 
