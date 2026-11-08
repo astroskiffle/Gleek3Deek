@@ -4,15 +4,13 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="1110" height="729" alt="Gleek3Deek 6-11-08 103343" src="https://github.com/user-attachments/assets/8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" />
 
 ## Features
 
 - **Folder tree + visual gallery:** nested folder navigation on the left, a grid of cards on the right. Only 3D formats are shown. The last opened folder is remembered.
 - **Real thumbnails:** rendered in the background and cached on disk, so revisiting a folder is instant.
-- **MatCap editor:** tweak a material's colours, light and gloss live, save/load presets as small JSON files, or load a sphere image (including ZBrush MatCap exports).
+- **MatCap editor:** tweak a material's colours, light and gloss live, save/load presets as small JSON files, or load a sphere image.
 - **Gallery tools:** search, sort, and a card-size slider.
 - **Viewer tools:** auto-orbit, backgrounds, axes gizmo, standard views, orthographic mode, Z-up fix, screenshots, and previous/next browsing with the arrow keys.
 - **Instant viewer:** double-click a card (or a file in the tree). Auto-fits the camera to the model.
@@ -20,6 +18,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+
+<img width="1066" height="697" alt="Gleek3Deek-11-07 213237" src="https://github.com/user-attachments/assets/e3873d03-5916-40b6-bf6b-6ed93987bdaf" />
 
 ## Download (Windows, no Python needed)
 
