@@ -107,12 +107,12 @@ Press **E** (or **View ▾ → MatCap editor…**) with a model open. The editor
 
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
-- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
+- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP). The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
 
 Notes:
 - Image MatCaps are deliberately low resolution, so smooth materials look right but very sharp highlights get softened.
 - The image is turned into a compact smooth formula inside the shader (no lookup table or texture), which keeps rendering fast. If a graphics driver rejects the full-detail version, the viewer automatically retries with a simpler one.
-- ZBrush's own `.ZMT` material files can't be read; export the sphere as an image first.
+- ZBrush's own `.ZMT` material files can't be read
 - If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
 
 ## Supported formats
