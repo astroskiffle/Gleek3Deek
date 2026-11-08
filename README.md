@@ -4,12 +4,15 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="910" height="614" alt="Gleek3d-cb46fe5a8327" src="https://github.com/user-attachments/assets/d1880097-6b3f-4bf6-a2a5-0ef1ab2a1804" />
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
 - **Folder tree + visual gallery:** nested folder navigation on the left, a grid of cards on the right. Only 3D formats are shown. The last opened folder is remembered.
 - **Real thumbnails:** rendered in the background and cached on disk, so revisiting a folder is instant.
+- **MatCap editor:** tweak a material's colours, light and gloss live, save/load presets as small JSON files, or load a sphere image (including ZBrush MatCap exports).
 - **Gallery tools:** search, sort, and a card-size slider.
 - **Viewer tools:** auto-orbit, backgrounds, axes gizmo, standard views, orthographic mode, Z-up fix, screenshots, and previous/next browsing with the arrow keys.
 - **Instant viewer:** double-click a card (or a file in the tree). Auto-fits the camera to the model.
@@ -17,8 +20,6 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
-
-<img width="1066" height="697" alt="Gleek3Deek-11-07 213237" src="https://github.com/user-attachments/assets/152adf56-c701-478b-a510-0523ec324dc1" />
 
 ## Download (Windows, no Python needed)
 
@@ -77,12 +78,42 @@ python main.py
 | Perspective / orthographic | `C` |
 | Standard views | `1` Front, `2` Back, `3` Right, `4` Left, `5` Top, `6` Bottom, `7` Isometric |
 | Z-up model fix | `U` (remembered per file; also fixes its thumbnail) |
+| Transparency on/off | `T` (models load solid; this restores a material's own transparency, for models that have any) |
 | Save screenshot | `F12` (2x resolution PNG, without the gizmo) |
 | Copy screenshot | `Ctrl+C` |
 | Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
 | Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal, then normal shading) |
+| MatCap editor | `E` (or **View ▾ → MatCap editor…**) |
 | Reset camera | `R` |
 | Close viewer | `Esc` or the ✕ button |
+
+## MatCap editor and presets
+
+Press **E** (or **View ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
+
+- **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
+- **Colours:** shadow, body, light, rim and gloss.
+- **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
+- **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
+
+```json
+{
+  "gleek3deek_matcap": 1,
+  "name": "My Wax",
+  "type": "procedural",
+  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
+}
+```
+
+Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
+
+- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
+
+Notes:
+- Image MatCaps are deliberately low resolution, so smooth materials look right but very sharp highlights get softened.
+- The image is turned into a compact smooth formula inside the shader (no lookup table or texture), which keeps rendering fast. If a graphics driver rejects the full-detail version, the viewer automatically retries with a simpler one.
+- ZBrush's own `.ZMT` material files can't be read; export the sphere as an image first.
+- If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
 
 ## Supported formats
 
