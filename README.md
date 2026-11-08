@@ -101,9 +101,45 @@ Press **E** (or **View ▾ → MatCap editor…**) with a model open. The editor
 ```json
 {
   "gleek3deek_matcap": 1,
-  "name": "My Wax",
+  "name": "Custom",
   "type": "procedural",
-  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
+  "params": {
+    "shadow": [
+      1.0,
+      1.0,
+      0.0
+    ],
+    "body": [
+      0.26274511218070984,
+      0.21568627655506134,
+      0.7803921699523926
+    ],
+    "light": [
+      0.9803921580314636,
+      0.2823529541492462,
+      0.7686274647712708
+    ],
+    "rim_color": [
+      0.55,
+      0.1,
+      0.06
+    ],
+    "spec_color": [
+      1.0,
+      0.78,
+      0.72
+    ],
+    "light_az": 45.0,
+    "light_el": -7.0,
+    "shadow_start": 0.06,
+    "light_start": 0.56,
+    "rim_strength": 0.91,
+    "rim_power": 4.1000000000000005,
+    "spec_tight": 1.02,
+    "spec_tight_pow": 93.0,
+    "spec_broad": 0.48,
+    "spec_broad_pow": 6.0
+  }
 }
 ```
 
