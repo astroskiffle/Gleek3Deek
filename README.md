@@ -89,6 +89,8 @@ python main.py
 
 ## MatCap editor and presets
 
+<img width="398" height="540" alt="matcap" src="https://github.com/user-attachments/assets/3d4b81e6-af45-4aa5-91c8-e7cd3534096f" />
+
 Press **E** (or **View ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
