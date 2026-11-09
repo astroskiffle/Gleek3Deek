@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/f691dfea-ff85-46aa-8917-0bc40234cbfd" />
 
 ## Features
 
@@ -24,6 +22,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+
+<img width="1044" height="738" alt="thumbnails 002322" src="https://github.com/user-attachments/assets/21d08efe-7b8d-48e6-a853-30fc156ee706" />
 
 ## Download (Windows, no Python needed)
 
@@ -101,6 +101,8 @@ python main.py
 
 ## MatCap editor and presets
 
+<img width="714" height="504" alt="matcap redwax" src="https://github.com/user-attachments/assets/a506b0b9-6020-4bd4-94ac-d0e2f8ea65b1" />
+
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
@@ -168,6 +170,8 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 - **Has:** vertex colours and UV coordinates, when present
 
 ## Environment (sky, lighting, shadow)
+
+<img width="922" height="538" alt="Hdri dragon" src="https://github.com/user-attachments/assets/805a8337-d27d-43fb-b9b4-aa4d6c9d33e2" />
 
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
