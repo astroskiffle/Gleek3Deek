@@ -1,12 +1,11 @@
+
 # Gleek3Deek
 
 A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/cecc49d3-57b9-4a23-8232-33f111a0bc51" />
 
 ## Features
 
@@ -24,6 +23,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+
+<img width="1044" height="738" alt="thumbnails 002322" src="https://github.com/user-attachments/assets/f021e85d-3105-4669-b782-c5010064bd87" />
 
 ## Download (Windows, no Python needed)
 
@@ -98,22 +99,14 @@ python main.py
 | Close viewer | `Esc` or the ✕ button |
 
 ## MatCap editor and presets
+<img width="398" height="540" alt="698893163-3d4b81e6-af45-4aa5-91c8-e7cd3534096f" src="https://github.com/user-attachments/assets/be9fe573-a5f4-4d95-bb7b-b68c3bb21287" />
 
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
-- **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
-
-```json
-{
-  "gleek3deek_matcap": 1,
-  "name": "My Wax",
-  "type": "procedural",
-  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
-}
-```
+- **Save preset… / Load preset…:** presets are small JSON files you can share.
 
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
@@ -176,6 +169,8 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 
 ## Environment (sky, lighting, shadow)
 
+<img width="676" height="501" alt="keyshot-09 014413" src="https://github.com/user-attachments/assets/10253048-474b-4fb2-ba51-555d15f620c9" />
+
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
 What it does:
@@ -187,16 +182,7 @@ What it does:
 
 Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`, PNG, JPG, TIFF, BMP or WebP). The colours and sun are fitted to it automatically: the three bands are averaged from the image and the sun is the brightest spot. **Fit lighting to panorama** repeats that after you have made changes. Without a panorama you can still use the lighting and shadow with your own three colours.
 
-**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on). A preset looks like this:
-
-```json
-{
-  "gleek3deek_environment": 1,
-  "name": "Golden hour",
-  "settings": { "sky": [0.5, 0.65, 0.85], "sun_az": 35, "sun_el": 20, "sun_int": 0.9 },
-  "panorama": "C:/Panoramas/sunset.hdr"
-}
-```
+**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on).
 
 The panorama is stored as a path, not embedded. When a preset is loaded on another machine, the viewer also looks for the same file name next to the preset file, so you can share a preset together with its panorama in one folder. If the panorama can't be found, the preset's colours and sun are still applied. Values left out fall back to the defaults, and out-of-range values are clamped.
 
