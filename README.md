@@ -4,22 +4,26 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="1110" height="729" alt="Gleek3Deek 6-11-08 103343" src="https://github.com/user-attachments/assets/8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" />
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
 - **Folder tree + visual gallery:** nested folder navigation on the left, a grid of cards on the right. Only 3D formats are shown. The last opened folder is remembered.
 - **Real thumbnails:** rendered in the background and cached on disk, so revisiting a folder is instant.
-- **MatCap editor:** tweak a material's colours, light and gloss live, save/load presets as small JSON files, or load a sphere image.
-- **Gallery tools:** search, sort, and a card-size slider.
+- **MatCap editor:** tweak a material's colours, light and gloss live, save/load presets as small JSON files, or load a sphere image (including ZBrush MatCap exports).
+- **Export / convert:** save the model as STL, OBJ or PLY, optionally simplified to a percentage of its faces.
+- **Model info:** a card with the model's vertex and face counts, dimensions, materials, textures and file size.
+- **Menus:** a File menu (open folder, export, quit) and a Help menu (About), alongside the keyboard shortcuts.
+- **Environment:** an infinite panorama sky, cheap hemispheric ambient light, one sun and a soft blob shadow, all fitted automatically from a panorama image. Built to stay fast on low-end machines.
+- **Gallery tools:** search, sort, a card-size slider, and a right-click menu to rename, copy, paste and delete files.
 - **Viewer tools:** auto-orbit, backgrounds, axes gizmo, standard views, orthographic mode, Z-up fix, screenshots, and previous/next browsing with the arrow keys.
 - **Instant viewer:** double-click a card (or a file in the tree). Auto-fits the camera to the model.
 - **MatCap shading:** press `M` to cycle five ZBrush-style MatCap materials (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal). They are original procedural shaders, not copies of ZBrush's images.
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
-
-<img width="1066" height="697" alt="Gleek3Deek-11-07 213237" src="https://github.com/user-attachments/assets/e3873d03-5916-40b6-bf6b-6ed93987bdaf" />
 
 ## Download (Windows, no Python needed)
 
@@ -83,30 +87,126 @@ python main.py
 | Copy screenshot | `Ctrl+C` |
 | Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
 | Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal, then normal shading) |
-| MatCap editor | `E` (or **View ▾ → MatCap editor…**) |
+| MatCap editor | `E` (or **Main ▾ → MatCap editor…**) |
+| Environment on/off | `L` |
+| Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
+| Export / convert | `Ctrl+E` (or **File → Export / convert…**) |
+| About | `F1` (or **Help → About**) |
+| Open folder | `Ctrl+O` (**File → Open folder…**) |
+| Environment settings | `Shift+L` (or **Main ▾ → Environment settings…**) |
 | Reset camera | `R` |
 | Close viewer | `Esc` or the ✕ button |
 
 ## MatCap editor and presets
 
-<img width="398" height="540" alt="matcap" src="https://github.com/user-attachments/assets/3d4b81e6-af45-4aa5-91c8-e7cd3534096f" />
-
-Press **E** (or **View ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
+Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
-- **Save preset… / Load preset…:** presets are small JSON files you can share.
+- **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
+
+```json
+{
+  "gleek3deek_matcap": 1,
+  "name": "My Wax",
+  "type": "procedural",
+  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
+}
+```
 
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
-- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP). The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
+- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
 
 Notes:
 - Image MatCaps are deliberately low resolution, so smooth materials look right but very sharp highlights get softened.
 - The image is turned into a compact smooth formula inside the shader (no lookup table or texture), which keeps rendering fast. If a graphics driver rejects the full-detail version, the viewer automatically retries with a simpler one.
-- ZBrush's own `.ZMT` material files can't be read
+- ZBrush's own `.ZMT` material files can't be read; export the sphere as an image first.
 - If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
+
+## Managing files from the gallery
+
+Right-click a thumbnail (or select it and use the keys) to:
+
+| Action | Menu | Key |
+|---|---|---|
+| Open | Open | double-click |
+| Rename | Rename… | `F2` |
+| Copy | Copy | `Ctrl+C` |
+| Paste into the current folder | Paste | `Ctrl+V` |
+| Delete | Delete | `Del` |
+| Refresh the thumbnail | Refresh thumbnail | `F5` |
+
+- **Rename** asks for the new name and keeps the file's extension. Invalid names and names that already exist are refused. A Y-up/Z-up choice you made for the file moves with it.
+- **Copy and paste:** Copy places the file on the system clipboard, so you can paste it into Explorer/Finder as well, and Paste also accepts files copied from there. A pasted file that would clash with an existing one is saved as "name - Copy". Right-clicking empty space in the gallery offers Paste too.
+- **Thumbnails:** a renamed or pasted file keeps its thumbnail. **Refresh thumbnail** (or `F5` with a file selected) throws away the saved picture and renders it again. Right-click empty space, or press `F5` with nothing selected, to refresh every thumbnail in the folder.
+- **Delete** moves the file to the Recycle Bin / Trash after asking. If that isn't possible you are asked before anything is deleted permanently.
+- These actions affect only the selected file. For an OBJ or glTF, its `.mtl`, `.bin` and texture files are left alone, so rename or delete those yourself if you need to.
+
+## Export / convert and mesh simplification
+
+Open a model, then press **Ctrl+E** (or use **File → Export / convert…** or **Main ▾ → Export / convert…**).
+
+- **Formats:** STL (binary or ASCII), OBJ, and PLY (binary or ASCII). This also works as a converter: open a GLB, FBX or any other supported file and export it as STL, OBJ or PLY.
+- **Simplify mesh:** tick the box and choose what percentage of the triangles to keep. The dialog shows the resulting triangle count. Simplification uses quadric decimation, which removes the faces that change the shape least.
+- **What is exported:** the geometry as it is shown, including each part's placement. Parts are merged into one mesh, duplicate vertices are welded, and every polygon is turned into triangles first.
+- **Colours:** vertex colours are kept in PLY files when the model has them. OBJ gets smooth normals. Materials and textures are **not** written.
+- The export runs in the background, so the viewer stays responsive. Large models can take a while to simplify.
+
+Very strong simplification (under about 10%) can visibly change the shape, and open edges aren't specially protected, so thin or open surfaces may shrink at their edges.
+
+## About dialog
+
+Press **F1**, or choose **Help → About** (also in **Main ▾** while a model is open). It shows the app name, who made it, the legal notice, the MIT licence text and the open-source attributions. Close it with the ✕ button, the **Close** button, the window's own close button or **Esc**.
+
+All of its wording lives in one dictionary named `ABOUT`, just under `APP_NAME` near the top of `main.py`: your name and alias, copyright line, legal notice, licence text, the list of third-party projects, and an optional version string (blank means it is hidden). Edit those values and nothing else needs to change.
+
+## Model info panel
+
+Press **I** (or **Main ▾ → Model info**) to show a small card under the top toolbar. It lists:
+
+- **Format and file size**
+- **Parts:** how many separate objects the file contains
+- **Vertices:** counted as the file stores them (not inflated by the viewer's smooth shading)
+- **Faces:** polygon count, with the triangle count in brackets when the model uses quads or larger polygons
+- **Width, height, depth:** the bounding box, labelled for the model's up axis (it follows `U`). Sizes are in the file's own units, since most formats don't record a unit
+- **Materials and textures:** distinct materials and texture images. Plain meshes such as STL show "none (plain mesh)"
+- **Has:** vertex colours and UV coordinates, when present
+
+## Environment (sky, lighting, shadow)
+
+Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
+
+What it does:
+
+1. **Infinite skybox:** a panorama wrapped around the scene. It is locked to the camera, so zooming never gets you closer to the background.
+2. **Hemispheric ambient light:** three flat colours (sky, equator and ground) are blended onto the model by which way each surface faces. There is no per-pixel image lookup: it is a few lines of shader maths.
+3. **Sun:** one directional light with a direction, colour and intensity, plus a simple highlight.
+4. **Blob shadow:** a soft dark patch on a plane under the model. It scales with the model, shifts away from the sun and fades with the opacity slider. There is no shadow map and no extra render pass.
+
+Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`, PNG, JPG, TIFF, BMP or WebP). The colours and sun are fitted to it automatically: the three bands are averaged from the image and the sun is the brightest spot. **Fit lighting to panorama** repeats that after you have made changes. Without a panorama you can still use the lighting and shadow with your own three colours.
+
+**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on). A preset looks like this:
+
+```json
+{
+  "gleek3deek_environment": 1,
+  "name": "Golden hour",
+  "settings": { "sky": [0.5, 0.65, 0.85], "sun_az": 35, "sun_el": 20, "sun_int": 0.9 },
+  "panorama": "C:/Panoramas/sunset.hdr"
+}
+```
+
+The panorama is stored as a path, not embedded. When a preset is loaded on another machine, the viewer also looks for the same file name next to the preset file, so you can share a preset together with its panorama in one folder. If the panorama can't be found, the preset's colours and sun are still applied. Values left out fall back to the defaults, and out-of-range values are clamped.
+
+Notes:
+- **Rotate environment** turns the panorama and carries the sun with it, so you can line the lighting up with the picture.
+- The environment follows the model's up axis (`U` switches between Y-up and Z-up).
+- `.exr` panoramas aren't supported; save them as `.hdr` or a PNG/JPG first. Large panoramas are shrunk to 2048 pixels wide when loaded.
+- Environment lighting applies in the normal shaded view. Wireframe, points and MatCaps keep their own look.
+- Deliberately excluded to keep it light: reflections, roughness and microfacet maths, and bounced light.
+- If a graphics driver rejects the environment shader, the viewer falls back to lighting that follows the camera, or switches the lighting off, and says so in the status bar.
 
 ## Supported formats
 

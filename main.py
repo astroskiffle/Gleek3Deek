@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import html
 import json
 import math
 import os
@@ -30,14 +31,14 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import (QDir, QObject, QRunnable, QSettings, QSize,
-                            QStandardPaths, Qt, QThreadPool, QTimer, Signal)
+from PySide6.QtCore import (QDir, QFile, QMimeData, QObject, QRunnable, QSettings, QSize,
+                            QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter,
                            QPen, QPixmap, QPolygonF, QShortcut)
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QAction, QActionGroup
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QFileDialog, QFormLayout,
-                               QGridLayout, QLineEdit, QMenu, QMessageBox, QPushButton,
+from PySide6.QtWidgets import (QTextBrowser, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFormLayout,
+                               QGridLayout, QInputDialog, QLineEdit, QMenu, QMessageBox, QPushButton,
                                QSlider)
 from PySide6.QtWidgets import (QApplication, QFileSystemModel, QFrame,
                                QHBoxLayout, QLabel, QListWidget,
@@ -53,8 +54,9 @@ from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.util import numpy_support
 from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
-from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
-from vtkmodules.vtkFiltersCore import vtkAppendPolyData, vtkPolyDataNormals
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
+from vtkmodules.vtkFiltersCore import (vtkAppendPolyData, vtkCleanPolyData, vtkPolyDataNormals,
+                                       vtkQuadricDecimation, vtkTriangleFilter)
 from vtkmodules.vtkFiltersGeometry import vtkCompositeDataGeometryFilter
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkIOGeometry import (vtkGLTFReader, vtkOBJReader,
@@ -62,8 +64,23 @@ from vtkmodules.vtkIOGeometry import (vtkGLTFReader, vtkOBJReader,
 from vtkmodules.vtkIOPLY import vtkPLYReader
 from vtkmodules.vtkRenderingCore import (vtkActor, vtkPolyDataMapper,
                                          vtkRenderer, vtkRenderWindow,
-                                         vtkTexture, vtkWindowToImageFilter)
+                                         vtkLight, vtkSkybox, vtkTexture, vtkWindowToImageFilter)
 from vtkmodules.vtkIOImage import vtkImageReader2Factory
+from vtkmodules.vtkFiltersSources import vtkPlaneSource
+try:                                          # exporters: optional so the viewer never depends on them
+    from vtkmodules.vtkIOGeometry import vtkOBJWriter, vtkSTLWriter
+except Exception:  # pragma: no cover
+    vtkOBJWriter = vtkSTLWriter = None
+try:
+    from vtkmodules.vtkIOPLY import vtkPLYWriter
+except Exception:  # pragma: no cover
+    vtkPLYWriter = None
+from vtkmodules.vtkCommonTransforms import vtkTransform
+from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
+try:
+    from vtkmodules.vtkIOImage import vtkHDRReader
+except Exception:  # pragma: no cover
+    vtkHDRReader = None
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
 # Scene importers (materials/textures): glTF + OBJ/MTL
@@ -79,6 +96,55 @@ except Exception:  # pragma: no cover
     vtkOCCTReader = None
 
 APP_NAME = "Gleek3Deek"
+
+# ---------------------------------------------------------------------------
+# About dialog text. EDIT FREELY: everything the About dialog shows comes from this block.
+# ---------------------------------------------------------------------------
+ABOUT = {
+    "app_name": APP_NAME,
+    "tagline": "A fast, minimal 3D asset viewer and manager.",
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    # --- who made it
+    "author_heading": "Created by",
+    "author_name": "Mark Billson",
+    "author_alias": "Astroskiffle",
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
+    # --- legal
+    "legal_heading": "Legal",
+    "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
+    "legal_notice": ("[Placeholder] Replace this text with your own legal notice, terms of use "
+                     "and contact details."),
+    # --- licence and attributions
+    "licence_heading": "Licence",
+    "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
+    "licence_text": (
+        "{copyright}\n\n"
+        "Permission is hereby granted, free of charge, to any person obtaining a copy of this "
+        "software and associated documentation files (the \"Software\"), to deal in the Software "
+        "without restriction, including without limitation the rights to use, copy, modify, merge, "
+        "publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons "
+        "to whom the Software is furnished to do so, subject to the following conditions:\n\n"
+        "The above copyright notice and this permission notice shall be included in all copies or "
+        "substantial portions of the Software.\n\n"
+        "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, "
+        "INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR "
+        "PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE "
+        "FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR "
+        "OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER "
+        "DEALINGS IN THE SOFTWARE."),
+    "third_party_heading": "Open-source attributions",
+    "third_party_intro": f"{APP_NAME} is built with the following open-source projects:",
+    # (name, licence, website). Check each against the version you ship.
+    "third_party": [
+        ("PySide6 / Qt for Python", "LGPL-3.0", "https://doc.qt.io/qtforpython-6/"),
+        ("VTK (Visualization Toolkit)", "BSD-3-Clause", "https://vtk.org/"),
+        ("NumPy", "BSD-3-Clause", "https://numpy.org/"),
+        ("Assimp, via assimp-py (optional)", "BSD-3-Clause", "https://github.com/assimp/assimp"),
+        ("CadQuery (optional)", "Apache-2.0", "https://github.com/CadQuery/cadquery"),
+    ],
+    "third_party_note": "Each project remains under its own licence; see its website for the full terms.",
+    "close_label": "Close",
+}
 
 # --- VTK messages: never pop up a window; log to a file and surface the useful part in our UI
 _tls = threading.local()
@@ -353,6 +419,7 @@ def flatten_to_polydata(data_obj) -> vtkPolyData:
 def finalize(pd: vtkPolyData) -> vtkPolyData:
     if pd is None or pd.GetNumberOfPoints() == 0:
         raise LoadError("File parsed but contains no renderable geometry." + _vtk_hint())
+    orig_points = pd.GetNumberOfPoints()          # before normals may split vertices
     if pd.GetPointData().GetNormals() is None and pd.GetNumberOfPolys() > 0 \
             and pd.GetNumberOfPolys() < 3_000_000:
         nrm = vtkPolyDataNormals()
@@ -363,6 +430,7 @@ def finalize(pd: vtkPolyData) -> vtkPolyData:
         nrm.AutoOrientNormalsOff()
         nrm.Update()
         pd = nrm.GetOutput()
+    pd._orig_points = orig_points
     return pd
 
 
@@ -524,7 +592,8 @@ def _assimp_py_meshes(path: str) -> list:
         mat = mats[mi] if isinstance(mi, int) and 0 <= mi < len(mats) else None
         out.append({"pd": pd,
                     "color": _material_color(mat) if mat is not None else None,
-                    "texture": _material_texture(mat, mdir) if (mat is not None and has_uv) else None})
+                    "texture": _material_texture(mat, mdir) if (mat is not None and has_uv) else None,
+                    "mat": mi if mat is not None else -1})
     if not out:
         raise LoadError("Assimp loaded the file but found no triangle meshes.")
     return out
@@ -547,6 +616,8 @@ def _assimp_actors(path: str) -> list:
     cache, actors = {}, []
     for info in _assimp_py_meshes(path):
         a = make_actor(info["pd"])
+        if info.get("mat", -1) >= 0:
+            a._mat = ("assimp", info["mat"])
         m = a.GetMapper()
         tp = info["texture"]
         if tp:
@@ -718,6 +789,7 @@ def make_actor(pd: vtkPolyData) -> vtkActor:
     a = vtkActor()
     a.SetMapper(m)
     a._faces = _face_count(pd)
+    a._verts = getattr(pd, "_orig_points", None) or pd.GetNumberOfPoints()
     p = a.GetProperty()
     p.SetColor(0.78, 0.82, 0.88)
     p.SetSpecular(0.25)
@@ -858,7 +930,7 @@ def _import_actors(path: str, ext: str) -> list:
     col = ren.GetActors()
     col.InitTraversal()
     found = [col.GetNextActor() for _ in range(col.GetNumberOfItems())]
-    out = []
+    out, seen = [], []
     for a in found:
         ren.RemoveActor(a)
         m = a.GetMapper()
@@ -868,7 +940,13 @@ def _import_actors(path: str, ext: str) -> list:
         ds = _mapper_data(m)
         if ds is not None and ds.GetNumberOfPoints() > 0:
             a._faces = _face_count(ds)
+            a._verts = ds.GetNumberOfPoints()
             _phongify(a)
+            tex = a.GetTexture()
+            if tex is not None:
+                seen.append(tex)                  # keep the wrapper alive so id() stays unique
+            a._mat = (tuple(round(c, 3) for c in a.GetProperty().GetColor()),
+                      id(tex) if tex is not None else 0)
             if a.GetTexture() is None:
                 _apply_color_mode(m, ds)
             _prepare_transparency(a, ds)
@@ -1098,12 +1176,38 @@ class ThumbnailManager(QObject):
                 self.pending.append((p, cf))
         self._pump()
 
-    def refresh(self, path: str):
-        """Re-render one thumbnail now (e.g. after its up-axis changed)."""
+    def refresh(self, path: str, force: bool = False):
+        """Re-render one thumbnail now. force=True discards the cached picture first."""
         cf = self._cache_file(path)
-        if cf is not None and not self._disabled:
-            self.pending.appendleft((path, cf))
-            self._pump()
+        if cf is None or self._disabled:
+            return
+        if force:
+            self._unlink(cf)
+        self.pending.appendleft((path, cf))
+        self._pump()
+
+    @staticmethod
+    def _unlink(cf):
+        try:
+            cf.unlink()
+        except OSError:
+            pass
+
+    def forget(self, path: str):
+        """Drop the cached picture for a file so the next request re-renders it."""
+        cf = self._cache_file(path)
+        if cf is not None:
+            self._unlink(cf)
+
+    def adopt(self, old_cache, new_path: str):
+        """After a rename or copy, reuse the old thumbnail for the new file name."""
+        new_cache = self._cache_file(new_path)
+        if old_cache is None or new_cache is None or not old_cache.exists() or new_cache.exists():
+            return
+        try:
+            shutil.copy2(old_cache, new_cache)
+        except OSError:
+            pass
 
     def shutdown(self):
         self.gen += 1
@@ -1244,6 +1348,12 @@ class Gallery(QListWidget):
     open_asset = Signal(str)
     open_folder = Signal(str)
     counts = Signal(int, int)          # models shown, models total
+    rename_requested = Signal(str)
+    copy_requested = Signal(str)
+    paste_requested = Signal()
+    delete_requested = Signal(str)
+    refresh_thumb_requested = Signal(str)
+    refresh_all_requested = Signal()
 
     def __init__(self):
         super().__init__()
@@ -1258,6 +1368,14 @@ class Gallery(QListWidget):
         self.setSelectionMode(QAbstractItemView.SingleSelection)
         self.setFrameShape(QFrame.NoFrame)
         self.itemDoubleClicked.connect(self._activated)
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._context_menu)
+        for key, fn in (("F2", lambda: self._emit_file(self.rename_requested)),
+                        ("Delete", lambda: self._emit_file(self.delete_requested)),
+                        ("Ctrl+C", lambda: self._emit_file(self.copy_requested)),
+                        ("Ctrl+V", lambda: self.paste_requested.emit()),
+                        ("F5", self._refresh_key)):
+            QShortcut(QKeySequence(key), self, activated=fn, context=Qt.WidgetShortcut)
         self.folder = ""
         self._entries: list[dict] = []
         self._filter = ""
@@ -1351,6 +1469,59 @@ class Gallery(QListWidget):
         self.setUpdatesEnabled(True)
         total = sum(1 for e in self._entries if not e["dir"])
         self.counts.emit(len(files), total)
+
+    def _refresh_key(self):
+        path = self._current_file()
+        if path:
+            self.refresh_thumb_requested.emit(path)
+        else:
+            self.refresh_all_requested.emit()
+
+    def clear_thumb(self, path: str):
+        """Back to the generic cube icon while a fresh thumbnail is rendered."""
+        self._thumbs.pop(path, None)
+        it = self._items.get(path)
+        if it is not None:
+            it.setIcon(asset_icon(asset_ext(path)))
+
+    def file_paths(self) -> list[str]:
+        return [e["path"] for e in self._entries if not e["dir"]]
+
+    def _current_file(self) -> str:
+        item = self.currentItem()
+        if item is None:
+            return ""
+        path, is_dir = item.data(Qt.UserRole)
+        return "" if is_dir else path
+
+    def _emit_file(self, signal):
+        path = self._current_file()
+        if path:
+            signal.emit(path)
+
+    def _context_menu(self, pos):
+        item = self.itemAt(pos)
+        path, is_dir = item.data(Qt.UserRole) if item is not None else ("", False)
+        if item is not None:
+            self.setCurrentItem(item)
+        menu = QMenu(self)
+        if item is not None:
+            menu.addAction("Open", lambda _=False: (self.open_folder if is_dir else self.open_asset).emit(path))
+            if not is_dir:
+                menu.addSeparator()
+                menu.addAction("Rename…\tF2", lambda _=False: self.rename_requested.emit(path))
+                menu.addAction("Copy\tCtrl+C", lambda _=False: self.copy_requested.emit(path))
+                menu.addAction("Refresh thumbnail\tF5", lambda _=False: self.refresh_thumb_requested.emit(path))
+        mime = QApplication.clipboard().mimeData()
+        paste = menu.addAction("Paste\tCtrl+V", lambda _=False: self.paste_requested.emit())
+        paste.setEnabled(bool(mime is not None and mime.hasUrls()))
+        if item is None:
+            menu.addSeparator()
+            menu.addAction("Refresh all thumbnails\tF5", lambda _=False: self.refresh_all_requested.emit())
+        if item is not None and not is_dir:
+            menu.addSeparator()
+            menu.addAction("Delete\tDel", lambda _=False: self.delete_requested.emit(path))
+        menu.exec(self.viewport().mapToGlobal(pos))
 
     def _activated(self, item: QListWidgetItem):
         path, is_dir = item.data(Qt.UserRole)
@@ -1788,6 +1959,872 @@ class MatCapEditor(QDialog):
         self._timer.start(0)
 
 
+# ---------------------------------------------------------------------------
+# Environment: panorama sky, hemispheric ambient, one sun, blob shadow.
+# Deliberately cheap: no reflections, no roughness maths, no bounces.
+# ---------------------------------------------------------------------------
+ENV_DEFAULTS = {
+    "enabled": False, "skybox": True, "lighting": True, "shadow": True, "path": "",
+    "sky": [0.50, 0.65, 0.85], "equator": [0.78, 0.80, 0.82], "ground": [0.30, 0.27, 0.24],
+    "sun_color": [1.0, 0.95, 0.85], "sun_az": 35.0, "sun_el": 50.0, "sun_int": 0.85,
+    "highlight": 0.25, "ambient": 1.0, "yaw": 0.0, "shadow_opacity": 0.5, "shadow_size": 1.0,
+}
+ENV_FLAGS = [("enabled", "Environment on"), ("skybox", "Skybox"),
+             ("lighting", "Lighting"), ("shadow", "Blob shadow")]
+ENV_COLORS = [("sky", "Sky"), ("equator", "Equator"), ("ground", "Ground"), ("sun_color", "Sun")]
+# (key, label, min, max, step, decimals)
+ENV_SLIDERS = [
+    ("sun_az", "Sun direction °", -180, 180, 1, 0),
+    ("sun_el", "Sun height °", -10, 90, 1, 0),
+    ("sun_int", "Sun intensity", 0.0, 2.0, 0.01, 2),
+    ("highlight", "Sun highlight", 0.0, 1.0, 0.01, 2),
+    ("ambient", "Ambient strength", 0.0, 1.5, 0.01, 2),
+    ("yaw", "Rotate environment °", -180, 180, 1, 0),
+    ("shadow_opacity", "Shadow opacity", 0.0, 1.0, 0.01, 2),
+    ("shadow_size", "Shadow size", 0.5, 2.0, 0.05, 2),
+]
+PANO_MAX_W = 2048                       # panoramas are shrunk to this width on load
+SKY_TEX_W = 1024                        # width of the (re-projected) skybox texture
+
+
+def clean_env(raw) -> dict:
+    e = copy.deepcopy(ENV_DEFAULTS)
+    if isinstance(raw, dict):
+        for k, _l in ENV_FLAGS:
+            if k in raw:
+                e[k] = bool(raw[k])
+        if isinstance(raw.get("path"), str):
+            e["path"] = raw["path"]
+        for key, _l, lo, hi, _s, _d in ENV_SLIDERS:
+            if key in raw:
+                try:
+                    e[key] = min(hi, max(lo, float(raw[key])))
+                except (TypeError, ValueError):
+                    pass
+        for key, _l in ENV_COLORS:
+            v = raw.get(key)
+            if isinstance(v, (list, tuple)) and len(v) == 3:
+                try:
+                    e[key] = [min(1.0, max(0.0, float(x))) for x in v]
+                except (TypeError, ValueError):
+                    pass
+    return e
+
+
+PRESET_ENV_KEYS = ["skybox", "lighting", "shadow"] + [k for k, _l in ENV_COLORS] + \
+                  [k for k, _l, *_rest in ENV_SLIDERS]
+
+
+def env_to_preset(env: dict, name: str) -> dict:
+    """Everything except the on/off master switch. The panorama is stored as a path."""
+    return {"gleek3deek_environment": 1, "name": name,
+            "settings": {k: env[k] for k in PRESET_ENV_KEYS},
+            "panorama": env.get("path", "")}
+
+
+def preset_to_env(d, base_dir: str = ""):
+    """-> (env, missing_panorama_name, preset_name). Raises ValueError for non-presets.
+    A missing panorama is looked for next to the preset file before giving up."""
+    if not isinstance(d, dict) or d.get("gleek3deek_environment") != 1:
+        raise ValueError("This is not a Gleek3Deek environment preset.")
+    settings = d.get("settings")
+    if not isinstance(settings, dict):
+        raise ValueError("The preset has no settings.")
+    env = clean_env({k: v for k, v in settings.items() if k in PRESET_ENV_KEYS})
+    env["enabled"] = True
+    env["path"], missing = "", ""
+    pano = d.get("panorama")
+    if isinstance(pano, str) and pano:
+        base = os.path.basename(pano.replace("\\", "/"))
+        for cand in (pano, os.path.join(base_dir, base) if base_dir else ""):
+            if cand and os.path.isfile(cand):
+                env["path"] = cand
+                break
+        else:
+            missing = base
+    return env, missing, str(d.get("name") or "Environment")[:40]
+
+
+# ----- direction maths. "Frame" = Y-up coordinates; Z-up worlds map into it with M ---------
+def _rot_y(v, a):
+    c, s = math.cos(a), math.sin(a)
+    x, y, z = v[..., 0], v[..., 1], v[..., 2]
+    return np.stack([x * c + z * s, y, -x * s + z * c], -1)
+
+
+def frame_to_world(v, up: str):
+    v = np.asarray(v, dtype=np.float64)
+    return v if up != "Z" else np.stack([v[..., 0], -v[..., 2], v[..., 1]], -1)
+
+
+def world_to_frame(v, up: str):
+    v = np.asarray(v, dtype=np.float64)
+    return v if up != "Z" else np.stack([v[..., 0], v[..., 2], -v[..., 1]], -1)
+
+
+def sun_dir_frame(az: float, el: float):
+    return np.array([math.cos(el) * math.sin(az), math.sin(el), math.cos(el) * math.cos(az)])
+
+
+def dir_to_azel(d):
+    d = np.asarray(d, dtype=np.float64)
+    d = d / max(np.linalg.norm(d), 1e-9)
+    return math.degrees(math.atan2(d[0], d[2])), math.degrees(math.asin(max(-1.0, min(1.0, d[1]))))
+
+
+def equirect_dir(u, v):
+    """VTK's sphere-skybox convention: u = 0.5 + atan2(z, x)/2pi, v = 0.5 + elevation/pi."""
+    phi, theta = (u - 0.5) * 2 * math.pi, (v - 0.5) * math.pi
+    return np.stack([np.cos(theta) * np.cos(phi), np.sin(theta), np.cos(theta) * np.sin(phi)], -1)
+
+
+def dir_to_equirect(d):
+    return (0.5 + np.arctan2(d[..., 2], d[..., 0]) / (2 * math.pi),
+            0.5 + np.arctan2(d[..., 1], np.hypot(d[..., 0], d[..., 2])) / math.pi)
+
+
+def _block_mean(arr: np.ndarray, k: int) -> np.ndarray:
+    if k <= 1:
+        return arr
+    h, w = arr.shape[0] // k * k, arr.shape[1] // k * k
+    return arr[:h, :w].reshape(h // k, k, w // k, k, arr.shape[2]).mean((1, 3))
+
+
+def read_panorama(path: str) -> np.ndarray:
+    """Equirectangular panorama -> float32 HxWx3 (row 0 = top), at most PANO_MAX_W wide."""
+    ext = Path(path).suffix.lower()
+    if ext == ".exr":
+        raise ValueError("EXR isn't supported. Save the panorama as .hdr (Radiance) or PNG/JPG.")
+    if ext == ".hdr":
+        if vtkHDRReader is None:
+            raise ValueError("This VTK build has no .hdr reader.")
+        r = vtkHDRReader()
+        r.SetFileName(path)
+        r.Update()
+        img = r.GetOutput()
+        w, h, _ = img.GetDimensions()
+        sc = img.GetPointData().GetScalars()
+        if sc is None or w == 0:
+            raise ValueError("The .hdr file could not be read.")
+        arr = numpy_support.vtk_to_numpy(sc).reshape(h, w, -1)[..., :3][::-1].astype(np.float32)
+    else:
+        q = QImage(path)
+        if q.isNull():
+            raise ValueError("That image could not be read.")
+        q = q.convertToFormat(QImage.Format_RGB888)
+        w, h, bpl = q.width(), q.height(), q.bytesPerLine()
+        raw = np.frombuffer(q.constBits(), dtype=np.uint8, count=bpl * h).reshape(h, bpl)[:, :w * 3]
+        arr = raw.reshape(h, w, 3).astype(np.float32) / 255.0
+    return _block_mean(arr, max(1, math.ceil(arr.shape[1] / PANO_MAX_W))).astype(np.float32)
+
+
+_LUMA = np.array([0.2126, 0.7152, 0.0722])
+
+
+def tonemap_exposure(lin: np.ndarray):
+    """None for ordinary 0-1 images; an exposure factor for HDR data."""
+    if float(lin.max()) <= 1.0001:
+        return None
+    p90 = float(np.percentile((lin @ _LUMA)[::4, ::4], 90))
+    return 0.5 / max(p90, 1e-6)
+
+
+def tonemap(arr: np.ndarray, k) -> np.ndarray:
+    if k is None:
+        return np.clip(arr, 0.0, 1.0)
+    x = arr * k
+    return np.clip((x / (1.0 + x)) ** (1 / 2.2), 0.0, 1.0)
+
+
+def analyze_panorama(lin: np.ndarray, k) -> dict:
+    """Pick sky/equator/ground colours and the brightest spot (the 'sun') from a panorama."""
+    ds = _block_mean(lin, max(1, lin.shape[1] // 256))
+    h, w, _ = ds.shape
+    disp = tonemap(ds, k)
+    lum = ds @ _LUMA
+    lat = (0.5 - (np.arange(h) + 0.5) / h) * math.pi
+    cosw = np.cos(lat)
+
+    def band(lo, hi):
+        rows = (np.degrees(lat) >= lo) & (np.degrees(lat) <= hi)
+        if not rows.any():
+            return [0.5, 0.5, 0.5]
+        wt = cosw[rows][:, None, None]
+        return [float(v) for v in (disp[rows] * wt).sum((0, 1)) / (wt.sum() * w)]
+
+    pad = np.pad(lum, 1, mode="edge")
+    blur = sum(pad[dy:dy + h, dx:dx + w] for dy in range(3) for dx in range(3)) / 9.0
+    r, c = np.unravel_index(int(np.argmax(blur)), blur.shape)
+    uu, vv = np.meshgrid((np.arange(w) + 0.5) / w, 1.0 - (np.arange(h) + 0.5) / h)
+    dirs = equirect_dir(uu, vv)                                    # (h, w, 3)
+    d0 = dirs[r, c]
+    near = (dirs @ d0) > math.cos(math.radians(20))
+    lmax = float(lum[near].max())
+    wts = np.maximum(lum - 0.6 * lmax, 0.0) * near
+    if wts.sum() <= 0:
+        wts = near * lum
+    sun = (dirs * wts[..., None]).sum((0, 1))
+    sun = sun / max(np.linalg.norm(sun), 1e-9)
+    col = (disp * wts[..., None]).sum((0, 1)) / max(float(wts.sum()), 1e-9)
+    col = col / max(float(col.max()), 1e-6)
+    col = 0.8 * col + 0.2
+    mean_lum = float((lum * cosw[:, None]).sum() / (cosw.sum() * w))
+    ratio = lmax / max(mean_lum, 1e-6)
+    return {"sky": band(30, 90), "equator": band(-15, 15), "ground": band(-90, -30),
+            "sun_dir": sun, "sun_color": [float(x) for x in col],
+            "sun_int": float(np.clip(0.35 + 0.13 * math.log2(max(ratio, 1.0)), 0.35, 1.2))}
+
+
+def prepare_panorama(lin: np.ndarray) -> dict:
+    k = tonemap_exposure(lin)
+    return {"disp": tonemap(lin, k).astype(np.float32), "info": analyze_panorama(lin, k)}
+
+
+def reproject_panorama(disp: np.ndarray, up: str, yaw_deg: float, out_w: int = SKY_TEX_W) -> np.ndarray:
+    """Resample the panorama so its 'up' matches the model's up axis and apply the yaw."""
+    oh, ow = out_w // 2, out_w
+    jj, ii = np.meshgrid((np.arange(ow) + 0.5) / ow, 1.0 - (np.arange(oh) + 0.5) / oh)
+    d_img = _rot_y(world_to_frame(equirect_dir(jj, ii), up), -math.radians(yaw_deg))
+    us, vs = dir_to_equirect(d_img)
+    sh, sw, _ = disp.shape
+    col = us * sw - 0.5
+    row = np.clip((1.0 - vs) * sh - 0.5, 0, sh - 1)
+    c0 = np.floor(col).astype(int)
+    r0 = np.clip(np.floor(row).astype(int), 0, sh - 2)
+    fx, fy = (col - c0)[..., None], (row - r0)[..., None]
+    c0w, c1w = c0 % sw, (c0 + 1) % sw
+    out = (disp[r0, c0w] * (1 - fx) * (1 - fy) + disp[r0, c1w] * fx * (1 - fy)
+           + disp[r0 + 1, c0w] * (1 - fx) * fy + disp[r0 + 1, c1w] * fx * fy)
+    return np.clip(out * 255 + 0.5, 0, 255).astype(np.uint8)
+
+
+def numpy_to_vtk_image(arr: np.ndarray):
+    """uint8 HxWxC (row 0 = top) -> vtkImageData (VTK rows run bottom to top)."""
+    h, w, c = arr.shape
+    img = vtkImageData()
+    img.SetDimensions(w, h, 1)
+    img.GetPointData().SetScalars(
+        numpy_support.numpy_to_vtk(np.ascontiguousarray(arr[::-1]).reshape(-1, c), deep=True))
+    return img
+
+
+def blob_texture_array(n: int = 128) -> np.ndarray:
+    u = np.linspace(-1.0, 1.0, n)
+    r = np.hypot(*np.meshgrid(u, u))
+    alpha = (1.0 - np.clip(r, 0.0, 1.0)) ** 2
+    out = np.zeros((n, n, 4), np.uint8)
+    out[..., 3] = (alpha * 255).astype(np.uint8)
+    return out
+
+
+def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
+    """Hemispheric ambient + one sun, as GLSL for the 'Light::Impl' slot (literals only).
+    World-up and the sun come from two VTK scene lights (lightDirectionVC0 / 1), so they stay
+    fixed in the world as the camera orbits. view_locked=True is the fallback that keeps them
+    fixed relative to the screen instead."""
+    amb = env["ambient"]
+
+    def col(key):
+        return _vec3([v * amb for v in env[key]])
+    sun = [v * env["sun_int"] for v in env["sun_color"]]
+    if view_locked:
+        up_src, sun_src = "vec3(0.0, 1.0, 0.0)", f"normalize({_vec3(sun_frame)})"
+    else:
+        up_src, sun_src = "normalize(-lightDirectionVC0)", "normalize(-lightDirectionVC1)"
+    return f"""
+  vec3 envN = normalize(normalVCVSOutput);
+  if (!gl_FrontFacing) envN = -envN;
+  vec3 envUp = {up_src};
+  vec3 envSun = {sun_src};
+  float envH = dot(envN, envUp);
+  vec3 envAmb = mix(mix({col('equator')}, {col('sky')}, max(envH, 0.0)), {col('ground')}, max(-envH, 0.0));
+  float envNL = max(dot(envN, envSun), 0.0);
+  vec3 envHalf = normalize(envSun + vec3(0.0, 0.0, 1.0));
+  float envSpec = pow(max(dot(envN, envHalf), 0.0), 32.0) * step(0.001, envNL);
+  vec3 envCol = diffuseColor * (envAmb + {_vec3(sun)} * envNL)
+              + {_vec3(env['sun_color'])} * (envSpec * {env['highlight'] * env['sun_int']:.4f});
+  fragOutput0 = vec4(clamp(envCol, 0.0, 1.0), opacity);
+"""
+
+
+class EnvironmentPanel(QDialog):
+    """Floating panel for the environment: panorama, three ambient colours, sun and shadow."""
+    changed = Signal(object)
+    load_requested = Signal(str)
+    fit_requested = Signal()
+    clear_requested = Signal()
+    preset_loaded = Signal(object, str, str)      # env, missing panorama name, preset name
+
+    def __init__(self, parent, env: dict, pano_path: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Environment")
+        self.setWindowFlag(Qt.Tool, True)
+        self.setMinimumWidth(420)
+        self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
+        self.env = copy.deepcopy(env)
+        self._checks: dict = {}
+        self._sliders: dict = {}
+        self._labels: dict = {}
+        self._color_btns: dict = {}
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(lambda: self.changed.emit(copy.deepcopy(self.env)))
+
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+        row = QHBoxLayout()
+        for text, fn in (("Load panorama…", self.load_pano),
+                         ("Fit lighting to panorama", lambda _=False: self.fit_requested.emit()),
+                         ("Clear panorama", lambda _=False: self.clear_requested.emit())):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        root.addLayout(row)
+        self.pano_label = QLabel("")
+        self.pano_label.setObjectName("barLabel")
+        self.pano_label.setWordWrap(True)
+        root.addWidget(self.pano_label)
+        row = QHBoxLayout()
+        for text, fn in (("Load preset…", self.load_preset), ("Save preset…", self.save_preset)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        row.addStretch(1)
+        root.addLayout(row)
+
+        row = QHBoxLayout()
+        for key, label in ENV_FLAGS:
+            cb = QCheckBox(label)
+            cb.toggled.connect(lambda on, k=key: self._flag(k, on))
+            self._checks[key] = cb
+            row.addWidget(cb)
+        root.addLayout(row)
+
+        grid = QGridLayout()
+        for i, (key, label) in enumerate(ENV_COLORS):
+            b = QPushButton(label)
+            b.clicked.connect(lambda _=False, k=key, lb=label: self.pick_color(k, lb))
+            self._color_btns[key] = b
+            grid.addWidget(b, 0, i)
+        root.addLayout(grid)
+
+        form = QFormLayout()
+        for key, label, lo, hi, step, dec in ENV_SLIDERS:
+            s = QSlider(Qt.Horizontal)
+            s.setRange(round(lo / step), round(hi / step))
+            lab = QLabel("")
+            lab.setFixedWidth(48)
+            s.valueChanged.connect(lambda v, k=key, st=step, d=dec: self._slider_changed(k, v * st, d))
+            holder = QHBoxLayout()
+            holder.addWidget(s, 1)
+            holder.addWidget(lab)
+            form.addRow(label, holder)
+            self._sliders[key] = (s, step, dec)
+            self._labels[key] = lab
+        root.addLayout(form)
+
+        row = QHBoxLayout()
+        reset = QPushButton("Reset")
+        reset.clicked.connect(self.reset)
+        row.addWidget(reset)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        root.addLayout(row)
+        self.set_env(self.env, pano_path)
+
+    def set_env(self, env: dict, pano_path=None):
+        self.env = copy.deepcopy(env)
+        for key, cb in self._checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(bool(self.env[key]))
+            cb.blockSignals(False)
+        for key in self._sliders:
+            self._set_slider(key, self.env[key])
+        for key in self._color_btns:
+            self._style_color(key)
+        if pano_path is not None:
+            self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
+                                    "No panorama loaded: using the three colours below.")
+
+    def _set_slider(self, key: str, value: float):
+        s, step, dec = self._sliders[key]
+        s.blockSignals(True)
+        s.setValue(round(value / step))
+        s.blockSignals(False)
+        self._labels[key].setText(f"{value:.{dec}f}")
+
+    def _style_color(self, key: str):
+        c = self.env[key]
+        lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+        self._color_btns[key].setStyleSheet(
+            f"background:rgb({int(c[0] * 255)},{int(c[1] * 255)},{int(c[2] * 255)});"
+            f"color:{'#101418' if lum > 0.55 else '#f2f5f8'};border:1px solid #3a4656;")
+
+    def _touched(self):
+        self._timer.start(120)
+
+    def _flag(self, key: str, on: bool):
+        self.env[key] = bool(on)
+        self._touched()
+
+    def _slider_changed(self, key: str, value: float, dec: int):
+        if key == "yaw" and self.env.get("path"):          # keep the sun glued to the image
+            az = (self.env["sun_az"] + (value - self.env["yaw"]) + 180.0) % 360.0 - 180.0
+            self.env["sun_az"] = az
+            self._set_slider("sun_az", az)
+        self.env[key] = value
+        self._labels[key].setText(f"{value:.{dec}f}")
+        self._touched()
+
+    def pick_color(self, key: str, label: str):
+        c0 = self.env[key]
+        c = QColorDialog.getColor(QColor.fromRgbF(c0[0], c0[1], c0[2]), self, f"{label} colour")
+        if c.isValid():
+            self.env[key] = [c.redF(), c.greenF(), c.blueF()]
+            self._style_color(key)
+            self._touched()
+
+    def _preset_dir(self) -> str:
+        d = str(self.settings.value("env_dir", ""))
+        return d if d and os.path.isdir(d) else (
+            QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation) or str(Path.home()))
+
+    def load_preset(self):
+        fn, _ = QFileDialog.getOpenFileName(self, "Load environment preset", self._preset_dir(),
+                                            "Environment preset (*.json)")
+        if not fn:
+            return
+        self.settings.setValue("env_dir", os.path.dirname(fn))
+        try:
+            with open(fn, "r", encoding="utf-8") as f:
+                env, missing, name = preset_to_env(json.load(f), os.path.dirname(fn))
+        except (OSError, ValueError) as e:
+            QMessageBox.warning(self, "Environment preset", f"Could not load this preset.\n\n{e}")
+            return
+        self.preset_loaded.emit(env, missing, name or Path(fn).stem)
+
+    def save_preset(self):
+        safe = "".join(ch for ch in (self.env.get("name") or "Environment") if ch.isalnum() or ch in " -_")
+        fn, _ = QFileDialog.getSaveFileName(self, "Save environment preset",
+                                            os.path.join(self._preset_dir(), f"{safe.strip() or 'Environment'}.json"),
+                                            "Environment preset (*.json)")
+        if not fn:
+            return
+        if not fn.lower().endswith(".json"):
+            fn += ".json"
+        self.settings.setValue("env_dir", os.path.dirname(fn))
+        try:
+            with open(fn, "w", encoding="utf-8") as f:
+                json.dump(env_to_preset(self.env, Path(fn).stem[:40]), f, indent=2)
+        except OSError as e:
+            QMessageBox.warning(self, "Environment preset", f"Could not save the preset.\n\n{e}")
+
+    def reset(self):
+        keep = {"path": self.env.get("path", ""), "enabled": self.env["enabled"]}
+        self.set_env({**copy.deepcopy(ENV_DEFAULTS), **keep})
+        self._touched()
+
+    def load_pano(self):
+        d = str(self.settings.value("pano_dir", ""))
+        d = d if d and os.path.isdir(d) else (
+            QStandardPaths.writableLocation(QStandardPaths.PicturesLocation) or str(Path.home()))
+        fn, _ = QFileDialog.getOpenFileName(
+            self, "Load an equirectangular panorama (2:1)", d,
+            "Panoramas (*.hdr *.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp)")
+        if fn:
+            self.settings.setValue("pano_dir", os.path.dirname(fn))
+            self.load_requested.emit(fn)
+
+
+# ---------------------------------------------------------------------------
+# Model info panel
+# ---------------------------------------------------------------------------
+def _fmt_len(v: float) -> str:
+    v = abs(v)
+    if v >= 1000:
+        return f"{v:,.1f}"
+    if v >= 100:
+        return f"{v:.1f}"
+    if v >= 1:
+        return f"{v:.3f}"
+    return f"{v:.4f}"
+
+
+def _triangles(ds) -> int:
+    """Triangles needed to draw the polygons (an n-gon is n-2); falls back to the face count."""
+    try:
+        total = 0
+        for cells in (ds.GetPolys(), ds.GetStrips()):
+            if cells.GetNumberOfCells():
+                sizes = np.diff(numpy_support.vtk_to_numpy(cells.GetOffsetsArray()))
+                total += int(np.maximum(sizes - 2, 0).sum())
+        return total
+    except Exception:
+        return _face_count(ds)
+
+
+def collect_model_info(actors: list, path: str, up: str) -> dict:
+    nv = nf = nt = 0
+    lo, hi = [float("inf")] * 3, [float("-inf")] * 3
+    mats, texs, alive = set(), set(), []
+    has_color = has_uv = False
+    for a in actors:
+        ds = _mapper_data(a.GetMapper())
+        nv += getattr(a, "_verts", None) or (ds.GetNumberOfPoints() if ds is not None else 0)
+        nf += _cells(a)
+        if ds is not None:
+            nt += _triangles(ds)
+            has_color = has_color or _color_array(ds)[0] is not None
+            has_uv = has_uv or ds.GetPointData().GetTCoords() is not None
+        b = a.GetBounds()
+        if b is not None and b[0] <= b[1]:
+            for i in range(3):
+                lo[i], hi[i] = min(lo[i], b[2 * i]), max(hi[i], b[2 * i + 1])
+        key = getattr(a, "_mat", None)
+        if key is not None:
+            mats.add(key)
+        tex = a.GetTexture()
+        if tex is not None:
+            alive.append(tex)                     # keep wrappers alive so id() is unique
+            texs.add(id(tex))
+    try:
+        size = human_size(os.path.getsize(path))
+    except OSError:
+        size = "unknown"
+    return {"name": os.path.basename(path), "format": asset_ext(path).lstrip(".").upper() or "?",
+            "size": size, "parts": len(actors), "verts": nv, "faces": nf, "tris": nt,
+            "dims": [hi[i] - lo[i] for i in range(3)] if lo[0] <= hi[0] else None, "up": up,
+            "mats": len(mats) if mats else None, "texs": len(texs),
+            "colors": has_color, "uvs": has_uv}
+
+
+class InfoPanel(QFrame):
+    """Small read-only card of facts about the open model (native child, like the HUD)."""
+    ROWS = [("format", "Format"), ("size", "File size"), ("parts", "Parts"), ("verts", "Vertices"),
+            ("faces", "Faces"), ("x", "Width (X)"), ("y", "Height (Y)"), ("z", "Depth (Z)"),
+            ("mats", "Materials"), ("texs", "Textures"), ("has", "Has")]
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_NativeWindow, True)
+        self.setObjectName("hud")
+        grid = QGridLayout(self)
+        grid.setContentsMargins(12, 8, 12, 8)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(2)
+        self.title = QLabel("")
+        self.title.setObjectName("infoTitle")
+        grid.addWidget(self.title, 0, 0, 1, 2)
+        self._keys: dict = {}
+        self._vals: dict = {}
+        for i, (key, label) in enumerate(self.ROWS, 1):
+            k, v = QLabel(label), QLabel("")
+            k.setObjectName("infoKey")
+            v.setObjectName("infoVal")
+            grid.addWidget(k, i, 0)
+            grid.addWidget(v, i, 1)
+            self._keys[key], self._vals[key] = k, v
+        note = QLabel("Sizes are in the file's own units.")
+        note.setObjectName("infoKey")
+        grid.addWidget(note, len(self.ROWS) + 1, 0, 1, 2)
+
+    def set_info(self, d: dict):
+        fm = self.title.fontMetrics()
+        self.title.setText(fm.elidedText(d["name"], Qt.ElideMiddle, 260))
+        self.title.setToolTip(d["name"])
+        v = self._vals
+        v["format"].setText(d["format"])
+        v["size"].setText(d["size"])
+        v["parts"].setText(f"{d['parts']:,}")
+        v["verts"].setText(f"{d['verts']:,}")
+        v["faces"].setText(f"{d['faces']:,}" + (f"  ({d['tris']:,} triangles)" if d["tris"] != d["faces"] else ""))
+        names = ("Width (X)", "Height (Y)", "Depth (Z)") if d["up"] != "Z" else ("Width (X)", "Depth (Y)", "Height (Z)")
+        for i, key in enumerate(("x", "y", "z")):
+            self._keys[key].setText(names[i])
+            v[key].setText(_fmt_len(d["dims"][i]) if d["dims"] else "—")
+        v["mats"].setText("none (plain mesh)" if d["mats"] is None else f"{d['mats']:,}")
+        v["texs"].setText(f"{d['texs']:,}")
+        extras = [n for n, on in (("vertex colours", d["colors"]), ("UV coordinates", d["uvs"])) if on]
+        v["has"].setText(", ".join(extras) if extras else "—")
+        self.adjustSize()
+
+
+# ---------------------------------------------------------------------------
+# Export / convert (with optional mesh simplification)
+# ---------------------------------------------------------------------------
+# (label, extension, kind, binary)
+EXPORT_FORMATS = [
+    ("STL (binary)", ".stl", "stl", True), ("STL (ASCII)", ".stl", "stl", False),
+    ("OBJ", ".obj", "obj", True),
+    ("PLY (binary)", ".ply", "ply", True), ("PLY (ASCII)", ".ply", "ply", False),
+]
+IDENTITY16 = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def export_default_name(src_path: str, fmt_index: int, simplified: bool) -> str:
+    stem = Path(src_path).stem if src_path else "model"
+    return stem + ("_simplified" if simplified else "") + EXPORT_FORMATS[fmt_index][1]
+
+
+def snapshot_export_parts(actors: list) -> list:
+    """Private, thread-safe copies of each actor's mesh plus its world matrix, so the worker
+    thread never touches objects the render loop is using."""
+    parts = []
+    for a in actors:
+        ds = _mapper_data(a.GetMapper())
+        if ds is None or not isinstance(ds, vtkPolyData):
+            continue
+        pd = vtkPolyData()
+        pd.ShallowCopy(ds)                           # arrays are shared, read-only
+        m = a.GetMatrix()
+        parts.append((pd, [m.GetElement(i, j) for i in range(4) for j in range(4)]))
+    return parts
+
+
+def build_export_polydata(parts: list, keep=None, normals: bool = False):
+    """Merge -> weld -> triangulate -> (optional) quadric decimation. Returns (mesh, n_in, n_out)."""
+    app = vtkAppendPolyData()
+    for pd, flat in parts:
+        if flat != IDENTITY16:                       # bake the actor's placement into the points
+            t = vtkTransform()
+            t.SetMatrix(flat)
+            f = vtkTransformPolyDataFilter()
+            f.SetTransform(t)
+            f.SetInputData(pd)
+            f.Update()
+            app.AddInputData(f.GetOutput())
+        else:
+            app.AddInputData(pd)
+    app.Update()
+
+    def weld(poly):
+        c = vtkCleanPolyData()
+        c.SetInputData(poly)
+        c.ConvertPolysToLinesOff()
+        c.ConvertLinesToPointsOff()
+        c.Update()
+        return c.GetOutput()
+
+    tri = vtkTriangleFilter()
+    tri.SetInputData(weld(app.GetOutput()))
+    tri.PassVertsOff()
+    tri.PassLinesOff()
+    tri.Update()
+    out = tri.GetOutput()
+    n_in = out.GetNumberOfPolys()
+    if n_in == 0:
+        raise ValueError("This model has no surface to export.")
+    if keep is not None and keep < 0.999:
+        dec = vtkQuadricDecimation()
+        dec.SetInputData(out)
+        dec.SetTargetReduction(1.0 - float(keep))
+        dec.Update()
+        out = weld(dec.GetOutput())
+        if out.GetNumberOfPolys() == 0:
+            raise ValueError("Simplification removed the whole mesh; try keeping more faces.")
+    if normals:
+        nrm = vtkPolyDataNormals()
+        nrm.SetInputData(out)
+        nrm.SetFeatureAngle(60.0)
+        nrm.SplittingOn()
+        nrm.ConsistencyOff()
+        nrm.Update()
+        out = nrm.GetOutput()
+    return out, n_in, out.GetNumberOfPolys()
+
+
+def write_mesh(pd, path: str, kind: str, binary: bool):
+    if kind == "stl":
+        w = vtkSTLWriter() if vtkSTLWriter is not None else None
+    elif kind == "obj":
+        w = vtkOBJWriter() if vtkOBJWriter is not None else None
+    else:
+        w = vtkPLYWriter() if vtkPLYWriter is not None else None
+    if w is None:
+        raise ValueError(f"This VTK build has no {kind.upper()} writer.")
+    if kind in ("stl", "ply"):
+        (w.SetFileTypeToBinary if binary else w.SetFileTypeToASCII)()
+    if kind == "ply":
+        arr, mode = _color_array(pd)
+        if arr is not None and mode == "point" and arr.GetDataType() == VTK_UNSIGNED_CHAR:
+            w.SetArrayName(arr.GetName())
+            w.SetColorModeToDefault()
+        else:
+            w.SetColorModeToOff()
+    w.SetFileName(path)
+    w.SetInputData(pd)
+    w.Write()
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        raise ValueError("The file could not be written (check the folder is writable).")
+
+
+class _ExportSignals(QObject):
+    done = Signal(str)
+    failed = Signal(str)
+
+
+class ExportTask(QRunnable):
+    def __init__(self, parts, path, kind, binary, keep):
+        super().__init__()
+        self.parts, self.path, self.kind, self.binary, self.keep = parts, path, kind, binary, keep
+        self.signals = _ExportSignals()
+
+    def run(self):
+        try:
+            mesh, n_in, n_out = build_export_polydata(self.parts, self.keep, normals=(self.kind == "obj"))
+            write_mesh(mesh, self.path, self.kind, self.binary)
+            size = human_size(os.path.getsize(self.path))
+            change = f" (from {n_in:,})" if n_out != n_in else ""
+            self.signals.done.emit(f"Exported {n_out:,} triangles{change} to {self.path}  [{size}]")
+        except Exception as e:
+            self.signals.failed.emit(str(e) or type(e).__name__)
+
+
+class ExportDialog(QDialog):
+    def __init__(self, parent, name: str, tris: int, fmt_idx: int, simplify: bool, keep_pct: int):
+        super().__init__(parent)
+        self.setWindowTitle("Export / convert")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        self.tris = tris
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        head = QLabel(f"<b>{html.escape(name)}</b><br>{tris:,} triangles")
+        head.setTextFormat(Qt.RichText)
+        root.addWidget(head)
+        form = QFormLayout()
+        self.fmt = QComboBox()
+        self.fmt.addItems([f[0] for f in EXPORT_FORMATS])
+        self.fmt.setCurrentIndex(max(0, min(fmt_idx, len(EXPORT_FORMATS) - 1)))
+        form.addRow("Format", self.fmt)
+        root.addLayout(form)
+        self.simp = QCheckBox("Simplify mesh (reduce the number of faces)")
+        self.simp.setChecked(simplify)
+        self.simp.toggled.connect(self._refresh)
+        root.addWidget(self.simp)
+        row = QHBoxLayout()
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(1, 100)
+        self.slider.setValue(max(1, min(keep_pct, 100)))
+        self.slider.valueChanged.connect(self._refresh)
+        self.keep_label = QLabel("")
+        self.keep_label.setMinimumWidth(190)
+        row.addWidget(self.slider, 1)
+        row.addWidget(self.keep_label)
+        root.addLayout(row)
+        self.warn = QLabel("")
+        self.warn.setObjectName("barLabel")
+        self.warn.setWordWrap(True)
+        root.addWidget(self.warn)
+        note = QLabel("Exports the geometry as it is shown, including its placement. Materials and "
+                      "textures are not written; vertex colours are kept in PLY files.")
+        note.setObjectName("barLabel")
+        note.setWordWrap(True)
+        root.addWidget(note)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        go = QPushButton("Export…")
+        go.setDefault(True)
+        go.clicked.connect(self.accept)
+        buttons.addWidget(cancel)
+        buttons.addWidget(go)
+        root.addLayout(buttons)
+        self._refresh()
+
+    def _refresh(self, *_):
+        on, pct = self.simp.isChecked(), self.slider.value()
+        self.slider.setEnabled(on)
+        self.keep_label.setText(f"Keep {pct}%  (about {int(self.tris * pct / 100):,} triangles)"
+                                if on else "Keeps every face")
+        msgs = []
+        if on and self.tris > 500_000:
+            msgs.append("This is a large model, so simplifying may take a while.")
+        if on and pct < 10:
+            msgs.append("Very strong simplification can change the shape noticeably.")
+        self.warn.setText(" ".join(msgs))
+
+    def values(self):
+        """(format index, fraction of faces to keep or None)."""
+        return self.fmt.currentIndex(), (self.slider.value() / 100.0 if self.simp.isChecked() else None)
+
+
+# ---------------------------------------------------------------------------
+# About dialog (all wording lives in the ABOUT dictionary near the top of this file)
+# ---------------------------------------------------------------------------
+def about_html() -> str:
+    a, esc = ABOUT, html.escape
+    items = "".join(
+        f"<li><b>{esc(n)}</b> &mdash; {esc(lic)}"
+        + (f' <span style="color:#7c8794">({esc(url)})</span>' if url else "") + "</li>"
+        for n, lic, url in a["third_party"])
+    licence = esc(a["licence_text"].format(copyright=a["copyright"]))
+    h = "color:#6aa8e8; margin:14px 0 4px 0;"
+    return (f'<h4 style="{h}">{esc(a["legal_heading"])}</h4>'
+            f'<p>{esc(a["copyright"])}</p><p>{esc(a["legal_notice"])}</p>'
+            f'<h4 style="{h}">{esc(a["licence_heading"])}</h4>'
+            f'<p>{esc(a["licence_intro"])}</p>'
+            f'<pre style="white-space:pre-wrap; font-size:11px; color:#aeb8c4;">{licence}</pre>'
+            f'<h4 style="{h}">{esc(a["third_party_heading"])}</h4>'
+            f'<p>{esc(a["third_party_intro"])}</p><ul>{items}</ul>'
+            f'<p style="color:#7c8794;">{esc(a["third_party_note"])}</p>')
+
+
+class AboutDialog(QDialog):
+    """Closes with the title-bar X, the ✕ button, the Close button, or Esc."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        a, esc = ABOUT, html.escape
+        self.setWindowTitle(f"About {a['app_name']}")
+        self.setModal(True)
+        self.setMinimumSize(540, 580)
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+        head = QHBoxLayout()
+        title = QLabel(a["app_name"] + (f"  {a['version']}" if a.get("version") else ""))
+        title.setObjectName("aboutTitle")
+        head.addWidget(title, 1)
+        x = QToolButton()
+        x.setText("✕")
+        x.setToolTip("Close (Esc)")
+        x.setObjectName("aboutClose")
+        x.clicked.connect(self.close)
+        head.addWidget(x)
+        root.addLayout(head)
+        tag = QLabel(a["tagline"])
+        tag.setObjectName("aboutTagline")
+        tag.setWordWrap(True)
+        root.addWidget(tag)
+
+        heading = QLabel(a["author_heading"])
+        heading.setObjectName("aboutHeading")
+        root.addWidget(heading)
+        who = QLabel(f"<span style='font-size:15px'><b>{esc(a['author_name'])}</b>"
+                     f" &nbsp;/&nbsp; {esc(a['author_alias'])}</span>"
+                     + (f"<br><span style='color:#8d99a8'>{esc(a['author_note'])}</span>"
+                        if a.get("author_note") else ""))
+        who.setTextFormat(Qt.RichText)
+        who.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(who)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setHtml(about_html())
+        root.addWidget(browser, 1)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton(a["close_label"])
+        close.setDefault(True)
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        root.addLayout(row)
+
+
 # (name, bottom colour, top colour); equal colours = flat background
 BACKGROUNDS = [
     ("Dark gradient", (0.07, 0.08, 0.10), (0.17, 0.19, 0.23)),
@@ -1808,6 +2845,7 @@ class Viewer(QWidget):
     step = Signal(int)                    # -1 previous model, +1 next model
     message = Signal(str)                 # short status text for the main window
     orientation_changed = Signal(str)     # path whose up-axis changed
+    about_requested = Signal()            # open the About dialog
 
     def __init__(self):
         super().__init__()
@@ -1816,6 +2854,22 @@ class Viewer(QWidget):
         self.actors: list = []
         self.matcap_idx = 0
         self._editor = None
+        self.info_on = str(self.settings.value("info_on", "true")).lower() in ("1", "true")
+        self._export_task = None
+        try:                                      # environment settings from the last session
+            self.env = clean_env(json.loads(str(self.settings.value("environment", ""))))
+        except Exception:
+            self.env = copy.deepcopy(ENV_DEFAULTS)
+        self._env_panel = None
+        self._env_code = ""
+        self._env_view_locked = False
+        self._env_lights = None
+        self._env_lights_added = False
+        self._pano, self._pano_path, self._sky_key = None, "", None
+        self._sky_tex = self._skybox = None
+        self._sky_added = False
+        self._blob = self._blob_src = None
+        self._blob_added = False
         try:                                      # last custom MatCap from the previous session
             self.custom = preset_to_spec(json.loads(str(self.settings.value("custom_matcap", ""))))
             self._custom_parts = custom_matcap_parts(self.custom)
@@ -1860,9 +2914,6 @@ class Viewer(QWidget):
         h.setSpacing(4)
         h.addWidget(self._btn("‹", "Previous model (←)", lambda: self.step.emit(-1)))
         h.addWidget(self._btn("›", "Next model (→)", lambda: self.step.emit(1)))
-        self.title = QLabel("")
-        self.title.setObjectName("hudTitle")
-        h.addWidget(self.title)
         for text, tip, fn in (("Wire", "Wireframe (W)", lambda: self.set_mode("wire")),
                               ("Points", "Point cloud (P)", lambda: self.set_mode("points")),
                               ("Shaded", "Shaded surface (S)", lambda: self.set_mode("surface")),
@@ -1880,6 +2931,8 @@ class Viewer(QWidget):
         x.setObjectName("hudClose")
         h.addWidget(x)
 
+        self.info_panel = InfoPanel(self)
+        self.info_panel.hide()
         self.overlay = Overlay(self)
         self.set_background(self.bg_idx, announce=False)
 
@@ -1930,13 +2983,24 @@ class Viewer(QWidget):
             speed.addAction(a)
 
         menu.addAction("MatCap editor…\tE", lambda _=False: self.open_matcap_editor())
+        self.act_env = QAction("Environment (sky, light, shadow)\tL", menu, checkable=True)
+        self.act_env.setChecked(bool(self.env["enabled"]))
+        self.act_env.toggled.connect(self.set_environment_enabled)
+        menu.addAction(self.act_env)
+        menu.addAction("Environment settings…\tShift+L", lambda _=False: self.open_environment_panel())
+        self.act_info = QAction("Model info\tI", menu, checkable=True)
+        self.act_info.setChecked(self.info_on)
+        self.act_info.toggled.connect(self.set_info_visible)
+        menu.addAction(self.act_info)
+        menu.addAction("Export / convert…\tCtrl+E", lambda _=False: self.open_export_dialog())
+        menu.addAction("About " + ABOUT["app_name"] + "\tF1", lambda _=False: self.about_requested.emit())
         menu.addSeparator()
         menu.addAction("Save screenshot…\tF12", lambda _=False: self.save_screenshot())
         menu.addAction("Copy screenshot\tCtrl+C", lambda _=False: self.copy_screenshot())
 
         b = QToolButton()
-        b.setText("View ▾")
-        b.setToolTip("View options")
+        b.setText("Main ▾")
+        b.setToolTip("Main menu")
         b.setMenu(menu)
         b.setPopupMode(QToolButton.InstantPopup)
         return b
@@ -1946,6 +3010,7 @@ class Viewer(QWidget):
         self.hud.adjustSize()
         self.hud.move(max(8, self.width() - self.hud.width() - 12), 12)
         self.hud.raise_()
+        self._place_info()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -1953,22 +3018,21 @@ class Viewer(QWidget):
         if self.overlay.isVisible():
             self.overlay.reposition()
 
-    def _set_title(self, text: str):
-        self.title.setText(self.title.fontMetrics().elidedText(text, Qt.ElideMiddle, 300))
-        self.title.setToolTip(text)
-
     # ----- scene state ------------------------------------------------------
     def clear_scene(self):
         for a in self.actors:
             self.renderer.RemoveActor(a)
         self.actors = []
         self.overlay.hide()
+        self._remove_shadow()
+        self._sync_env_lights()
+        if getattr(self, "info_panel", None) is not None:
+            self.info_panel.hide()
         self._sync_axes()
         self.rw.Render()
 
     def show_loading(self, name: str):
         self.clear_scene()
-        self._set_title(name)
         self.overlay.show_text(f"Loading {name} …", error=False)
 
     def show_error(self, msg: str):
@@ -1981,19 +3045,18 @@ class Viewer(QWidget):
         self.act_upz.blockSignals(True)
         self.act_upz.setChecked(self.up_axis == "Z")
         self.act_upz.blockSignals(False)
-        faces = 0
         for a in actors:
             a.GetProperty().SetPointSize(2.5)
             self.renderer.AddActor(a)
-            faces += _cells(a)
         self.actors = actors
         self._sync_transp_action(self.transparent)
         self._apply_transparency()
-        self._set_title(f"{name} · {faces:,} faces")
         self.set_mode("surface")
         self.set_view("front")
+        self._env_refresh()
         self._sync_axes()
         self._place_hud()
+        self._update_info()
 
     # ----- shading modes ----------------------------------------------------
     def cycle_matcap(self):
@@ -2033,12 +3096,22 @@ class Viewer(QWidget):
             except Exception:                     # VTK < 9.0 has no per-actor shader property
                 self._clear_replacements()
                 mode = "surface"
+        self._env_code = ""
+        if mode == "surface" and self._current_env_code():
+            try:
+                self._install_env()
+            except Exception:
+                self._clear_replacements()
+                self._env_code = ""
+        self._sync_env_lights(mode)
         self.mode = mode
         label = entries[self.matcap_idx][0]
         self.matcap_btn.setText((label if len(label) <= 16 else label[:15] + "…")
                                 if mode == "matcap" else "MatCap")
         self._place_hud()
         self.rw.Render()
+        if mode == "surface" and self._env_code and _shader_error_since(log_pos):
+            self._env_failed()
         if mode == "matcap" and _shader_error_since(log_pos):
             alt = entries[self.matcap_idx][3]
             if alt is not None:                   # full image table rejected: try the lite one
@@ -2175,7 +3248,384 @@ class Viewer(QWidget):
             ORIENT.set(self.path, self.up_axis)
             self.orientation_changed.emit(self.path)
         self.set_view("front")
+        self._env_refresh()
+        self._update_info()
         self.message.emit(f"{self.up_axis}-up (remembered for this file)")
+
+    # ----- environment: sky, hemispheric lighting, sun, blob shadow ---------
+    def _env_on(self, flag: str) -> bool:
+        return bool(self.env.get("enabled") and self.env.get(flag))
+
+    def _sun_frame_dir(self):
+        return sun_dir_frame(math.radians(self.env["sun_az"]), math.radians(self.env["sun_el"]))
+
+    def _current_env_code(self) -> str:
+        if not self._env_on("lighting"):
+            return ""
+        return env_shader_code(self.env, self._sun_frame_dir(), self._env_view_locked)
+
+    def _install_env(self):
+        code = self._current_env_code()
+        for a in self.actors:
+            sp = a.GetShaderProperty()
+            sp.ClearAllFragmentShaderReplacements()
+            sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
+        self._env_code = code
+
+    def _sync_env_lights(self, mode=None):
+        """Two scene lights carry 'world up' and 'the sun' into the shader (surface mode only,
+        so every other mode keeps VTK's normal headlight)."""
+        mode = mode or self.mode
+        want = (self._env_on("lighting") and mode == "surface" and bool(self.actors)
+                and not self._env_view_locked)
+        if want:
+            if self._env_lights is None:
+                self._env_lights = (vtkLight(), vtkLight())
+                for light in self._env_lights:
+                    light.SetLightTypeToSceneLight()
+                    light.SetPositional(False)
+                    light.SetFocalPoint(0.0, 0.0, 0.0)
+            up_l, sun_l = self._env_lights
+            up_l.SetPosition(*((0.0, 0.0, 1.0) if self.up_axis == "Z" else (0.0, 1.0, 0.0)))
+            up_l.SetColor(*[v * 0.3 for v in self.env["sky"]])
+            sun_l.SetPosition(*[float(x) for x in frame_to_world(self._sun_frame_dir(), self.up_axis)])
+            sun_l.SetColor(*self.env["sun_color"])
+            sun_l.SetIntensity(self.env["sun_int"])
+            if not self._env_lights_added:
+                self.renderer.RemoveAllLights()
+                self.renderer.AutomaticLightCreationOff()
+                self.renderer.AddLight(up_l)
+                self.renderer.AddLight(sun_l)
+                self._env_lights_added = True
+        elif self._env_lights_added:
+            for light in self._env_lights:
+                self.renderer.RemoveLight(light)
+            self.renderer.AutomaticLightCreationOn()
+            self._env_lights_added = False
+
+    def _ensure_pano(self):
+        path = self.env.get("path") or ""
+        if not path and self._pano_path:
+            self._pano, self._pano_path, self._sky_key = None, "", None
+            return
+        if path and path != self._pano_path:
+            if os.path.isfile(path):
+                try:
+                    self._pano = prepare_panorama(read_panorama(path))
+                    self._pano_path = path
+                    self._sky_key = None
+                    return
+                except Exception as e:
+                    self.message.emit(f"Could not load the panorama: {e}")
+            self.env["path"] = ""
+            self._pano, self._pano_path, self._sky_key = None, "", None
+
+    def _sync_skybox(self):
+        want = self._env_on("skybox") and self._pano is not None
+        if want:
+            key = (self._pano_path, self.up_axis, round(self.env["yaw"], 1))
+            if key != self._sky_key:
+                img = numpy_to_vtk_image(reproject_panorama(self._pano["disp"], self.up_axis, self.env["yaw"]))
+                if self._sky_tex is None:
+                    self._sky_tex = vtkTexture()
+                    self._sky_tex.InterpolateOn()
+                    self._sky_tex.MipmapOn()
+                    self._sky_tex.SetColorModeToDirectScalars()
+                    self._skybox = vtkSkybox()
+                    self._skybox.SetProjectionToSphere()
+                    self._skybox.SetTexture(self._sky_tex)
+                    self._skybox.UseBoundsOff()          # never let the sky affect camera framing
+                self._sky_tex.SetInputData(img)
+                self._sky_tex.Modified()
+                self._sky_key = key
+            if not self._sky_added:
+                self.renderer.AddActor(self._skybox)
+                self._sky_added = True
+        elif self._sky_added:
+            self.renderer.RemoveActor(self._skybox)
+            self._sky_added = False
+
+    def _remove_shadow(self):
+        if self._blob_added:
+            self.renderer.RemoveActor(self._blob)
+            self._blob_added = False
+
+    def _sync_shadow(self):
+        """A soft dark blob on a plane under the model: no shadow map, no extra render pass."""
+        if not (self._env_on("shadow") and self.actors):
+            self._remove_shadow()
+            return
+        bb = np.array([a.GetBounds() for a in self.actors], dtype=float).reshape(-1, 3, 2)
+        lo, hi = bb[:, :, 0].min(0), bb[:, :, 1].max(0)
+        ext = np.maximum(hi - lo, 1e-9)
+        ctr = (lo + hi) / 2
+        z_up = self.up_axis == "Z"
+        h0, h1, vax = (0, 1, 2) if z_up else (0, 2, 1)
+        ground = lo[vax] - 0.002 * float(ext.max())
+        r0 = 0.5 * ext[h0] * 1.15 * self.env["shadow_size"]
+        r1 = 0.5 * ext[h1] * 1.15 * self.env["shadow_size"]
+        sun = frame_to_world(self._sun_frame_dir(), self.up_axis)
+        sh = np.array([sun[h0], sun[h1]])
+        n = float(np.linalg.norm(sh))
+        off = (-(sh / n) * min(0.35 * ext[vax] * n, 0.5 * max(r0, r1))) if n > 1e-6 else np.zeros(2)
+        c0, c1 = ctr[h0] + off[0], ctr[h1] + off[1]
+        if self._blob is None:
+            self._blob_src = vtkPlaneSource()
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(self._blob_src.GetOutputPort())
+            tex = vtkTexture()
+            tex.SetInputData(numpy_to_vtk_image(blob_texture_array()))
+            tex.SetColorModeToDirectScalars()
+            tex.InterpolateOn()
+            tex.RepeatOff()
+            tex.EdgeClampOn()
+            self._blob = vtkActor()
+            self._blob.SetMapper(m)
+            self._blob.SetTexture(tex)
+            self._blob.GetProperty().LightingOff()
+            self._blob.GetProperty().BackfaceCullingOn()    # only visible from above
+            self._blob.UseBoundsOff()
+            self._blob.SetPickable(False)
+        if z_up:
+            o, p1, p2 = (c0 - r0, c1 - r1, ground), (c0 + r0, c1 - r1, ground), (c0 - r0, c1 + r1, ground)
+        else:
+            o, p1, p2 = (c0 - r0, ground, c1 - r1), (c0 - r0, ground, c1 + r1), (c0 + r0, ground, c1 - r1)
+        self._blob_src.SetOrigin(*o)
+        self._blob_src.SetPoint1(*p1)
+        self._blob_src.SetPoint2(*p2)
+        self._blob_src.Update()
+        self._blob.GetProperty().SetOpacity(self.env["shadow_opacity"])
+        if not self._blob_added:
+            self.renderer.AddActor(self._blob)
+            self._blob_added = True
+
+    def _sync_env_scene(self):
+        if self.env["enabled"]:
+            self._ensure_pano()
+        self._sync_skybox()
+        self._sync_shadow()
+        self._sync_env_lights()
+
+    def _env_refresh(self):
+        """Bring sky, shadow, lights and shader in line with self.env."""
+        self._sync_env_scene()
+        if self.mode == "surface" and self._current_env_code() != self._env_code:
+            self.set_mode("surface")              # reinstalls (or removes) the shader and renders
+        else:
+            self.rw.Render()
+
+    def _env_failed(self):
+        """The environment shader didn't compile: follow the camera instead, or switch off."""
+        if not self._env_view_locked:
+            self._env_view_locked = True
+            self._sync_env_lights()
+            after = _log_size()
+            try:
+                self._install_env()
+                self.rw.Render()
+            except Exception:
+                pass
+            if not _shader_error_since(after):
+                self.message.emit("Environment lighting is following the camera on this GPU")
+                return
+        self.env["lighting"] = False
+        self._clear_replacements()
+        self._env_code = ""
+        self._sync_env_lights()
+        self.rw.Render()
+        self.message.emit("This GPU rejected the environment shader, so environment lighting was "
+                          "switched off (details are in the VTK log in your temp folder)")
+        if self._env_panel is not None:
+            self._env_panel.set_env(self.env)
+
+    def _save_env(self):
+        try:
+            self.settings.setValue("environment", json.dumps(self.env))
+        except Exception:
+            pass
+
+    def apply_environment(self, env: dict):
+        """From the panel: adopt the new settings (the panorama path is managed by the viewer)."""
+        path = self.env.get("path", "")
+        self.env = clean_env(env)
+        self.env["path"] = path
+        self._sync_env_action()
+        self._save_env()
+        self._env_refresh()
+
+    def _sync_env_action(self):
+        self.act_env.blockSignals(True)
+        self.act_env.setChecked(bool(self.env["enabled"]))
+        self.act_env.blockSignals(False)
+
+    def set_environment_enabled(self, on: bool):
+        self.env["enabled"] = bool(on)
+        self._save_env()
+        if self._env_panel is not None:
+            self._env_panel.set_env(self.env, self._pano_path)
+        self._env_refresh()
+        self.message.emit("Environment: on" if on else "Environment: off")
+
+    def toggle_environment(self):
+        self.act_env.toggle()
+
+    def load_panorama(self, path: str):
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            pano = prepare_panorama(read_panorama(path))
+        except Exception as e:
+            self.message.emit(f"Could not load the panorama: {e}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._pano, self._pano_path, self._sky_key = pano, path, None
+        self.env["path"] = path
+        self.env["enabled"] = True
+        self._env_view_locked = False
+        self.fit_to_panorama(announce=False)
+        self.message.emit(f"Panorama loaded: {Path(path).name} (lighting fitted to it)")
+
+    def fit_to_panorama(self, announce: bool = True):
+        if self._pano is None:
+            self.message.emit("Load a panorama first")
+            return
+        info = self._pano["info"]
+        az, el = dir_to_azel(info["sun_dir"])
+        self.env.update(sky=info["sky"], equator=info["equator"], ground=info["ground"],
+                        sun_color=info["sun_color"], sun_int=info["sun_int"],
+                        sun_az=(az + self.env["yaw"] + 180.0) % 360.0 - 180.0,
+                        sun_el=min(90.0, max(-10.0, el)))
+        self._sync_env_action()
+        self._save_env()
+        if self._env_panel is not None:
+            self._env_panel.set_env(self.env, self._pano_path)
+        self._env_refresh()
+        if announce:
+            self.message.emit("Lighting fitted to the panorama")
+
+    def clear_panorama(self):
+        self.env["path"] = ""
+        self._pano, self._pano_path, self._sky_key = None, "", None
+        self._save_env()
+        if self._env_panel is not None:
+            self._env_panel.set_env(self.env, "")
+        self._env_refresh()
+
+    def apply_environment_preset(self, env: dict, missing: str = "", name: str = "Environment"):
+        """A preset replaces the colours, sun, shadow and (if found) the panorama."""
+        self.env = clean_env(env)
+        self.env["enabled"] = True
+        self._env_view_locked = False
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._env_refresh()                   # loads the panorama if the preset names one
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._sync_env_action()
+        self._save_env()
+        if self._env_panel is not None:
+            self._env_panel.set_env(self.env, self._pano_path)
+        note = f" (panorama '{missing}' was not found, so it uses the saved colours only)" if missing else ""
+        self.message.emit(f"Environment preset loaded: {name}{note}")
+
+    def open_environment_panel(self):
+        if self._env_panel is None:
+            self._env_panel = EnvironmentPanel(self.window(), self.env, self._pano_path)
+            self._env_panel.changed.connect(self.apply_environment)
+            self._env_panel.load_requested.connect(self.load_panorama)
+            self._env_panel.fit_requested.connect(self.fit_to_panorama)
+            self._env_panel.clear_requested.connect(self.clear_panorama)
+            self._env_panel.preset_loaded.connect(self.apply_environment_preset)
+        else:
+            self._env_panel.set_env(self.env, self._pano_path)
+        self._env_panel.show()
+        self._env_panel.raise_()
+        self._env_panel.activateWindow()
+
+    # ----- model info panel -------------------------------------------------
+    def _place_info(self):
+        p = getattr(self, "info_panel", None)
+        if p is not None:
+            p.adjustSize()
+            p.move(12, self.hud.y() + self.hud.height() + 10)
+            p.raise_()
+
+    def _update_info(self):
+        p = getattr(self, "info_panel", None)
+        if p is None:
+            return
+        if not (self.info_on and self.actors):
+            p.hide()
+            return
+        try:
+            p.set_info(collect_model_info(self.actors, self.path, self.up_axis))
+        except Exception as e:
+            self.message.emit(f"Could not read the model details: {e}")
+            p.hide()
+            return
+        p.show()
+        self._place_info()
+
+    def toggle_info(self):
+        self.act_info.toggle()
+
+    def set_info_visible(self, on: bool):
+        self.info_on = bool(on)
+        self.settings.setValue("info_on", "true" if on else "false")
+        self._update_info()
+
+    # ----- export / convert --------------------------------------------------
+    def open_export_dialog(self):
+        if not self.actors:
+            self.message.emit("Open a model first, then export it")
+            return
+        if self._export_task is not None:
+            self.message.emit("An export is already running")
+            return
+        info = collect_model_info(self.actors, self.path, self.up_axis)
+        dlg = ExportDialog(self.window(), info["name"], info["tris"],
+                           _setting_int(self.settings, "export_fmt", 0),
+                           str(self.settings.value("export_simplify", "false")).lower() in ("1", "true"),
+                           _setting_int(self.settings, "export_keep", 50))
+        if dlg.exec() != QDialog.Accepted:
+            return
+        idx, keep = dlg.values()
+        self.settings.setValue("export_fmt", idx)
+        self.settings.setValue("export_simplify", "true" if keep is not None else "false")
+        if keep is not None:
+            self.settings.setValue("export_keep", int(round(keep * 100)))
+        label, ext, kind, binary = EXPORT_FORMATS[idx]
+        start = str(self.settings.value("export_dir", "")) or os.path.dirname(self.path) or str(Path.home())
+        if not os.path.isdir(start):
+            start = str(Path.home())
+        fn, _ = QFileDialog.getSaveFileName(
+            self.window(), "Export model",
+            os.path.join(start, export_default_name(self.path, idx, keep is not None)),
+            f"{label} (*{ext})")
+        if not fn:
+            return
+        if not fn.lower().endswith(ext):
+            fn += ext
+        self.settings.setValue("export_dir", os.path.dirname(fn))
+        parts = snapshot_export_parts(self.actors)
+        if not parts:
+            self.message.emit("There is no mesh data to export")
+            return
+        task = ExportTask(parts, fn, kind, binary, keep)
+        task.signals.done.connect(self._export_done)
+        task.signals.failed.connect(self._export_failed)
+        self._export_task = task                  # keeps the task and its signals alive
+        self.message.emit("Exporting…")
+        QThreadPool.globalInstance().start(task)
+
+    def _export_done(self, msg: str):
+        self._export_task = None
+        self.message.emit(msg)
+
+    def _export_failed(self, msg: str):
+        self._export_task = None
+        self.message.emit("Export failed")
+        QMessageBox.warning(self.window(), "Export / convert", f"The export did not finish.\n\n{msg}")
 
     # ----- transparency (solid by default) ---------------------------------
     def _tr_actors(self):
@@ -2384,9 +3834,17 @@ QTreeView::item:selected, QListWidget::item:selected { background:#27486b; color
 QTreeView::item:hover, QListWidget::item:hover { background:#1f2630; border-radius:6px; }
 QListWidget::item { color:#c3cad4; padding:4px; }
 QSplitter::handle { background:#0e1116; width:2px; }
-QScrollBar:vertical { background:#14181e; width:10px; }
-QScrollBar::handle:vertical { background:#2c3542; border-radius:5px; min-height:30px; }
-QScrollBar::add-line, QScrollBar::sub-line { height:0; }
+QScrollBar:vertical { background:#0b0e12; width:16px; margin:0; border-left:1px solid #1c232c; }
+QScrollBar::handle:vertical { background:#6f86a3; border-radius:6px; margin:2px 3px; min-height:48px; }
+QScrollBar::handle:vertical:hover { background:#8fa8c6; }
+QScrollBar::handle:vertical:pressed { background:#6aa8e8; }
+QScrollBar:horizontal { background:#0b0e12; height:16px; margin:0; border-top:1px solid #1c232c; }
+QScrollBar::handle:horizontal { background:#6f86a3; border-radius:6px; margin:3px 2px; min-width:48px; }
+QScrollBar::handle:horizontal:hover { background:#8fa8c6; }
+QScrollBar::handle:horizontal:pressed { background:#6aa8e8; }
+QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; background:none; border:none; }
+QScrollBar::add-page, QScrollBar::sub-page { background:none; }
+QAbstractScrollArea::corner { background:#0b0e12; }
 QToolTip { background:#1b2028; color:#e0e6ed; border:1px solid #3a4656; }
 #hud { background:#1b2028; border:1px solid #2f3947; border-radius:10px; }
 #hudTitle { color:#8d99a8; font-size:11px; padding:0 8px; background:transparent; }
@@ -2406,10 +3864,25 @@ QComboBox QAbstractItemView { background:#1b2028; selection-background-color:#34
 QSlider::groove:horizontal { height:4px; background:#2c3542; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-5px 0; background:#6aa8e8; border-radius:6px; }
 #barLabel { color:#7c8794; background:transparent; }
+QMenuBar { background:#10141a; color:#d5dbe3; }
+QMenuBar::item { padding:4px 10px; background:transparent; }
+QMenuBar::item:selected { background:#34506f; border-radius:4px; }
+QTextBrowser { background:#10141a; border:1px solid #2f3947; border-radius:6px; padding:8px; color:#d5dbe3; }
+#aboutTitle { color:#e6ebf1; font-size:22px; font-weight:700; background:transparent; }
+#aboutTagline { color:#8d99a8; background:transparent; }
+#aboutHeading { color:#6aa8e8; font-weight:600; font-size:12px; background:transparent; }
+#aboutClose { background:transparent; border:none; color:#9aa5b2; font-size:14px; padding:4px 9px; }
+#aboutClose:hover { background:#8e2a2a; color:#fff; border-radius:6px; }
+#infoTitle { color:#e6ebf1; font-weight:600; background:transparent; }
+#infoKey { color:#7c8794; font-size:11px; background:transparent; }
+#infoVal { color:#d5dbe3; font-size:11px; background:transparent; }
 QPushButton { background:#252d38; border:1px solid #2f3947; border-radius:6px; padding:5px 12px; color:#d5dbe3; }
 QPushButton:hover { background:#34506f; }
 QPushButton:disabled { color:#5c6672; background:#1b2028; }
 QDialog { background:#14181e; }
+QCheckBox { color:#d5dbe3; spacing:6px; }
+QCheckBox::indicator { width:14px; height:14px; border:1px solid #3a4656; border-radius:3px; background:#1b2028; }
+QCheckBox::indicator:checked { background:#3d6fa5; }
 """
 
 
@@ -2445,6 +3918,12 @@ class MainWindow(QMainWindow):
         self.gallery = Gallery()
         self.gallery.open_asset.connect(self.open_asset)
         self.gallery.open_folder.connect(self.goto_folder)
+        self.gallery.rename_requested.connect(self._rename_file)
+        self.gallery.copy_requested.connect(self._copy_file)
+        self.gallery.paste_requested.connect(self._paste_files)
+        self.gallery.delete_requested.connect(self._delete_file)
+        self.gallery.refresh_thumb_requested.connect(self._refresh_thumbnail)
+        self.gallery.refresh_all_requested.connect(self._refresh_all_thumbnails)
         self.thumbs = ThumbnailManager()
         self.thumbs.ready.connect(self.gallery.set_thumb)
 
@@ -2494,6 +3973,7 @@ class MainWindow(QMainWindow):
         self.viewer.step.connect(self._step)
         self.viewer.message.connect(lambda m: self.statusBar().showMessage(m, 6000))
         self.viewer.orientation_changed.connect(self.thumbs.refresh)
+        self.viewer.about_requested.connect(self.show_about)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.gallery_page)
         self.stack.addWidget(self.viewer)
@@ -2518,12 +3998,15 @@ class MainWindow(QMainWindow):
             ("F12", v.save_screenshot), ("Ctrl+C", v.copy_screenshot),
             ("Left", lambda: self._step(-1)), ("Right", lambda: self._step(1)),
             ("E", v.open_matcap_editor),
+            ("L", v.toggle_environment), ("Shift+L", v.open_environment_panel),
+            ("I", v.toggle_info),
             ("Esc", self.close_viewer),
         ]
         for i, key in enumerate(("front", "back", "right", "left", "top", "bottom", "iso"), 1):
             bindings.append((str(i), lambda k=key: v.set_view(k)))
         self._viewer_shortcuts = [QShortcut(QKeySequence(k), self, activated=fn)
                                   for k, fn in bindings]
+        self._build_menus()
         self._sync_shortcuts()
 
         self.statusBar().setStyleSheet("color:#7c8794;")
@@ -2541,8 +4024,173 @@ class MainWindow(QMainWindow):
     def _counts_changed(self, shown: int, total: int):
         self.count_label.setText(f"{total} models" if shown == total else f"{shown} of {total} models")
 
+    def _build_menus(self):
+        """A real menu bar so everything is reachable by mouse, keyboard and screen readers."""
+        mb = self.menuBar()
+        fm = mb.addMenu("&File")
+        act = fm.addAction("Open folder…")
+        act.setShortcut(QKeySequence("Ctrl+O"))
+        act.triggered.connect(self._choose_folder)
+        self.act_export = fm.addAction("Export / convert…")
+        self.act_export.setShortcut(QKeySequence("Ctrl+E"))
+        self.act_export.triggered.connect(self.viewer.open_export_dialog)
+        self.act_export.setEnabled(False)
+        fm.addSeparator()
+        quit_act = fm.addAction("Quit")
+        quit_act.setShortcut(QKeySequence("Ctrl+Q"))
+        quit_act.triggered.connect(self.close)
+        hm = mb.addMenu("&Help")
+        about = hm.addAction("About " + ABOUT["app_name"])
+        about.setShortcut(QKeySequence("F1"))
+        about.triggered.connect(self.show_about)
+
+    def show_about(self):
+        AboutDialog(self).exec()
+
+    # ----- file operations from the gallery (rename / copy / paste / delete) --------
+    @staticmethod
+    def _split_name(name: str):
+        ext = asset_ext(name)
+        return (name[:-len(ext)] if ext else name), ext
+
+    def _refresh_gallery(self, select: str = ""):
+        folder = self.gallery.folder
+        if not folder:
+            return
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        self.thumbs.request_batch(self.gallery.populate(folder))
+        if select:
+            self.gallery.select_path(select)
+
+    def _rename_file(self, path: str):
+        folder, old = os.path.split(path)
+        base, ext = self._split_name(old)
+        label = f"New name (the {ext} ending is kept):" if ext else "New name:"
+        new_base, ok = QInputDialog.getText(self, "Rename", label, QLineEdit.Normal, base)
+        new_base = new_base.strip()
+        if not ok or not new_base or new_base == base:
+            return
+        if new_base in (".", "..") or any(c in new_base for c in '\\/:*?"<>|'):
+            QMessageBox.warning(self, "Rename", 'A file name can\'t contain any of:  \\ / : * ? " < > |')
+            return
+        dst = os.path.join(folder, new_base + ext)
+        if os.path.exists(dst) and os.path.normcase(dst) != os.path.normcase(path):
+            QMessageBox.warning(self, "Rename", f"A file called “{new_base + ext}” already exists here.")
+            return
+        old_cache = self.thumbs._cache_file(path)      # remember the thumbnail before the name changes
+        try:
+            os.rename(path, dst)
+        except OSError as e:
+            QMessageBox.warning(self, "Rename", f"Could not rename the file.\n\n{e}")
+            return
+        ORIENT.set(dst, ORIENT.get(path))              # keep its Y-up / Z-up choice
+        ORIENT.set(path, "Y")
+        self.thumbs.adopt(old_cache, dst)              # the renamed file keeps its thumbnail
+        if self.current_path == path:
+            self.current_path = dst
+        self._refresh_gallery(select=dst)
+        self.statusBar().showMessage(f"Renamed to {new_base + ext}", 6000)
+
+    def _copy_file(self, path: str):
+        md = QMimeData()
+        md.setUrls([QUrl.fromLocalFile(path)])         # lets Explorer/Finder paste it too
+        md.setText(path)
+        QApplication.clipboard().setMimeData(md)
+        self.statusBar().showMessage(f"Copied {os.path.basename(path)}", 6000)
+
+    @staticmethod
+    def _unique_path(folder: str, name: str) -> str:
+        cand = os.path.join(folder, name)
+        if not os.path.exists(cand):
+            return cand
+        base, ext = MainWindow._split_name(name)
+        n = 1
+        while os.path.exists(cand):
+            cand = os.path.join(folder, f"{base} - Copy" + (f" ({n})" if n > 1 else "") + ext)
+            n += 1
+        return cand
+
+    def _paste_files(self):
+        folder = self.gallery.folder
+        md = QApplication.clipboard().mimeData()
+        srcs = [u.toLocalFile() for u in md.urls() if u.isLocalFile()] if md is not None and md.hasUrls() else []
+        files = [p for p in srcs if os.path.isfile(p)]
+        if not folder or not files:
+            self.statusBar().showMessage("Nothing to paste: copy a file first", 6000)
+            return
+        last, done, errors = "", 0, []
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            for src in files:
+                dst = self._unique_path(folder, os.path.basename(src))
+                old_cache = self.thumbs._cache_file(src)
+                try:
+                    shutil.copy2(src, dst)
+                    self.thumbs.adopt(old_cache, dst)  # a pasted copy starts with the same thumbnail
+                    last, done = dst, done + 1
+                except OSError as e:
+                    errors.append(f"{os.path.basename(src)}: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._refresh_gallery(select=last)
+        self.statusBar().showMessage(f"Pasted {done} file{'s' if done != 1 else ''}", 6000)
+        if errors:
+            QMessageBox.warning(self, "Paste", "Some files could not be copied:\n\n" + "\n".join(errors[:8]))
+
+    def _refresh_thumbnail(self, path: str):
+        self.gallery.clear_thumb(path)
+        self.thumbs.refresh(path, force=True)
+        self.statusBar().showMessage(f"Refreshing the thumbnail for {os.path.basename(path)}…", 6000)
+
+    def _refresh_all_thumbnails(self):
+        paths = self.gallery.file_paths()
+        for p in paths:
+            self.thumbs.forget(p)
+        self._refresh_gallery()
+        self.statusBar().showMessage(f"Refreshing {len(paths)} thumbnails…", 6000)
+
+    def _delete_file(self, path: str):
+        name = os.path.basename(path)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Delete")
+        box.setText(f"Move “{name}” to the Recycle Bin / Trash?")
+        extra = {".obj": "Its .mtl material file and texture images are not deleted.",
+                 ".gltf": "Its .bin and texture files are not deleted."}.get(asset_ext(name))
+        if extra:
+            box.setInformativeText(extra)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        box.setDefaultButton(QMessageBox.Cancel)
+        if box.exec() != QMessageBox.Yes:
+            return
+        res = QFile.moveToTrash(path)
+        if not (res[0] if isinstance(res, tuple) else bool(res)):
+            answer = QMessageBox.question(
+                self, "Delete", f"“{name}” could not be moved to the Recycle Bin / Trash.\n\n"
+                                "Delete it permanently instead?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            try:
+                os.remove(path)
+            except OSError as e:
+                QMessageBox.warning(self, "Delete", f"Could not delete the file.\n\n{e}")
+                return
+        if self.current_path == path:
+            self.current_path = ""
+        self._refresh_gallery()
+        self.statusBar().showMessage(f"Deleted {name}", 6000)
+
+    def _choose_folder(self):
+        start = str(self.settings.value("last_dir", str(Path.home())))
+        d = QFileDialog.getExistingDirectory(self, "Open folder", start)
+        if d:
+            self.goto_folder(d)
+
     def _sync_shortcuts(self):
         on = self.stack.currentWidget() is self.viewer
+        self.act_export.setEnabled(on)
         for sc in self._viewer_shortcuts:
             sc.setEnabled(on)
 
