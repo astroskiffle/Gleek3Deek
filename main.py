@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import (QDir, QFile, QMimeData, QObject, QRunnable, QSettings, QSize,
+from PySide6.QtCore import (QDir, QEvent, QFile, QMimeData, QObject, QRunnable, QSettings, QSize,
                             QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter,
                            QPen, QPixmap, QPolygonF, QShortcut)
@@ -103,17 +103,17 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.6.5",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "",                  # optional extra line, e.g. a website or contact address
+    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": ("[Placeholder] Replace this text with your own legal notice, terms of use "
-                     "and contact details."),
+    "legal_notice": ("[Placeholder]"
+                     ""),
     # --- licence and attributions
     "licence_heading": "Licence",
     "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
@@ -1968,9 +1968,12 @@ ENV_DEFAULTS = {
     "sky": [0.50, 0.65, 0.85], "equator": [0.78, 0.80, 0.82], "ground": [0.30, 0.27, 0.24],
     "sun_color": [1.0, 0.95, 0.85], "sun_az": 35.0, "sun_el": 50.0, "sun_int": 0.85,
     "highlight": 0.25, "ambient": 1.0, "yaw": 0.0, "shadow_opacity": 0.5, "shadow_size": 1.0,
+    "exposure": 0.0, "tonemap": "none", "sky_blur": 0.0, "gradient_bg": False,
 }
-ENV_FLAGS = [("enabled", "Environment on"), ("skybox", "Skybox"),
-             ("lighting", "Lighting"), ("shadow", "Blob shadow")]
+ENV_FLAGS = [("enabled", "Environment on"), ("skybox", "Skybox"), ("lighting", "Lighting"),
+             ("shadow", "Blob shadow"), ("gradient_bg", "Sky gradient")]
+TONEMAPS = [("none", "None (clamp)"), ("reinhard", "Soft highlights (Reinhard)"),
+            ("aces", "Filmic (ACES)")]
 ENV_COLORS = [("sky", "Sky"), ("equator", "Equator"), ("ground", "Ground"), ("sun_color", "Sun")]
 # (key, label, min, max, step, decimals)
 ENV_SLIDERS = [
@@ -1982,7 +1985,34 @@ ENV_SLIDERS = [
     ("yaw", "Rotate environment °", -180, 180, 1, 0),
     ("shadow_opacity", "Shadow opacity", 0.0, 1.0, 0.01, 2),
     ("shadow_size", "Shadow size", 0.5, 2.0, 0.05, 2),
+    ("exposure", "Exposure (stops)", -3.0, 3.0, 0.1, 1),
+    ("sky_blur", "Sky blur", 0.0, 1.0, 0.01, 2),
 ]
+# Built-in lighting presets: colours only (no panorama needed). Applied on top of ENV_DEFAULTS.
+ENV_BUILTIN_PRESETS = {
+    "Studio Soft": {"sky": [0.82, 0.84, 0.88], "equator": [0.62, 0.63, 0.66], "ground": [0.26, 0.26, 0.28],
+                    "sun_color": [1.0, 0.97, 0.92], "sun_az": 35.0, "sun_el": 45.0, "sun_int": 0.65,
+                    "highlight": 0.25, "shadow_opacity": 0.45, "gradient_bg": True},
+    "Overcast": {"sky": [0.74, 0.77, 0.80], "equator": [0.64, 0.66, 0.68], "ground": [0.38, 0.38, 0.38],
+                 "sun_color": [0.95, 0.96, 1.0], "sun_az": 0.0, "sun_el": 75.0, "sun_int": 0.15,
+                 "highlight": 0.05, "shadow_opacity": 0.22, "gradient_bg": True},
+    "Midday Sun": {"sky": [0.45, 0.62, 0.90], "equator": [0.78, 0.82, 0.86], "ground": [0.36, 0.32, 0.27],
+                   "sun_color": [1.0, 0.96, 0.88], "sun_az": 30.0, "sun_el": 62.0, "sun_int": 1.0,
+                   "highlight": 0.35, "shadow_opacity": 0.6, "gradient_bg": True,
+                   "tonemap": "reinhard", "exposure": 0.5},
+    "Golden Hour": {"sky": [0.38, 0.48, 0.75], "equator": [0.95, 0.62, 0.38], "ground": [0.30, 0.20, 0.14],
+                    "sun_color": [1.0, 0.72, 0.42], "sun_az": -60.0, "sun_el": 12.0, "sun_int": 1.0,
+                    "highlight": 0.35, "shadow_opacity": 0.5, "gradient_bg": True},
+    "Blue Hour": {"sky": [0.10, 0.14, 0.30], "equator": [0.30, 0.34, 0.52], "ground": [0.08, 0.08, 0.12],
+                  "sun_color": [0.62, 0.72, 1.0], "sun_az": 140.0, "sun_el": 25.0, "sun_int": 0.45,
+                  "highlight": 0.2, "shadow_opacity": 0.4, "exposure": 0.3, "gradient_bg": True},
+    "Dramatic Rim": {"sky": [0.12, 0.13, 0.16], "equator": [0.10, 0.10, 0.13], "ground": [0.05, 0.05, 0.06],
+                     "sun_color": [1.0, 0.95, 0.9], "sun_az": 80.0, "sun_el": 25.0, "sun_int": 1.2,
+                     "highlight": 0.5, "shadow_opacity": 0.6, "gradient_bg": True},
+    "Neutral Grey": {"sky": [0.56, 0.56, 0.56], "equator": [0.50, 0.50, 0.50], "ground": [0.40, 0.40, 0.40],
+                     "sun_color": [1.0, 1.0, 1.0], "sun_az": 20.0, "sun_el": 40.0, "sun_int": 0.55,
+                     "highlight": 0.2, "shadow_opacity": 0.35, "gradient_bg": True},
+}
 PANO_MAX_W = 2048                       # panoramas are shrunk to this width on load
 SKY_TEX_W = 1024                        # width of the (re-projected) skybox texture
 
@@ -1995,6 +2025,8 @@ def clean_env(raw) -> dict:
                 e[k] = bool(raw[k])
         if isinstance(raw.get("path"), str):
             e["path"] = raw["path"]
+        if raw.get("tonemap") in dict(TONEMAPS):
+            e["tonemap"] = raw["tonemap"]
         for key, _l, lo, hi, _s, _d in ENV_SLIDERS:
             if key in raw:
                 try:
@@ -2011,8 +2043,8 @@ def clean_env(raw) -> dict:
     return e
 
 
-PRESET_ENV_KEYS = ["skybox", "lighting", "shadow"] + [k for k, _l in ENV_COLORS] + \
-                  [k for k, _l, *_rest in ENV_SLIDERS]
+PRESET_ENV_KEYS = [k for k, _l in ENV_FLAGS if k != "enabled"] + ["tonemap"] + \
+                  [k for k, _l in ENV_COLORS] + [k for k, _l, *_rest in ENV_SLIDERS]
 
 
 def env_to_preset(env: dict, name: str) -> dict:
@@ -2186,6 +2218,9 @@ def reproject_panorama(disp: np.ndarray, up: str, yaw_deg: float, out_w: int = S
     jj, ii = np.meshgrid((np.arange(ow) + 0.5) / ow, 1.0 - (np.arange(oh) + 0.5) / oh)
     d_img = _rot_y(world_to_frame(equirect_dir(jj, ii), up), -math.radians(yaw_deg))
     us, vs = dir_to_equirect(d_img)
+    k = max(1, disp.shape[1] // out_w)               # pre-filter so small textures blur, not alias
+    if k > 1:
+        disp = _block_mean(disp, k)
     sh, sw, _ = disp.shape
     col = us * sw - 0.5
     row = np.clip((1.0 - vs) * sh - 0.5, 0, sh - 1)
@@ -2231,6 +2266,10 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
         up_src, sun_src = "vec3(0.0, 1.0, 0.0)", f"normalize({_vec3(sun_frame)})"
     else:
         up_src, sun_src = "normalize(-lightDirectionVC0)", "normalize(-lightDirectionVC1)"
+    expo = 2.0 ** float(env.get("exposure", 0.0))
+    tone = {"reinhard": "  envCol = envCol * (1.0 + envCol * 0.25) / (1.0 + envCol);\n",
+            "aces": ("  envCol = (envCol * (2.51 * envCol + 0.03)) / "
+                     "(envCol * (2.43 * envCol + 0.59) + 0.14);\n")}.get(env.get("tonemap"), "")
     return f"""
   vec3 envN = normalize(normalVCVSOutput);
   if (!gl_FrontFacing) envN = -envN;
@@ -2243,7 +2282,8 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
   float envSpec = pow(max(dot(envN, envHalf), 0.0), 32.0) * step(0.001, envNL);
   vec3 envCol = diffuseColor * (envAmb + {_vec3(sun)} * envNL)
               + {_vec3(env['sun_color'])} * (envSpec * {env['highlight'] * env['sun_int']:.4f});
-  fragOutput0 = vec4(clamp(envCol, 0.0, 1.0), opacity);
+  envCol *= {expo:.4f};
+{tone}  fragOutput0 = vec4(clamp(envCol, 0.0, 1.0), opacity);
 """
 
 
@@ -2254,6 +2294,7 @@ class EnvironmentPanel(QDialog):
     fit_requested = Signal()
     clear_requested = Signal()
     preset_loaded = Signal(object, str, str)      # env, missing panorama name, preset name
+    builtin_requested = Signal(str)
 
     def __init__(self, parent, env: dict, pano_path: str = ""):
         super().__init__(parent)
@@ -2273,6 +2314,14 @@ class EnvironmentPanel(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(8)
         row = QHBoxLayout()
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Light preset"))
+        self.preset_box = QComboBox()
+        self.preset_box.addItem("Choose…")
+        self.preset_box.addItems(list(ENV_BUILTIN_PRESETS))
+        self.preset_box.activated.connect(self._builtin_chosen)
+        prow.addWidget(self.preset_box, 1)
+        root.addLayout(prow)
         for text, fn in (("Load panorama…", self.load_pano),
                          ("Fit lighting to panorama", lambda _=False: self.fit_requested.emit()),
                          ("Clear panorama", lambda _=False: self.clear_requested.emit())):
@@ -2292,13 +2341,13 @@ class EnvironmentPanel(QDialog):
         row.addStretch(1)
         root.addLayout(row)
 
-        row = QHBoxLayout()
-        for key, label in ENV_FLAGS:
+        flags = QGridLayout()
+        for i, (key, label) in enumerate(ENV_FLAGS):
             cb = QCheckBox(label)
             cb.toggled.connect(lambda on, k=key: self._flag(k, on))
             self._checks[key] = cb
-            row.addWidget(cb)
-        root.addLayout(row)
+            flags.addWidget(cb, i // 3, i % 3)
+        root.addLayout(flags)
 
         grid = QGridLayout()
         for i, (key, label) in enumerate(ENV_COLORS):
@@ -2309,6 +2358,10 @@ class EnvironmentPanel(QDialog):
         root.addLayout(grid)
 
         form = QFormLayout()
+        self.tone_box = QComboBox()
+        self.tone_box.addItems([lab for _k, lab in TONEMAPS])
+        self.tone_box.currentIndexChanged.connect(self._tone_changed)
+        form.addRow("Tone mapping", self.tone_box)
         for key, label, lo, hi, step, dec in ENV_SLIDERS:
             s = QSlider(Qt.Horizontal)
             s.setRange(round(lo / step), round(hi / step))
@@ -2342,11 +2395,23 @@ class EnvironmentPanel(QDialog):
             cb.blockSignals(False)
         for key in self._sliders:
             self._set_slider(key, self.env[key])
+        self.tone_box.blockSignals(True)
+        self.tone_box.setCurrentIndex(max(0, [k for k, _l in TONEMAPS].index(self.env.get("tonemap", "none"))))
+        self.tone_box.blockSignals(False)
         for key in self._color_btns:
             self._style_color(key)
         if pano_path is not None:
             self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
                                     "No panorama loaded: using the three colours below.")
+
+    def _builtin_chosen(self, index: int):
+        if index > 0:
+            self.builtin_requested.emit(self.preset_box.itemText(index))
+        self.preset_box.setCurrentIndex(0)
+
+    def _tone_changed(self, index: int):
+        self.env["tonemap"] = TONEMAPS[index][0]
+        self._touched()
 
     def _set_slider(self, key: str, value: float):
         s, step, dec = self._sliders[key]
@@ -2870,6 +2935,9 @@ class Viewer(QWidget):
         self._sky_added = False
         self._blob = self._blob_src = None
         self._blob_added = False
+        self._bg_from_env = False
+        self._light_drag = None
+        self._preset_idx = -1
         try:                                      # last custom MatCap from the previous session
             self.custom = preset_to_spec(json.loads(str(self.settings.value("custom_matcap", ""))))
             self._custom_parts = custom_matcap_parts(self.custom)
@@ -2888,6 +2956,7 @@ class Viewer(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.vtk_widget = QVTKRenderWindowInteractor(self)
+        self.vtk_widget.installEventFilter(self)       # Shift + right-drag rotates the lighting
         lay.addWidget(self.vtk_widget)
 
         self.renderer = vtkRenderer()
@@ -2988,6 +3057,9 @@ class Viewer(QWidget):
         self.act_env.toggled.connect(self.set_environment_enabled)
         menu.addAction(self.act_env)
         menu.addAction("Environment settings…\tShift+L", lambda _=False: self.open_environment_panel())
+        presets = menu.addMenu("Lighting preset\tCtrl+L")
+        for preset_name in ENV_BUILTIN_PRESETS:
+            presets.addAction(preset_name, lambda _=False, n=preset_name: self.apply_builtin_preset(n))
         self.act_info = QAction("Model info\tI", menu, checkable=True)
         self.act_info.setChecked(self.info_on)
         self.act_info.toggled.connect(self.set_info_visible)
@@ -3320,12 +3392,15 @@ class Viewer(QWidget):
             self.env["path"] = ""
             self._pano, self._pano_path, self._sky_key = None, "", None
 
-    def _sync_skybox(self):
+    def _sync_skybox(self, preview: bool = False):
         want = self._env_on("skybox") and self._pano is not None
         if want:
-            key = (self._pano_path, self.up_axis, round(self.env["yaw"], 1))
+            blur = float(self.env.get("sky_blur", 0.0))      # blur = a smaller texture, smoothly enlarged
+            ow = 256 if preview else max(64, int(SKY_TEX_W * (1.0 - 0.94 * blur)) // 2 * 2)
+            key = (self._pano_path, self.up_axis, round(self.env["yaw"], 1), ow)
             if key != self._sky_key:
-                img = numpy_to_vtk_image(reproject_panorama(self._pano["disp"], self.up_axis, self.env["yaw"]))
+                img = numpy_to_vtk_image(reproject_panorama(self._pano["disp"], self.up_axis,
+                                                            self.env["yaw"], ow))
                 if self._sky_tex is None:
                     self._sky_tex = vtkTexture()
                     self._sky_tex.InterpolateOn()
@@ -3399,10 +3474,70 @@ class Viewer(QWidget):
             self.renderer.AddActor(self._blob)
             self._blob_added = True
 
+    def _sync_background(self):
+        """A colour-only environment can tint the background with a sky gradient."""
+        if self._env_on("gradient_bg") and not self._sky_added:
+            self.renderer.SetBackground(*self.env["equator"])
+            self.renderer.SetBackground2(*self.env["sky"])
+            self.renderer.SetGradientBackground(True)
+            self._bg_from_env = True
+            self._style_axes()
+        elif self._bg_from_env:
+            self._bg_from_env = False
+            self.set_background(self.bg_idx, announce=False)
+
+    def apply_builtin_preset(self, name: str):
+        ov = ENV_BUILTIN_PRESETS.get(name)
+        if ov is None:
+            return
+        self._preset_idx = list(ENV_BUILTIN_PRESETS).index(name)
+        self.apply_environment_preset(clean_env({**ENV_DEFAULTS, **ov, "path": ""}), "", name)
+
+    def cycle_lighting_preset(self):
+        names = list(ENV_BUILTIN_PRESETS)
+        self.apply_builtin_preset(names[(self._preset_idx + 1) % len(names)])
+
+    # ----- Shift + right-drag: rotate the lighting (and the sky) around the model -----
+    def eventFilter(self, obj, ev):
+        if obj is self.vtk_widget:
+            t = ev.type()
+            if (t == QEvent.MouseButtonPress and ev.button() == Qt.RightButton
+                    and bool(ev.modifiers() & Qt.ShiftModifier) and self.env.get("enabled") and self.actors):
+                self._light_drag = (ev.position().x(), self.env["sun_az"], self.env["yaw"])
+                return True                                # keep VTK from also starting a zoom
+            if self._light_drag is not None:
+                if t == QEvent.MouseMove:
+                    self._rotate_lighting(ev.position().x() - self._light_drag[0])
+                    return True
+                if t == QEvent.MouseButtonRelease:
+                    self._finish_lighting_drag()
+                    return True
+        return super().eventFilter(obj, ev)
+
+    def _rotate_lighting(self, dx: float):
+        _x0, az0, yaw0 = self._light_drag
+        deg = dx * 0.4
+        self.env["sun_az"] = (az0 + deg + 180.0) % 360.0 - 180.0
+        if self._pano is not None:                         # the sky turns with the sun
+            self.env["yaw"] = (yaw0 + deg + 180.0) % 360.0 - 180.0
+        self._sync_skybox(preview=True)                    # small texture while dragging: stays smooth
+        self._sync_shadow()
+        self._sync_env_lights()
+        self.rw.Render()
+
+    def _finish_lighting_drag(self):
+        self._light_drag = None
+        self._sync_skybox()                                # full-quality sky once the drag ends
+        self._save_env()
+        if self._env_panel is not None:
+            self._env_panel.set_env(self.env, self._pano_path)
+        self.rw.Render()
+
     def _sync_env_scene(self):
         if self.env["enabled"]:
             self._ensure_pano()
         self._sync_skybox()
+        self._sync_background()
         self._sync_shadow()
         self._sync_env_lights()
 
@@ -3536,6 +3671,7 @@ class Viewer(QWidget):
             self._env_panel.fit_requested.connect(self.fit_to_panorama)
             self._env_panel.clear_requested.connect(self.clear_panorama)
             self._env_panel.preset_loaded.connect(self.apply_environment_preset)
+            self._env_panel.builtin_requested.connect(self.apply_builtin_preset)
         else:
             self._env_panel.set_env(self.env, self._pano_path)
         self._env_panel.show()
@@ -3694,6 +3830,12 @@ class Viewer(QWidget):
 
     # ----- background + axes gizmo -----------------------------------------
     def set_background(self, idx: int, announce: bool = True):
+        if announce and self._bg_from_env:
+            self.env["gradient_bg"] = False              # the user chose a background: stop overriding it
+            self._bg_from_env = False
+            self._save_env()
+            if self._env_panel is not None:
+                self._env_panel.set_env(self.env)
         if idx >= CUSTOM_BG:
             c = QColor(str(self.settings.value("bg_custom", "#202428")))
             col = (c.redF(), c.greenF(), c.blueF())
@@ -3999,6 +4141,7 @@ class MainWindow(QMainWindow):
             ("Left", lambda: self._step(-1)), ("Right", lambda: self._step(1)),
             ("E", v.open_matcap_editor),
             ("L", v.toggle_environment), ("Shift+L", v.open_environment_panel),
+            ("Ctrl+L", v.cycle_lighting_preset),
             ("I", v.toggle_info),
             ("Esc", self.close_viewer),
         ]

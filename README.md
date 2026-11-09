@@ -1,11 +1,12 @@
-
 # Gleek3Deek
 
 A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/cecc49d3-57b9-4a23-8232-33f111a0bc51" />
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -23,8 +24,6 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
-
-<img width="1044" height="738" alt="thumbnails 002322" src="https://github.com/user-attachments/assets/f021e85d-3105-4669-b782-c5010064bd87" />
 
 ## Download (Windows, no Python needed)
 
@@ -95,11 +94,12 @@ python main.py
 | About | `F1` (or **Help → About**) |
 | Open folder | `Ctrl+O` (**File → Open folder…**) |
 | Environment settings | `Shift+L` (or **Main ▾ → Environment settings…**) |
+| Cycle built-in lighting presets | `Ctrl+L` (or **Main ▾ → Lighting preset**) |
+| Rotate the lighting and sky | `Shift` + right-drag in the viewer (with the environment on) |
 | Reset camera | `R` |
 | Close viewer | `Esc` or the ✕ button |
 
 ## MatCap editor and presets
-<img width="398" height="540" alt="698893163-3d4b81e6-af45-4aa5-91c8-e7cd3534096f" src="https://github.com/user-attachments/assets/be9fe573-a5f4-4d95-bb7b-b68c3bb21287" />
 
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
@@ -110,7 +110,7 @@ Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor
 
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
-- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
+- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
 
 Notes:
 - Image MatCaps are deliberately low resolution, so smooth materials look right but very sharp highlights get softened.
@@ -169,8 +169,6 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 
 ## Environment (sky, lighting, shadow)
 
-<img width="676" height="501" alt="keyshot-09 014413" src="https://github.com/user-attachments/assets/10253048-474b-4fb2-ba51-555d15f620c9" />
-
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
 What it does:
@@ -180,9 +178,15 @@ What it does:
 3. **Sun:** one directional light with a direction, colour and intensity, plus a simple highlight.
 4. **Blob shadow:** a soft dark patch on a plane under the model. It scales with the model, shifts away from the sun and fades with the opacity slider. There is no shadow map and no extra render pass.
 
-Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`, PNG, JPG, TIFF, BMP). The colours and sun are fitted to it automatically: the three bands are averaged from the image and the sun is the brightest spot. **Fit lighting to panorama** repeats that after you have made changes. Without a panorama you can still use the lighting and shadow with your own three colours.
+Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`, PNG, JPG, TIFF, BMP or WebP). The colours and sun are fitted to it automatically: the three bands are averaged from the image and the sun is the brightest spot. **Fit lighting to panorama** repeats that after you have made changes. Without a panorama you can still use the lighting and shadow with your own three colours.
 
-**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on).
+**Built-in lighting presets:** you don't need a panorama to get a good look. The **Light preset** box in the Environment panel (or **Main ▾ → Lighting preset**, or `Ctrl+L` to cycle) offers Studio Soft, Overcast, Midday Sun, Golden Hour, Blue Hour, Dramatic Rim and Neutral Grey. Each sets the three ambient colours, the sun and the shadow, and tints the background with a matching sky gradient.
+
+**Exposure and tone mapping:** the **Exposure** slider brightens or darkens the lighting in stops (it doesn't change the sky image or MatCaps). **Tone mapping** can be left off, set to *Soft highlights* (Reinhard) or *Filmic* (ACES), which are cheap curves that keep bright areas from clipping. **Sky blur** softens the panorama behind the model. **Sky gradient** replaces the background with a gradient from the equator colour up to the sky colour when no panorama is showing.
+
+**Rotate the lighting:** hold `Shift` and right-drag in the viewer to swing the sun, and the panorama with it, around the model. The shadow follows.
+
+**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on). 
 
 The panorama is stored as a path, not embedded. When a preset is loaded on another machine, the viewer also looks for the same file name next to the preset file, so you can share a preset together with its panorama in one folder. If the panorama can't be found, the preset's colours and sun are still applied. Values left out fall back to the defaults, and out-of-range values are clamped.
 
