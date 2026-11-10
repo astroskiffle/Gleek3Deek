@@ -104,17 +104,17 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.6.6",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "",                  # optional extra line, e.g. a website or contact address
+    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": ("[Placeholder] Replace this text with your own legal notice, terms of use "
-                     "and contact details."),
+    "legal_notice": ("[Placeholder]"
+                     ""),
     # --- licence and attributions
     "licence_heading": "Licence",
     "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
