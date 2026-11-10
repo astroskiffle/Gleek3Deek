@@ -54,6 +54,7 @@ from vtkmodules.vtkInteractionWidgets import vtkOrientationMarkerWidget
 from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.util import numpy_support
 from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
+from vtkmodules.vtkCommonMath import vtkMatrix4x4
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
 from vtkmodules.vtkFiltersCore import (vtkAppendPolyData, vtkCleanPolyData, vtkPolyDataNormals,
                                        vtkQuadricDecimation, vtkTriangleFilter)
@@ -103,17 +104,17 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.6.5",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": ("[Placeholder]"
-                     ""),
+    "legal_notice": ("[Placeholder] Replace this text with your own legal notice, terms of use "
+                     "and contact details."),
     # --- licence and attributions
     "licence_heading": "Licence",
     "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
@@ -2890,6 +2891,216 @@ class AboutDialog(QDialog):
         root.addLayout(row)
 
 
+# ---------------------------------------------------------------------------
+# Scene helpers: ground grid, camera, display and screenshot options
+# ---------------------------------------------------------------------------
+def nice_step(x: float) -> float:
+    """Round a length up to 1, 2, 5 or 10 times a power of ten."""
+    x = max(float(x), 1e-12)
+    p = 10.0 ** math.floor(math.log10(x))
+    for m in (1, 2, 5, 10):
+        if m * p >= x * 0.999:
+            return m * p
+    return 10 * p
+
+
+def ground_grid_geometry(lo, hi, up: str):
+    """Grid plane under the model. Returns (origin, point1, point2, cells_per_side, cell_size).
+    Lines are aligned to whole multiples of the cell size, so they line up with the world axes.
+    point1 / point2 are ordered so the plane's normal points up."""
+    lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+    h0, h1, vax = (0, 1, 2) if up == "Z" else (0, 2, 1)
+    ext = np.maximum(hi - lo, 1e-9)
+    foot = 2.2 * max(ext[h0], ext[h1])
+    cell = nice_step(foot / 12.0)
+    half_cells = min(max(int(math.ceil(foot / 2.0 / cell)), 2), 40)
+    half = half_cells * cell
+    c0 = round(((lo[h0] + hi[h0]) / 2.0) / cell) * cell
+    c1 = round(((lo[h1] + hi[h1]) / 2.0) / cell) * cell
+    level = lo[vax] - 0.004 * float(ext.max())          # a hair below the shadow blob
+    o0, o1, s = c0 - half, c1 - half, 2.0 * half
+    if up == "Z":
+        o, p1, p2 = (o0, o1, level), (o0 + s, o1, level), (o0, o1 + s, level)
+    else:
+        o, p1, p2 = (o0, level, o1), (o0, level, o1 + s), (o0 + s, level, o1)
+    return o, p1, p2, 2 * half_cells, cell
+
+
+def fov_distance(dist: float, old_deg: float, new_deg: float) -> float:
+    """Camera distance that keeps the subject the same size when the field of view changes."""
+    return dist * math.tan(math.radians(old_deg / 2.0)) / math.tan(math.radians(new_deg / 2.0))
+
+
+def turntable_rel(rel, up, view_up, theta: float, d_el: float, limit_deg: float = 88.0):
+    """Turntable orbit: new camera offset (camera position minus focal point).
+    Turn by `theta` about the world up axis, then tilt by `d_el`, never past +/- limit_deg from the
+    horizon. The horizon never rolls and the camera can't flip over the poles."""
+    rel, up = np.asarray(rel, float), np.asarray(up, float)
+    r = float(np.linalg.norm(rel))
+    if r < 1e-12:
+        return rel
+    c, s = math.cos(theta), math.sin(theta)
+    rel = rel * c + np.cross(up, rel) * s + up * float(np.dot(up, rel)) * (1.0 - c)   # azimuth about up
+    height = float(np.dot(rel, up))
+    horiz = rel - height * up
+    hn = float(np.linalg.norm(horiz))
+    if hn < 1e-9 * r:                                   # looking straight along the up axis
+        vu = np.asarray(view_up, float)
+        horiz = vu - float(np.dot(vu, up)) * up
+        hn = float(np.linalg.norm(horiz))
+        if hn < 1e-9:
+            horiz = np.cross(up, [1.0, 0.0, 0.0] if abs(up[0]) < 0.9 else [0.0, 1.0, 0.0])
+            hn = float(np.linalg.norm(horiz))
+    el = math.atan2(height, hn) + d_el
+    lim = math.radians(limit_deg)
+    el = max(-lim, min(lim, el))
+    return r * (math.cos(el) * (horiz / hn) + math.sin(el) * up)
+
+
+def matte_rgba(on_black: np.ndarray, on_white: np.ndarray) -> np.ndarray:
+    """Recover colour + transparency from the same render on a black and on a white backdrop.
+    A pixel is alpha*colour + (1-alpha)*backdrop, so the two renders differ by (1-alpha)*255."""
+    a, b = on_black.astype(np.float32), on_white.astype(np.float32)
+    alpha = np.clip(1.0 - (b - a).mean(axis=2) / 255.0, 0.0, 1.0)
+    color = np.where(alpha[..., None] > 1e-3, a / np.maximum(alpha[..., None], 1e-3), 0.0)
+    return np.dstack([np.clip(color, 0, 255), alpha * 255.0]).astype(np.uint8)
+
+
+SHOT_SCALES = [1, 2, 4]
+
+
+class ScenePanel(QDialog):
+    """Floating panel for ground, camera, display and screenshot options. It talks to the
+    viewer directly; every control has a matching menu item or key as well."""
+
+    def __init__(self, parent, viewer):
+        super().__init__(parent)
+        self.viewer = viewer
+        self.setWindowTitle("Scene")
+        self.setWindowFlag(Qt.Tool, True)
+        self.setMinimumWidth(400)
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+
+        def heading(text):
+            lab = QLabel(text)
+            lab.setObjectName("aboutHeading")
+            root.addWidget(lab)
+
+        heading("Ground")
+        self.grid_cb = QCheckBox("Ground grid  (G)")
+        self.grid_cb.toggled.connect(viewer.act_grid.setChecked)
+        root.addWidget(self.grid_cb)
+        row = QHBoxLayout()
+        for text, fn in (("Move to ground", viewer.move_to_ground), ("Move to origin", viewer.move_to_origin),
+                         ("Reset position", viewer.reset_position)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        root.addLayout(row)
+        note = QLabel("The grid sits at the model's lowest point. Moving the model changes where it "
+                      "sits in the world, and in files you export.")
+        note.setObjectName("barLabel")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        heading("Camera")
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Field of view"))
+        self.fov = QSlider(Qt.Horizontal)
+        self.fov.setRange(10, 90)
+        self.fov.valueChanged.connect(self._fov_changed)
+        self.fov_label = QLabel("")
+        self.fov_label.setFixedWidth(40)
+        row.addWidget(self.fov, 1)
+        row.addWidget(self.fov_label)
+        root.addLayout(row)
+        self.turn_cb = QCheckBox("Lock horizon: turntable rotation  (H)")
+        self.turn_cb.toggled.connect(viewer.act_turntable.setChecked)
+        root.addWidget(self.turn_cb)
+        row = QHBoxLayout()
+        self.ortho_cb = QCheckBox("Orthographic  (C)")
+        self.ortho_cb.toggled.connect(viewer.act_ortho.setChecked)
+        row.addWidget(self.ortho_cb)
+        fit = QPushButton("Fit view  (F)")
+        fit.clicked.connect(viewer.fit_view)
+        row.addWidget(fit)
+        root.addLayout(row)
+        grid = QGridLayout()
+        grid.addWidget(QLabel("Saved views"), 0, 0)
+        for n in (1, 2, 3):
+            save, go = QPushButton(f"Save {n}"), QPushButton(f"Go {n}")
+            save.setToolTip(f"Ctrl+Shift+{n}")
+            go.setToolTip(f"Alt+{n}")
+            save.clicked.connect(lambda _=False, n=n: viewer.save_bookmark(n))
+            go.clicked.connect(lambda _=False, n=n: viewer.go_bookmark(n))
+            grid.addWidget(save, 1, n - 1)
+            grid.addWidget(go, 2, n - 1)
+        root.addLayout(grid)
+
+        heading("Display")
+        self.edges_cb = QCheckBox("Edges over shaded  (Shift+W)")
+        self.edges_cb.toggled.connect(viewer.act_edges.setChecked)
+        root.addWidget(self.edges_cb)
+
+        heading("Screenshot")
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Size"))
+        self.scale_box = QComboBox()
+        self.scale_box.addItems(["1×  (window size)", "2×", "4×"])
+        self.scale_box.currentIndexChanged.connect(self._scale_changed)
+        row.addWidget(self.scale_box, 1)
+        self.trans_cb = QCheckBox("Transparent background")
+        self.trans_cb.toggled.connect(self._trans_changed)
+        row.addWidget(self.trans_cb)
+        root.addLayout(row)
+        row = QHBoxLayout()
+        for text, fn in (("Save screenshot…  (F12)", viewer.save_screenshot),
+                         ("Copy to clipboard  (Ctrl+C)", viewer.copy_screenshot)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        root.addLayout(row)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        root.addLayout(row)
+        for act in (viewer.act_grid, viewer.act_edges, viewer.act_ortho, viewer.act_turntable):
+            act.toggled.connect(self.sync)             # keep in step when a key is used instead
+        self.sync()
+
+    def sync(self, *_):
+        v = self.viewer
+        for cb, on in ((self.grid_cb, v.grid_on), (self.edges_cb, v.edges_on),
+                       (self.ortho_cb, v.act_ortho.isChecked()), (self.trans_cb, v.shot_transparent),
+                       (self.turn_cb, v.turntable)):
+            cb.blockSignals(True)
+            cb.setChecked(bool(on))
+            cb.blockSignals(False)
+        self.fov.blockSignals(True)
+        self.fov.setValue(int(round(v.fov)))
+        self.fov.blockSignals(False)
+        self.fov_label.setText(f"{int(round(v.fov))}°")
+        self.scale_box.blockSignals(True)
+        self.scale_box.setCurrentIndex(SHOT_SCALES.index(v.shot_scale) if v.shot_scale in SHOT_SCALES else 1)
+        self.scale_box.blockSignals(False)
+
+    def _fov_changed(self, deg: int):
+        self.fov_label.setText(f"{deg}°")
+        self.viewer.set_fov(deg)
+
+    def _scale_changed(self, idx: int):
+        self.viewer.shot_scale = SHOT_SCALES[idx]
+        self.viewer.settings.setValue("shot_scale", self.viewer.shot_scale)
+
+    def _trans_changed(self, on: bool):
+        self.viewer.shot_transparent = bool(on)
+        self.viewer.settings.setValue("shot_transparent", "true" if on else "false")
+
+
 # (name, bottom colour, top colour); equal colours = flat background
 BACKGROUNDS = [
     ("Dark gradient", (0.07, 0.08, 0.10), (0.17, 0.19, 0.23)),
@@ -2938,6 +3149,17 @@ class Viewer(QWidget):
         self._bg_from_env = False
         self._light_drag = None
         self._preset_idx = -1
+        self.fov = float(_setting_int(self.settings, "fov", 30))
+        self.grid_on = str(self.settings.value("grid_on", "false")).lower() in ("1", "true")
+        self.edges_on = str(self.settings.value("edges_on", "false")).lower() in ("1", "true")
+        self.shot_scale = _setting_int(self.settings, "shot_scale", 2)
+        self.shot_transparent = str(self.settings.value("shot_transparent", "false")).lower() in ("1", "true")
+        self._grid = self._grid_src = None
+        self._grid_added = False
+        self._bookmarks = {}
+        self._scene_panel = None
+        self.turntable = str(self.settings.value("turntable", "true")).lower() in ("1", "true")
+        self._tt_drag = None
         try:                                      # last custom MatCap from the previous session
             self.custom = preset_to_spec(json.loads(str(self.settings.value("custom_matcap", ""))))
             self._custom_parts = custom_matcap_parts(self.custom)
@@ -2970,6 +3192,7 @@ class Viewer(QWidget):
         self.style.AddObserver("EndInteractionEvent", lambda *a: setattr(self, "_dragging", False))
         self.iren.SetInteractorStyle(self.style)
         self.iren.Initialize()
+        self.renderer.GetActiveCamera().SetViewAngle(self.fov)
 
         self._orbit_timer = QTimer(self)
         self._orbit_timer.timeout.connect(self._orbit_tick)
@@ -3060,6 +3283,19 @@ class Viewer(QWidget):
         presets = menu.addMenu("Lighting preset\tCtrl+L")
         for preset_name in ENV_BUILTIN_PRESETS:
             presets.addAction(preset_name, lambda _=False, n=preset_name: self.apply_builtin_preset(n))
+        self.act_grid = QAction("Ground grid\tG", menu, checkable=True)
+        self.act_grid.setChecked(self.grid_on)
+        self.act_grid.toggled.connect(self.set_grid)
+        menu.addAction(self.act_grid)
+        self.act_edges = QAction("Edges over shaded\tShift+W", menu, checkable=True)
+        self.act_edges.setChecked(self.edges_on)
+        self.act_edges.toggled.connect(self.set_edges)
+        menu.addAction(self.act_edges)
+        self.act_turntable = QAction("Lock horizon (turntable)\tH", menu, checkable=True)
+        self.act_turntable.setChecked(self.turntable)
+        self.act_turntable.toggled.connect(self.set_turntable)
+        menu.addAction(self.act_turntable)
+        menu.addAction("Scene settings…\tShift+G", lambda _=False: self.open_scene_panel())
         self.act_info = QAction("Model info\tI", menu, checkable=True)
         self.act_info.setChecked(self.info_on)
         self.act_info.toggled.connect(self.set_info_visible)
@@ -3097,6 +3333,7 @@ class Viewer(QWidget):
         self.actors = []
         self.overlay.hide()
         self._remove_shadow()
+        self._remove_ground()
         self._sync_env_lights()
         if getattr(self, "info_panel", None) is not None:
             self.info_panel.hide()
@@ -3125,6 +3362,10 @@ class Viewer(QWidget):
         self._apply_transparency()
         self.set_mode("surface")
         self.set_view("front")
+        self._bookmarks = {}                       # saved views belong to the previous model
+        for a in actors:
+            a._orig_um = self._user_matrix_list(a)  # so "Reset position" can undo moves
+        self._apply_edges()
         self._env_refresh()
         self._sync_axes()
         self._place_hud()
@@ -3176,6 +3417,7 @@ class Viewer(QWidget):
                 self._clear_replacements()
                 self._env_code = ""
         self._sync_env_lights(mode)
+        self._apply_edges(mode)
         self.mode = mode
         label = entries[self.matcap_idx][0]
         self.matcap_btn.setText((label if len(label) <= 16 else label[:15] + "…")
@@ -3499,20 +3741,78 @@ class Viewer(QWidget):
 
     # ----- Shift + right-drag: rotate the lighting (and the sky) around the model -----
     def eventFilter(self, obj, ev):
-        if obj is self.vtk_widget:
-            t = ev.type()
-            if (t == QEvent.MouseButtonPress and ev.button() == Qt.RightButton
-                    and bool(ev.modifiers() & Qt.ShiftModifier) and self.env.get("enabled") and self.actors):
-                self._light_drag = (ev.position().x(), self.env["sun_az"], self.env["yaw"])
-                return True                                # keep VTK from also starting a zoom
-            if self._light_drag is not None:
-                if t == QEvent.MouseMove:
-                    self._rotate_lighting(ev.position().x() - self._light_drag[0])
-                    return True
-                if t == QEvent.MouseButtonRelease:
-                    self._finish_lighting_drag()
-                    return True
+        if obj is not self.vtk_widget:
+            return super().eventFilter(obj, ev)
+        t = ev.type()
+        if t in (QEvent.KeyPress, QEvent.KeyRelease):
+            # Every key is handled by the app's own shortcuts. VTK's built-in letter keys (S = solid,
+            # W = wireframe, P = pick, E/Q = exit, ...) must never reach the scene: they changed the
+            # ground grid and could alter other props.
+            return True
+        # Shift + right-drag: rotate the lighting
+        if (t == QEvent.MouseButtonPress and ev.button() == Qt.RightButton
+                and bool(ev.modifiers() & Qt.ShiftModifier) and self.env.get("enabled") and self.actors):
+            self._light_drag = (ev.position().x(), self.env["sun_az"], self.env["yaw"])
+            return True                                    # keep VTK from also starting a zoom
+        if self._light_drag is not None:
+            if t == QEvent.MouseMove:
+                self._rotate_lighting(ev.position().x() - self._light_drag[0])
+                return True
+            if t == QEvent.MouseButtonRelease:
+                self._finish_lighting_drag()
+                return True
+        # Plain left-drag with the horizon locked: turntable orbit instead of trackball
+        if (self.turntable and self.actors and t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton
+                and not bool(ev.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier))):
+            self._tt_drag = (ev.position().x(), ev.position().y())
+            self._dragging = True                          # pauses auto-orbit while you drag
+            self._level_horizon()
+            return True
+        if self._tt_drag is not None:
+            if t == QEvent.MouseMove:
+                x, y = ev.position().x(), ev.position().y()
+                self._turntable_rotate(x - self._tt_drag[0], y - self._tt_drag[1])
+                self._tt_drag = (x, y)
+                return True
+            if t == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton:
+                self._tt_drag = None
+                self._dragging = False
+                return True
         return super().eventFilter(obj, ev)
+
+    # ----- turntable (locked horizon) vs trackball rotation -----
+    def _level_horizon(self):
+        """Snap the camera's up direction to the model's up axis (unless looking straight along it)."""
+        cam = self.renderer.GetActiveCamera()
+        u = np.array(self._axes_vectors()[0])
+        d = np.array(cam.GetFocalPoint()) - np.array(cam.GetPosition())
+        n = float(np.linalg.norm(d))
+        if n > 1e-12 and abs(float(np.dot(d / n, u))) < 0.9995:
+            cam.SetViewUp(*u)
+            cam.OrthogonalizeViewUp()
+
+    def _turntable_rotate(self, dx: float, dy: float):
+        cam = self.renderer.GetActiveCamera()
+        u = np.array(self._axes_vectors()[0])
+        fp = np.array(cam.GetFocalPoint())
+        w, h = max(self.vtk_widget.width(), 1), max(self.vtk_widget.height(), 1)
+        rel = turntable_rel(np.array(cam.GetPosition()) - fp, u, np.array(cam.GetViewUp()),
+                            math.radians(-dx * 200.0 / w), math.radians(dy * 200.0 / h))
+        cam.SetPosition(*(fp + rel))
+        cam.SetViewUp(*u)
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+
+    def set_turntable(self, on: bool):
+        self.turntable = bool(on)
+        self.settings.setValue("turntable", "true" if on else "false")
+        if on:
+            self._level_horizon()
+            self.rw.Render()
+        self.message.emit("Horizon locked: turntable rotation" if on else "Free rotation: trackball")
+
+    def toggle_turntable(self):
+        self.act_turntable.toggle()
 
     def _rotate_lighting(self, dx: float):
         _x0, az0, yaw0 = self._light_drag
@@ -3539,6 +3839,7 @@ class Viewer(QWidget):
         self._sync_skybox()
         self._sync_background()
         self._sync_shadow()
+        self._sync_ground()
         self._sync_env_lights()
 
     def _env_refresh(self):
@@ -3763,6 +4064,199 @@ class Viewer(QWidget):
         self.message.emit("Export failed")
         QMessageBox.warning(self.window(), "Export / convert", f"The export did not finish.\n\n{msg}")
 
+    # ----- scene helpers: fit, field of view, saved views, ground, edges ----
+    def fit_view(self):
+        """F: re-centre and re-fit the model without changing the viewing direction."""
+        if not self.actors:
+            return
+        self.renderer.ResetCamera()
+        self.renderer.GetActiveCamera().Zoom(1.05)
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+
+    def set_fov(self, deg: float):
+        """Change the field of view; the camera moves so the model stays the same size."""
+        deg = max(10.0, min(90.0, float(deg)))
+        cam = self.renderer.GetActiveCamera()
+        if not cam.GetParallelProjection():
+            fp = np.array(cam.GetFocalPoint())
+            offset = np.array(cam.GetPosition()) - fp
+            n = float(np.linalg.norm(offset))
+            if n > 1e-9:
+                new_dist = fov_distance(n, cam.GetViewAngle(), deg)
+                cam.SetViewAngle(deg)
+                cam.SetPosition(*(fp + offset / n * new_dist))
+            else:
+                cam.SetViewAngle(deg)
+        else:
+            cam.SetViewAngle(deg)
+        self.fov = deg
+        self.settings.setValue("fov", int(round(deg)))
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+
+    def save_bookmark(self, n: int):
+        if not self.actors:
+            return
+        cam = self.renderer.GetActiveCamera()
+        self._bookmarks[n] = {"pos": cam.GetPosition(), "fp": cam.GetFocalPoint(), "up": cam.GetViewUp(),
+                              "angle": cam.GetViewAngle(), "par": cam.GetParallelProjection(),
+                              "scale": cam.GetParallelScale()}
+        self.message.emit(f"Saved camera view {n}  (Alt+{n} to return)")
+
+    def go_bookmark(self, n: int):
+        b = self._bookmarks.get(n)
+        if b is None:
+            self.message.emit(f"No camera view {n} saved yet  (Ctrl+Shift+{n} saves one)")
+            return
+        cam = self.renderer.GetActiveCamera()
+        cam.SetPosition(*b["pos"])
+        cam.SetFocalPoint(*b["fp"])
+        cam.SetViewUp(*b["up"])
+        cam.SetViewAngle(b["angle"])
+        cam.SetParallelProjection(bool(b["par"]))
+        cam.SetParallelScale(b["scale"])
+        self.fov = b["angle"]
+        self.act_ortho.blockSignals(True)
+        self.act_ortho.setChecked(bool(b["par"]))
+        self.act_ortho.blockSignals(False)
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+
+    # -- placement
+    def _model_bounds(self):
+        bb = np.array([a.GetBounds() for a in self.actors], dtype=float).reshape(-1, 3, 2)
+        return bb[:, :, 0].min(0), bb[:, :, 1].max(0)
+
+    @staticmethod
+    def _user_matrix_list(a):
+        m = a.GetUserMatrix()
+        return None if m is None else [m.GetElement(i, j) for i in range(4) for j in range(4)]
+
+    def _translate_world(self, delta):
+        """Shift every part by `delta` in world space (composed after any placement the file has)."""
+        t = vtkMatrix4x4()
+        for i in range(3):
+            t.SetElement(i, 3, float(delta[i]))
+        for a in self.actors:
+            old = a.GetUserMatrix()
+            new = vtkMatrix4x4()
+            vtkMatrix4x4.Multiply4x4(t, old if old is not None else vtkMatrix4x4(), new)
+            a.SetUserMatrix(new)
+        self._after_move()
+
+    def _after_move(self):
+        self._sync_ground()
+        self._sync_shadow()
+        self.renderer.ResetCamera()
+        self.renderer.ResetCameraClippingRange()
+        self.rw.Render()
+
+    def move_to_ground(self):
+        if not self.actors:
+            return
+        lo, _hi = self._model_bounds()
+        vax = 2 if self.up_axis == "Z" else 1
+        d = [0.0, 0.0, 0.0]
+        d[vax] = -lo[vax]
+        self._translate_world(d)
+        self.message.emit("Moved to the ground (lowest point at height 0)")
+
+    def move_to_origin(self):
+        if not self.actors:
+            return
+        lo, hi = self._model_bounds()
+        self._translate_world(-(lo + hi) / 2.0)
+        self.message.emit("Moved to the origin (centre of the model at 0, 0, 0)")
+
+    def reset_position(self):
+        if not self.actors:
+            return
+        for a in self.actors:
+            flat = getattr(a, "_orig_um", None)
+            m = vtkMatrix4x4()
+            if flat is not None:
+                for i in range(4):
+                    for j in range(4):
+                        m.SetElement(i, j, flat[i * 4 + j])
+            a.SetUserMatrix(m)
+        self._after_move()
+        self.message.emit("Position reset to the file's own placement")
+
+    # -- ground grid
+    def _remove_ground(self):
+        if self._grid_added:
+            self.renderer.RemoveActor(self._grid)
+            self._grid_added = False
+
+    def _sync_ground(self):
+        if not (self.grid_on and self.actors):
+            self._remove_ground()
+            return
+        lo, hi = self._model_bounds()
+        o, p1, p2, n, _cell = ground_grid_geometry(lo, hi, self.up_axis)
+        if self._grid is None:
+            self._grid_src = vtkPlaneSource()
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(self._grid_src.GetOutputPort())
+            self._grid = vtkActor()
+            self._grid.SetMapper(m)
+            prop = self._grid.GetProperty()
+            prop.SetRepresentationToWireframe()
+            prop.LightingOff()
+            prop.SetColor(0.62, 0.68, 0.78)
+            prop.SetOpacity(0.35)
+            prop.SetLineWidth(1.0)
+            self._grid.UseBoundsOff()
+            self._grid.SetPickable(False)
+        self._grid.GetProperty().SetRepresentationToWireframe()   # stays a grid whatever else happens
+        self._grid_src.SetOrigin(*o)
+        self._grid_src.SetPoint1(*p1)
+        self._grid_src.SetPoint2(*p2)
+        self._grid_src.SetXResolution(n)
+        self._grid_src.SetYResolution(n)
+        self._grid_src.Update()
+        if not self._grid_added:
+            self.renderer.AddActor(self._grid)
+            self._grid_added = True
+
+    def set_grid(self, on: bool):
+        self.grid_on = bool(on)
+        self.settings.setValue("grid_on", "true" if on else "false")
+        self._sync_ground()
+        self.rw.Render()
+
+    def toggle_grid(self):
+        self.act_grid.toggle()
+
+    # -- edges over shaded
+    def _apply_edges(self, mode=None):
+        on = self.edges_on and (mode or self.mode) == "surface"
+        for a in self.actors:
+            p = a.GetProperty()
+            if on:
+                p.EdgeVisibilityOn()
+                p.SetEdgeColor(0.08, 0.10, 0.14)
+            else:
+                p.EdgeVisibilityOff()
+
+    def set_edges(self, on: bool):
+        self.edges_on = bool(on)
+        self.settings.setValue("edges_on", "true" if on else "false")
+        self._apply_edges()
+        self.rw.Render()
+
+    def toggle_edges(self):
+        self.act_edges.toggle()
+
+    def open_scene_panel(self):
+        if self._scene_panel is None:
+            self._scene_panel = ScenePanel(self.window(), self)
+        self._scene_panel.sync()
+        self._scene_panel.show()
+        self._scene_panel.raise_()
+        self._scene_panel.activateWindow()
+
     # ----- transparency (solid by default) ---------------------------------
     def _tr_actors(self):
         return [a for a in self.actors if getattr(a, "_tr", None) is not None]
@@ -3905,36 +4399,65 @@ class Viewer(QWidget):
         self.rw.Render()
 
     # ----- screenshots ------------------------------------------------------
+    def _grab_pass(self, background, scale: int):
+        """One capture of the render window. background=None keeps what the viewer shows;
+        a colour tuple temporarily replaces it with a flat colour (no sky, no gradient)."""
+        if background is not None:
+            self.renderer.SetBackground(*background)
+            self.renderer.SetBackground2(*background)
+            self.renderer.SetGradientBackground(False)
+            if self._sky_added:
+                self.renderer.RemoveActor(self._skybox)
+        self.rw.Render()
+        for s in [x for x in dict.fromkeys([scale, 2, 1]) if x <= scale]:
+            try:
+                w2i = vtkWindowToImageFilter()
+                w2i.SetInput(self.rw)
+                w2i.SetScale(s)
+                w2i.SetInputBufferTypeToRGB()
+                w2i.ReadFrontBufferOff()
+                w2i.Update()
+                vimg = w2i.GetOutput()
+                w, h, _ = vimg.GetDimensions()
+                if w == 0 or h == 0:
+                    continue
+                arr = numpy_support.vtk_to_numpy(vimg.GetPointData().GetScalars())
+                return np.ascontiguousarray(arr.reshape(h, w, 3)[::-1]), s
+            except Exception:
+                continue
+        return None, scale
+
     def grab_image(self):
         if not self.actors:
             return None
+        scale = int(self.shot_scale)
         axes_were_on = self._axes_widget is not None and self.axes_on
         if axes_were_on:
             self._axes_widget.SetEnabled(0)               # clean shot without the gizmo
-        self.rw.Render()
         try:
-            for scale in (2, 1):
-                try:
-                    w2i = vtkWindowToImageFilter()
-                    w2i.SetInput(self.rw)
-                    w2i.SetScale(scale)
-                    w2i.SetInputBufferTypeToRGB()
-                    w2i.ReadFrontBufferOff()
-                    w2i.Update()
-                    vimg = w2i.GetOutput()
-                    w, h, _ = vimg.GetDimensions()
-                    if w == 0 or h == 0:
-                        continue
-                    arr = numpy_support.vtk_to_numpy(vimg.GetPointData().GetScalars())
-                    arr = np.ascontiguousarray(arr.reshape(h, w, 3)[::-1])
-                    return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
-                except Exception:
-                    continue
-            return None
+            if self.shot_transparent:
+                black, s = self._grab_pass((0.0, 0.0, 0.0), scale)
+                white, _ = self._grab_pass((1.0, 1.0, 1.0), s) if black is not None else (None, s)
+                if black is None or white is None or black.shape != white.shape:
+                    return None
+                rgba = matte_rgba(black, white)
+                h, w, _ = rgba.shape
+                return QImage(rgba.data, w, h, 4 * w, QImage.Format_RGBA8888).copy()
+            arr, _s = self._grab_pass(None, scale)
+            if arr is None:
+                return None
+            h, w, _ = arr.shape
+            return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         finally:
+            if self._sky_added:
+                self.renderer.AddActor(self._skybox)
+            if self._bg_from_env:
+                self._sync_background()
+            else:
+                self.set_background(self.bg_idx, announce=False)
             if axes_were_on:
                 self._axes_widget.SetEnabled(1)
-                self.rw.Render()
+            self.rw.Render()
 
     def save_screenshot(self):
         img = self.grab_image()
@@ -4143,10 +4666,15 @@ class MainWindow(QMainWindow):
             ("L", v.toggle_environment), ("Shift+L", v.open_environment_panel),
             ("Ctrl+L", v.cycle_lighting_preset),
             ("I", v.toggle_info),
+            ("G", v.toggle_grid), ("F", v.fit_view), ("H", v.toggle_turntable),
+            ("Shift+W", v.toggle_edges), ("Shift+G", v.open_scene_panel),
             ("Esc", self.close_viewer),
         ]
         for i, key in enumerate(("front", "back", "right", "left", "top", "bottom", "iso"), 1):
             bindings.append((str(i), lambda k=key: v.set_view(k)))
+        for n in (1, 2, 3):                        # saved camera views
+            bindings.append((f"Ctrl+Shift+{n}", lambda n=n: v.save_bookmark(n)))
+            bindings.append((f"Alt+{n}", lambda n=n: v.go_bookmark(n)))
         self._viewer_shortcuts = [QShortcut(QKeySequence(k), self, activated=fn)
                                   for k, fn in bindings]
         self._build_menus()

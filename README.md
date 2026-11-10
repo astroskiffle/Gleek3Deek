@@ -4,7 +4,9 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/963ce4d1-f921-49b4-9dcd-74f8b3256b95" />
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -14,6 +16,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Export / convert:** save the model as STL, OBJ or PLY, optionally simplified to a percentage of its faces.
 - **Model info:** a card with the model's vertex and face counts, dimensions, materials, textures and file size.
 - **Menus:** a File menu (open folder, export, quit) and a Help menu (About), alongside the keyboard shortcuts.
+- **Scene tools:** ground grid, field of view, saved camera views, edges over shaded, move to ground or origin, and screenshots with 1×/2×/4× size and a transparent background.
 - **Environment:** an infinite panorama sky, cheap hemispheric ambient light, one sun and a soft blob shadow, all fitted automatically from a panorama image. Built to stay fast on low-end machines.
 - **Gallery tools:** search, sort, a card-size slider, and a right-click menu to rename, copy, paste and delete files.
 - **Viewer tools:** auto-orbit, backgrounds, axes gizmo, standard views, orthographic mode, Z-up fix, screenshots, and previous/next browsing with the arrow keys.
@@ -22,8 +25,6 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
-
-<img width="1044" height="738" alt="thumbnails 002322" src="https://github.com/user-attachments/assets/21d08efe-7b8d-48e6-a853-30fc156ee706" />
 
 ## Download (Windows, no Python needed)
 
@@ -74,7 +75,7 @@ python main.py
 
 | Action | Input |
 |---|---|
-| Orbit / Zoom / Pan | Left / Right / Middle mouse drag (scroll also zooms) |
+| Orbit / Zoom / Pan | Left / Right / Middle mouse drag (scroll also zooms). Orbit is a turntable by default; press `H` for free rotation |
 | Previous / next model in the folder | `←` / `→` (or the ‹ › buttons) |
 | Auto-orbit turntable | `O` (pauses while you drag; speed is in the **View** menu) |
 | Cycle background | `B` (more options, including a custom colour, in the **View** menu) |
@@ -90,6 +91,12 @@ python main.py
 | MatCap editor | `E` (or **Main ▾ → MatCap editor…**) |
 | Environment on/off | `L` |
 | Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
+| Scene settings panel | `Shift+G` (or **Main ▾ → Scene settings…**) |
+| Ground grid on/off | `G` |
+| Fit the model in view (keeps your angle) | `F` |
+| Lock the horizon (turntable) / free rotation | `H` (on by default) |
+| Edges over shaded | `Shift+W` |
+| Save / return to a camera view (1–3) | `Ctrl+Shift+1…3` / `Alt+1…3` |
 | Export / convert | `Ctrl+E` (or **File → Export / convert…**) |
 | About | `F1` (or **Help → About**) |
 | Open folder | `Ctrl+O` (**File → Open folder…**) |
@@ -101,14 +108,21 @@ python main.py
 
 ## MatCap editor and presets
 
-<img width="714" height="504" alt="matcap redwax" src="https://github.com/user-attachments/assets/a506b0b9-6020-4bd4-94ac-d0e2f8ea65b1" />
-
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
-- **Save preset… / Load preset…:** presets are small JSON files you can share.
+- **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
+
+```json
+{
+  "gleek3deek_matcap": 1,
+  "name": "My Wax",
+  "type": "procedural",
+  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
+}
+```
 
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
@@ -169,9 +183,20 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 - **Materials and textures:** distinct materials and texture images. Plain meshes such as STL show "none (plain mesh)"
 - **Has:** vertex colours and UV coordinates, when present
 
-## Environment (sky, lighting, shadow)
+## Scene settings (ground, camera, display, screenshots)
 
-<img width="922" height="538" alt="Hdri dragon" src="https://github.com/user-attachments/assets/805a8337-d27d-43fb-b9b4-aa4d6c9d33e2" />
+Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with:
+
+- **Ground grid (`G`):** a flat grid under the model. Its lines follow the world axes and its cell size adapts to the model. It sits at the model's lowest point, next to the blob shadow.
+- **Move to ground, Move to origin, Reset position:** *Move to ground* drops the model so its lowest point is at height 0. *Move to origin* puts the centre of the model at 0, 0, 0. *Reset position* undoes both. These change where the model sits in the world, so they also affect files you export.
+- **Field of view:** 10° to 90°. The camera moves as you change it so the model stays the same size, which gives you a flatter or more dramatic perspective.
+- **Lock horizon (`H`), on by default:** left-drag orbits like a turntable. The model's up direction always stays up, so the horizon never tilts, and the camera stops just short of looking straight up or down. Switch it off for free trackball rotation. `Shift`+left-drag still pans, and holding `Ctrl` while left-dragging still rolls in trackball mode.
+- **Orthographic (`C`) and Fit view (`F`):** *Fit* re-centres and re-frames the model without changing the angle you are looking from (`R` still resets to the front view).
+- **Saved views:** save up to three camera positions with `Ctrl+Shift+1…3` and come back with `Alt+1…3`. They belong to the open model and are cleared when you open another.
+- **Edges over shaded (`Shift+W`):** draws the mesh edges on top of the solid surface. It applies in the normal shaded view.
+- **Screenshot size and transparency:** choose 1×, 2× or 4× the window size, and optionally a **transparent background**. `F12` and `Ctrl+C` use these settings. The shadow blob stays semi-transparent in the PNG, so it drops straight onto another image.
+
+## Environment (sky, lighting, shadow)
 
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
@@ -190,7 +215,16 @@ Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`,
 
 **Rotate the lighting:** hold `Shift` and right-drag in the viewer to swing the sun, and the panorama with it, around the model. The shadow follows.
 
-**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on). 
+**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on). A preset looks like this:
+
+```json
+{
+  "gleek3deek_environment": 1,
+  "name": "Golden hour",
+  "settings": { "sky": [0.5, 0.65, 0.85], "sun_az": 35, "sun_el": 20, "sun_int": 0.9 },
+  "panorama": "C:/Panoramas/sunset.hdr"
+}
+```
 
 The panorama is stored as a path, not embedded. When a preset is loaded on another machine, the viewer also looks for the same file name next to the preset file, so you can share a preset together with its panorama in one folder. If the panorama can't be found, the preset's colours and sun are still applied. Values left out fall back to the defaults, and out-of-range values are clamped.
 
