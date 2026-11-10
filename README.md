@@ -117,15 +117,6 @@ Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
 - **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
 
-```json
-{
-  "gleek3deek_matcap": 1,
-  "name": "My Wax",
-  "type": "procedural",
-  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
-}
-```
-
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
 - **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
