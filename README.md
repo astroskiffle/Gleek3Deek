@@ -4,7 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="1160" height="718" alt="Dragon-11-10 030220" src="https://github.com/user-attachments/assets/d257d209-98f8-4fe6-81ff-8dffbd67c7a5" />
+<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/963ce4d1-f921-49b4-9dcd-74f8b3256b95" />
 
 ## Features
 
