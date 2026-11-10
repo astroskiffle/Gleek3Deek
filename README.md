@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/2fd2affe-2da1-403f-96d5-6a56de281c7f" />
 
 ## Features
 
@@ -25,6 +23,8 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+
+<img width="1044" height="738" alt="thumbnails 002322" src="https://github.com/user-attachments/assets/bc89a213-3277-44ed-b7d9-dab57d9b1a47" />
 
 ## Download (Windows, no Python needed)
 
@@ -107,6 +107,8 @@ python main.py
 | Close viewer | `Esc` or the ✕ button |
 
 ## MatCap editor and presets
+
+<img width="714" height="504" alt="matcap redwax" src="https://github.com/user-attachments/assets/de078594-1671-477c-978c-fe9117a055b3" />
 
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
@@ -197,6 +199,8 @@ Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with
 - **Screenshot size and transparency:** choose 1×, 2× or 4× the window size, and optionally a **transparent background**. `F12` and `Ctrl+C` use these settings. The shadow blob stays semi-transparent in the PNG, so it drops straight onto another image.
 
 ## Environment (sky, lighting, shadow)
+
+<img width="889" height="541" alt="EnviroBlue-11-10 095843" src="https://github.com/user-attachments/assets/f6957ac5-ec76-4336-a52d-cd3cd240403e" />
 
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
