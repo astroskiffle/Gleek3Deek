@@ -39,7 +39,7 @@ from PySide6.QtCore import QPointF
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (QTextBrowser, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFormLayout,
                                QGridLayout, QInputDialog, QLineEdit, QMenu, QMessageBox, QPushButton,
-                               QSlider)
+                               QSlider, QTabWidget)
 from PySide6.QtWidgets import (QApplication, QFileSystemModel, QFrame,
                                QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QListView, QMainWindow,
@@ -67,7 +67,7 @@ from vtkmodules.vtkRenderingCore import (vtkActor, vtkPolyDataMapper,
                                          vtkRenderer, vtkRenderWindow,
                                          vtkLight, vtkSkybox, vtkTexture, vtkWindowToImageFilter)
 from vtkmodules.vtkIOImage import vtkImageReader2Factory
-from vtkmodules.vtkFiltersSources import vtkPlaneSource
+from vtkmodules.vtkFiltersSources import vtkOutlineSource, vtkPlaneSource
 try:                                          # exporters: optional so the viewer never depends on them
     from vtkmodules.vtkIOGeometry import vtkOBJWriter, vtkSTLWriter
 except Exception:  # pragma: no cover
@@ -104,7 +104,7 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.6.6",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.6.7",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
@@ -594,7 +594,8 @@ def _assimp_py_meshes(path: str) -> list:
         out.append({"pd": pd,
                     "color": _material_color(mat) if mat is not None else None,
                     "texture": _material_texture(mat, mdir) if (mat is not None and has_uv) else None,
-                    "mat": mi if mat is not None else -1})
+                    "mat": mi if mat is not None else -1,
+                    "name": str(getattr(m, "name", "") or "")})
     if not out:
         raise LoadError("Assimp loaded the file but found no triangle meshes.")
     return out
@@ -619,6 +620,7 @@ def _assimp_actors(path: str) -> list:
         a = make_actor(info["pd"])
         if info.get("mat", -1) >= 0:
             a._mat = ("assimp", info["mat"])
+        a._name = info.get("name", "")
         m = a.GetMapper()
         tp = info["texture"]
         if tp:
@@ -2560,7 +2562,7 @@ def collect_model_info(actors: list, path: str, up: str) -> dict:
     except OSError:
         size = "unknown"
     return {"name": os.path.basename(path), "format": asset_ext(path).lstrip(".").upper() or "?",
-            "size": size, "parts": len(actors), "verts": nv, "faces": nf, "tris": nt,
+            "size": size, "parts": len(actors), "hidden": sum(1 for a in actors if not a.GetVisibility()), "verts": nv, "faces": nf, "tris": nt,
             "dims": [hi[i] - lo[i] for i in range(3)] if lo[0] <= hi[0] else None, "up": up,
             "mats": len(mats) if mats else None, "texs": len(texs),
             "colors": has_color, "uvs": has_uv}
@@ -2603,7 +2605,7 @@ class InfoPanel(QFrame):
         v = self._vals
         v["format"].setText(d["format"])
         v["size"].setText(d["size"])
-        v["parts"].setText(f"{d['parts']:,}")
+        v["parts"].setText(f"{d['parts']:,}" + (f"  ({d['hidden']} hidden)" if d.get("hidden") else ""))
         v["verts"].setText(f"{d['verts']:,}")
         v["faces"].setText(f"{d['faces']:,}" + (f"  ({d['tris']:,} triangles)" if d["tris"] != d["faces"] else ""))
         names = ("Width (X)", "Height (Y)", "Depth (Z)") if d["up"] != "Z" else ("Width (X)", "Depth (Y)", "Height (Z)")
@@ -2639,6 +2641,8 @@ def snapshot_export_parts(actors: list) -> list:
     thread never touches objects the render loop is using."""
     parts = []
     for a in actors:
+        if not a.GetVisibility():
+            continue                                   # hidden parts are left out of exports
         ds = _mapper_data(a.GetMapper())
         if ds is None or not isinstance(ds, vtkPolyData):
             continue
@@ -2784,8 +2788,8 @@ class ExportDialog(QDialog):
         self.warn.setObjectName("barLabel")
         self.warn.setWordWrap(True)
         root.addWidget(self.warn)
-        note = QLabel("Exports the geometry as it is shown, including its placement. Materials and "
-                      "textures are not written; vertex colours are kept in PLY files.")
+        note = QLabel("Exports the geometry as it is shown, including its placement; hidden parts are left out. "
+                      "Materials and textures are not written; vertex colours are kept in PLY files.")
         note.setObjectName("barLabel")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -3101,6 +3105,258 @@ class ScenePanel(QDialog):
         self.viewer.settings.setValue("shot_transparent", "true" if on else "false")
 
 
+# ---------------------------------------------------------------------------
+# Material viewing: channel views (albedo / normals), texture list, parts list
+# ---------------------------------------------------------------------------
+# Fragment-shader bodies for the 'Light::Impl' slot. Literals only, no uniforms.
+VIEW_SHADERS = {
+    "albedo": """
+  fragOutput0 = vec4(clamp(diffuseColor, 0.0, 1.0), opacity);
+""",
+    "normals": """
+  vec3 nvCol = normalize(normalVCVSOutput) * 0.5 + 0.5;
+  if (!gl_FrontFacing) nvCol = mix(nvCol, vec3(0.95, 0.10, 0.10), 0.65);
+  fragOutput0 = vec4(nvCol, opacity);
+""",
+}
+VIEW_CHANNELS = [("surface", "Shaded"), ("albedo", "Albedo (no lighting)"),
+                 ("normals", "Normals (red = back faces)")]
+OTHER_TEXTURE_SLOTS = [("materialTex", "Occlusion / roughness / metallic"),
+                       ("normalTex", "Normal map"), ("emissiveTex", "Emissive")]
+
+
+def collect_textures(actors: list) -> list:
+    """Distinct (texture, role) pairs and the parts that use them. Base colour is always looked
+    for; the other roles show up when the importer attached them to the material."""
+    order = {"Base colour": 0, **{label: i + 1 for i, (_n, label) in enumerate(OTHER_TEXTURE_SLOTS)}}
+    found = {}
+    for idx, a in enumerate(actors):
+        cands = [("Base colour", a.GetTexture())]
+        prop = a.GetProperty()
+        for name, label in OTHER_TEXTURE_SLOTS:
+            try:
+                cands.append((label, prop.GetTexture(name)))
+            except Exception:
+                pass
+        for label, tex in cands:
+            if tex is None:
+                continue
+            e = found.setdefault((id(tex), label), {"role": label, "tex": tex, "parts": []})
+            e["parts"].append(idx)               # e["tex"] keeps the wrapper alive, so id() is unique
+    for e in found.values():
+        img = e["tex"].GetInput()
+        e["size"] = tuple(img.GetDimensions()[:2]) if img is not None else None
+    return sorted(found.values(), key=lambda e: (order[e["role"]], e["parts"][0]))
+
+
+def texture_to_array(tex, max_side: int = 1024):
+    """Texture pixels as a top-down uint8 array (H, W, C), thinned to roughly max_side. None if unreadable."""
+    try:
+        img = tex.GetInput()
+        if img is None:
+            return None
+        w, h, _ = img.GetDimensions()
+        sc = img.GetPointData().GetScalars()
+        if sc is None or w == 0 or h == 0:
+            return None
+        arr = numpy_support.vtk_to_numpy(sc).reshape(h, w, sc.GetNumberOfComponents())[::-1]
+        k = max(1, max(w, h) // max_side)
+        arr = arr[::k, ::k]
+        if arr.dtype == np.uint16:
+            arr = (arr >> 8).astype(np.uint8)
+        elif arr.dtype != np.uint8:
+            arr = arr.astype(np.float32)
+            arr = np.clip(arr * (255.0 if float(arr.max()) <= 1.0001 else 1.0), 0, 255).astype(np.uint8)
+        return np.ascontiguousarray(arr)
+    except Exception:
+        return None
+
+
+def texture_channel_rgb(arr: np.ndarray, channel: str = "rgb") -> np.ndarray:
+    """RGB view of a texture: full colour, or a single channel shown as grey."""
+    arr = np.asarray(arr)
+    if arr.ndim == 2:
+        arr = arr[..., None]
+    nc = arr.shape[2]
+    if channel == "rgb":
+        if nc >= 3:
+            return arr[..., :3]
+        return np.dstack([arr[..., 0]] * 3)
+    if channel == "a":
+        plane = arr[..., 3] if nc == 4 else arr[..., 1] if nc == 2 else np.full(arr.shape[:2], 255, np.uint8)
+    else:
+        i = {"r": 0, "g": 1, "b": 2}[channel]
+        plane = arr[..., i] if nc >= 3 else arr[..., 0]
+    return np.dstack([plane] * 3)
+
+
+def _rgb_to_qimage(rgb: np.ndarray) -> QImage:
+    rgb = np.ascontiguousarray(rgb)
+    h, w, _ = rgb.shape
+    return QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
+
+
+class TexturePreview(QDialog):
+    """Large preview of one texture, with buttons to look at a single colour channel."""
+
+    def __init__(self, parent, title: str, arr: np.ndarray, subtitle: str):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.arr = arr
+        root = QVBoxLayout(self)
+        self.view = QLabel()
+        self.view.setAlignment(Qt.AlignCenter)
+        self.view.setMinimumSize(360, 360)
+        root.addWidget(self.view, 1)
+        row = QHBoxLayout()
+        for ch, label in (("rgb", "RGB"), ("r", "R"), ("g", "G"), ("b", "B"), ("a", "A")):
+            b = QPushButton(label)
+            b.clicked.connect(lambda _=False, c=ch: self._show(c))
+            row.addWidget(b)
+        root.addLayout(row)
+        sub = QLabel(subtitle)
+        sub.setObjectName("barLabel")
+        sub.setWordWrap(True)
+        root.addWidget(sub)
+        self._show("rgb")
+
+    def _show(self, channel: str):
+        pm = QPixmap.fromImage(_rgb_to_qimage(texture_channel_rgb(self.arr, channel)))
+        self.view.setPixmap(pm.scaled(720, 720, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+
+class MaterialsPanel(QDialog):
+    """Floating panel: pick a material view, hide or isolate parts, inspect textures."""
+
+    def __init__(self, parent, viewer):
+        super().__init__(parent)
+        self.viewer = viewer
+        self._textures: list = []
+        self.setWindowTitle("Materials & parts")
+        self.setWindowFlag(Qt.Tool, True)
+        self.setMinimumSize(460, 520)
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("View"))
+        self.view_box = QComboBox()
+        self.view_box.addItems([label for _k, label in VIEW_CHANNELS])
+        self.view_box.currentIndexChanged.connect(lambda i: viewer.set_view_channel(VIEW_CHANNELS[i][0]))
+        row.addWidget(self.view_box, 1)
+        root.addLayout(row)
+
+        self.tabs = QTabWidget()
+        root.addWidget(self.tabs, 1)
+        pw = QWidget()
+        pl = QVBoxLayout(pw)
+        self.parts = QListWidget()
+        self.parts.itemChanged.connect(self._part_toggled)
+        self.parts.currentRowChanged.connect(viewer.highlight_part)
+        pl.addWidget(self.parts, 1)
+        row = QHBoxLayout()
+        for text, fn in (("Show all", self._show_all), ("Invert", self._invert), ("Isolate selected", self._isolate)):
+            b = QPushButton(text)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        pl.addLayout(row)
+        hint = QLabel("Untick a part to hide it. Selecting a part outlines it in the view. "
+                      "Hidden parts are left out of exports.")
+        hint.setObjectName("barLabel")
+        hint.setWordWrap(True)
+        pl.addWidget(hint)
+        self.tabs.addTab(pw, "Parts")
+
+        tw = QWidget()
+        tl = QVBoxLayout(tw)
+        self.tex_list = QListWidget()
+        self.tex_list.setIconSize(QSize(64, 64))
+        self.tex_list.itemDoubleClicked.connect(self._open_texture)
+        tl.addWidget(self.tex_list, 1)
+        thint = QLabel("Double-click a texture to preview it and look at its channels.")
+        thint.setObjectName("barLabel")
+        thint.setWordWrap(True)
+        tl.addWidget(thint)
+        self.tabs.addTab(tw, "Textures")
+        self.tabs.currentChanged.connect(lambda _i: viewer.highlight_part(None))
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        root.addLayout(row)
+        self.refresh()
+
+    def hideEvent(self, e):
+        self.viewer.highlight_part(None)
+        super().hideEvent(e)
+
+    def refresh(self):
+        v = self.viewer
+        self.view_box.blockSignals(True)
+        keys = [k for k, _l in VIEW_CHANNELS]
+        self.view_box.setCurrentIndex(keys.index(v.mode) if v.mode in keys else 0)
+        self.view_box.blockSignals(False)
+
+        self.parts.blockSignals(True)
+        self.parts.clear()
+        for i, a in enumerate(v.actors):
+            name = getattr(a, "_name", "") or f"Part {i + 1}"
+            tag = "  ·  textured" if a.GetTexture() is not None else ""
+            it = QListWidgetItem(f"{name}  ·  {_cells(a):,} faces{tag}")
+            pix = QPixmap(14, 14)
+            pix.fill(QColor.fromRgbF(*a.GetProperty().GetColor()))
+            it.setIcon(QIcon(pix))
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if a.GetVisibility() else Qt.Unchecked)
+            self.parts.addItem(it)
+        self.parts.blockSignals(False)
+
+        self.tex_list.clear()
+        self._textures = collect_textures(v.actors)
+        for e in self._textures:
+            arr = texture_to_array(e["tex"], 128)
+            icon = QIcon(QPixmap.fromImage(_rgb_to_qimage(texture_channel_rgb(arr)))) if arr is not None else QIcon()
+            size = f"{e['size'][0]}×{e['size'][1]}" if e["size"] else "size unknown"
+            n = len(e["parts"])
+            self.tex_list.addItem(QListWidgetItem(
+                icon, f"{e['role']}\n{size}  ·  used by {n} part{'s' if n != 1 else ''}"))
+        if not self._textures:
+            self.tex_list.addItem(QListWidgetItem("This model has no textures (colours only)."))
+
+    def _part_toggled(self, item):
+        self.viewer.set_part_visible(self.parts.row(item), item.checkState() == Qt.Checked)
+
+    def _show_all(self):
+        self.viewer.show_all_parts()
+        self.refresh()
+
+    def _invert(self):
+        self.viewer.invert_parts()
+        self.refresh()
+
+    def _isolate(self):
+        row = self.parts.currentRow()
+        if row < 0:
+            self.viewer.message.emit("Select a part first")
+            return
+        self.viewer.isolate_part(row)
+        self.refresh()
+        self.parts.setCurrentRow(row)
+
+    def _open_texture(self, item):
+        row = self.tex_list.row(item)
+        if not (0 <= row < len(self._textures)):
+            return
+        e = self._textures[row]
+        arr = texture_to_array(e["tex"], 1024)
+        if arr is None:
+            self.viewer.message.emit("That texture's pixels can't be read")
+            return
+        size = f"{e['size'][0]}×{e['size'][1]}" if e["size"] else ""
+        TexturePreview(self, e["role"], arr, f"{e['role']}  ·  {size}  ·  {arr.shape[2]} channel(s)").exec()
+
+
 # (name, bottom colour, top colour); equal colours = flat background
 BACKGROUNDS = [
     ("Dark gradient", (0.07, 0.08, 0.10), (0.17, 0.19, 0.23)),
@@ -3160,6 +3416,9 @@ class Viewer(QWidget):
         self._scene_panel = None
         self.turntable = str(self.settings.value("turntable", "true")).lower() in ("1", "true")
         self._tt_drag = None
+        self._materials_panel = None
+        self._outline = self._outline_src = None
+        self._outline_added = False
         try:                                      # last custom MatCap from the previous session
             self.custom = preset_to_spec(json.loads(str(self.settings.value("custom_matcap", ""))))
             self._custom_parts = custom_matcap_parts(self.custom)
@@ -3296,6 +3555,10 @@ class Viewer(QWidget):
         self.act_turntable.toggled.connect(self.set_turntable)
         menu.addAction(self.act_turntable)
         menu.addAction("Scene settings…\tShift+G", lambda _=False: self.open_scene_panel())
+        chan = menu.addMenu("Material view\tV")
+        for key, label in VIEW_CHANNELS:
+            chan.addAction(label, lambda _=False, k=key: self.set_view_channel(k))
+        menu.addAction("Materials && parts…\tShift+M", lambda _=False: self.open_materials_panel())
         self.act_info = QAction("Model info\tI", menu, checkable=True)
         self.act_info.setChecked(self.info_on)
         self.act_info.toggled.connect(self.set_info_visible)
@@ -3334,6 +3597,7 @@ class Viewer(QWidget):
         self.overlay.hide()
         self._remove_shadow()
         self._remove_ground()
+        self._remove_outline()
         self._sync_env_lights()
         if getattr(self, "info_panel", None) is not None:
             self.info_panel.hide()
@@ -3370,6 +3634,8 @@ class Viewer(QWidget):
         self._sync_axes()
         self._place_hud()
         self._update_info()
+        if self._materials_panel is not None and self._materials_panel.isVisible():
+            self._materials_panel.refresh()
 
     # ----- shading modes ----------------------------------------------------
     def cycle_matcap(self):
@@ -3409,6 +3675,12 @@ class Viewer(QWidget):
             except Exception:                     # VTK < 9.0 has no per-actor shader property
                 self._clear_replacements()
                 mode = "surface"
+        elif mode in VIEW_SHADERS:
+            try:
+                self._install_view_shader(mode)
+            except Exception:
+                self._clear_replacements()
+                mode = "surface"
         self._env_code = ""
         if mode == "surface" and self._current_env_code():
             try:
@@ -3426,6 +3698,8 @@ class Viewer(QWidget):
         self.rw.Render()
         if mode == "surface" and self._env_code and _shader_error_since(log_pos):
             self._env_failed()
+        if mode in VIEW_SHADERS and _shader_error_since(log_pos):
+            self._view_failed()
         if mode == "matcap" and _shader_error_since(log_pos):
             alt = entries[self.matcap_idx][3]
             if alt is not None:                   # full image table rejected: try the lite one
@@ -3672,8 +3946,7 @@ class Viewer(QWidget):
         if not (self._env_on("shadow") and self.actors):
             self._remove_shadow()
             return
-        bb = np.array([a.GetBounds() for a in self.actors], dtype=float).reshape(-1, 3, 2)
-        lo, hi = bb[:, :, 0].min(0), bb[:, :, 1].max(0)
+        lo, hi = self._model_bounds()
         ext = np.maximum(hi - lo, 1e-9)
         ctr = (lo + hi) / 2
         z_up = self.up_axis == "Z"
@@ -4019,7 +4292,11 @@ class Viewer(QWidget):
         if self._export_task is not None:
             self.message.emit("An export is already running")
             return
-        info = collect_model_info(self.actors, self.path, self.up_axis)
+        shown = [a for a in self.actors if a.GetVisibility()]
+        if not shown:
+            self.message.emit("All parts are hidden, so there is nothing to export")
+            return
+        info = collect_model_info(shown, self.path, self.up_axis)
         dlg = ExportDialog(self.window(), info["name"], info["tris"],
                            _setting_int(self.settings, "export_fmt", 0),
                            str(self.settings.value("export_simplify", "false")).lower() in ("1", "true"),
@@ -4125,7 +4402,8 @@ class Viewer(QWidget):
 
     # -- placement
     def _model_bounds(self):
-        bb = np.array([a.GetBounds() for a in self.actors], dtype=float).reshape(-1, 3, 2)
+        vis = [a for a in self.actors if a.GetVisibility()] or self.actors     # hidden parts don't count
+        bb = np.array([a.GetBounds() for a in vis], dtype=float).reshape(-1, 3, 2)
         return bb[:, :, 0].min(0), bb[:, :, 1].max(0)
 
     @staticmethod
@@ -4256,6 +4534,95 @@ class Viewer(QWidget):
         self._scene_panel.show()
         self._scene_panel.raise_()
         self._scene_panel.activateWindow()
+
+    # ----- material views (albedo / normals) and parts -----------------------
+    def set_view_channel(self, name: str):
+        self.set_mode(name, force=True)
+        label = dict(VIEW_CHANNELS).get(name, name)
+        self.message.emit(f"View: {label}")
+
+    def cycle_view_channel(self):
+        """V: shaded -> albedo (no lighting) -> normals -> shaded."""
+        order = [k for k, _l in VIEW_CHANNELS]
+        nxt = order[(order.index(self.mode) + 1) % len(order)] if self.mode in order else "albedo"
+        self.set_view_channel(nxt)
+
+    def _install_view_shader(self, mode: str):
+        for a in self.actors:
+            sp = a.GetShaderProperty()
+            sp.ClearAllFragmentShaderReplacements()
+            sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, VIEW_SHADERS[mode], False)
+
+    def _view_failed(self):
+        self._clear_replacements()
+        self.mode = "surface"
+        self.matcap_btn.setText("MatCap")
+        self.rw.Render()
+        self.message.emit("This GPU rejected that view's shader, so normal shading was restored")
+
+    def set_part_visible(self, idx: int, on: bool):
+        if 0 <= idx < len(self.actors):
+            self.actors[idx].SetVisibility(bool(on))
+            self._after_visibility()
+
+    def isolate_part(self, idx: int):
+        for i, a in enumerate(self.actors):
+            a.SetVisibility(i == idx)
+        self._after_visibility()
+
+    def show_all_parts(self):
+        for a in self.actors:
+            a.SetVisibility(True)
+        self._after_visibility()
+
+    def invert_parts(self):
+        for a in self.actors:
+            a.SetVisibility(not a.GetVisibility())
+        self._after_visibility()
+
+    def _after_visibility(self):
+        self._sync_ground()
+        self._sync_shadow()
+        self._update_info()
+        self.rw.Render()
+
+    def _remove_outline(self):
+        if self._outline_added:
+            self.renderer.RemoveActor(self._outline)
+            self._outline_added = False
+
+    def highlight_part(self, idx):
+        """Outline one part with a bounding box (None clears it)."""
+        if idx is None or not (0 <= idx < len(self.actors)):
+            if self._outline_added:
+                self._remove_outline()
+                self.rw.Render()
+            return
+        if self._outline is None:
+            self._outline_src = vtkOutlineSource()
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(self._outline_src.GetOutputPort())
+            self._outline = vtkActor()
+            self._outline.SetMapper(m)
+            prop = self._outline.GetProperty()
+            prop.SetColor(0.42, 0.66, 0.91)
+            prop.SetLineWidth(2.0)
+            prop.LightingOff()
+            self._outline.UseBoundsOff()
+            self._outline.SetPickable(False)
+        self._outline_src.SetBounds(*self.actors[idx].GetBounds())
+        if not self._outline_added:
+            self.renderer.AddActor(self._outline)
+            self._outline_added = True
+        self.rw.Render()
+
+    def open_materials_panel(self):
+        if self._materials_panel is None:
+            self._materials_panel = MaterialsPanel(self.window(), self)
+        self._materials_panel.refresh()
+        self._materials_panel.show()
+        self._materials_panel.raise_()
+        self._materials_panel.activateWindow()
 
     # ----- transparency (solid by default) ---------------------------------
     def _tr_actors(self):
@@ -4667,6 +5034,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+L", v.cycle_lighting_preset),
             ("I", v.toggle_info),
             ("G", v.toggle_grid), ("F", v.fit_view), ("H", v.toggle_turntable),
+            ("V", v.cycle_view_channel), ("Shift+M", v.open_materials_panel),
             ("Shift+W", v.toggle_edges), ("Shift+G", v.open_scene_panel),
             ("Esc", self.close_viewer),
         ]

@@ -4,7 +4,9 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="1110" height="729" alt="698890627-8e5daa5e-3e4f-4ac9-b83f-b4691f90d6a9" src="https://github.com/user-attachments/assets/2fd2affe-2da1-403f-96d5-6a56de281c7f" />
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -14,6 +16,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Export / convert:** save the model as STL, OBJ or PLY, optionally simplified to a percentage of its faces.
 - **Model info:** a card with the model's vertex and face counts, dimensions, materials, textures and file size.
 - **Menus:** a File menu (open folder, export, quit) and a Help menu (About), alongside the keyboard shortcuts.
+- **Material views:** an albedo view (colours and textures with no lighting), a normals view, a texture inspector with channel previews, and a parts list to hide or isolate pieces of a model.
 - **Scene tools:** ground grid, field of view, saved camera views, edges over shaded, move to ground or origin, and screenshots with 1×/2×/4× size and a transparent background.
 - **Environment:** an infinite panorama sky, cheap hemispheric ambient light, one sun and a soft blob shadow, all fitted automatically from a panorama image. Built to stay fast on low-end machines.
 - **Gallery tools:** search, sort, a card-size slider, and a right-click menu to rename, copy, paste and delete files.
@@ -23,8 +26,6 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
 - **Never freezes:** all file parsing runs on background threads.
 - **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
-
-<img width="1044" height="738" alt="thumbnails 002322" src="https://github.com/user-attachments/assets/bc89a213-3277-44ed-b7d9-dab57d9b1a47" />
 
 ## Download (Windows, no Python needed)
 
@@ -92,6 +93,8 @@ python main.py
 | Environment on/off | `L` |
 | Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
 | Scene settings panel | `Shift+G` (or **Main ▾ → Scene settings…**) |
+| Cycle material view: shaded, albedo, normals | `V` |
+| Materials & parts panel | `Shift+M` (or **Main ▾ → Materials & parts…**) |
 | Ground grid on/off | `G` |
 | Fit the model in view (keeps your angle) | `F` |
 | Lock the horizon (turntable) / free rotation | `H` (on by default) |
@@ -108,14 +111,21 @@ python main.py
 
 ## MatCap editor and presets
 
-<img width="714" height="504" alt="matcap redwax" src="https://github.com/user-attachments/assets/de078594-1671-477c-978c-fe9117a055b3" />
-
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
 - **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
+
+```json
+{
+  "gleek3deek_matcap": 1,
+  "name": "My Wax",
+  "type": "procedural",
+  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
+}
+```
 
 Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
 
@@ -176,9 +186,25 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 - **Materials and textures:** distinct materials and texture images. Plain meshes such as STL show "none (plain mesh)"
 - **Has:** vertex colours and UV coordinates, when present
 
-## Scene settings (ground, camera, display, screenshots)
+## Material views, textures and parts
 
-<img width="864" height="550" alt="Scene 102246" src="https://github.com/user-attachments/assets/03eadfe0-15c5-4984-890b-ec5907a03e76" />
+Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or pick one from **Main ▾ → Material view**. `Shift+M` opens the **Materials & parts** panel, which has the same view choice plus two tabs.
+
+**Views**
+- **Albedo (no lighting):** the model's colours and textures exactly as stored, with no light, shadow or shading. This is the quickest way to judge a texture that looks dark under normal lighting.
+- **Normals:** each surface is coloured by the direction it faces (relative to the camera). Surfaces that face away from the camera, which usually means flipped normals or inside-out geometry, are tinted red.
+- Pressing the same view again, or `S`, returns to shaded. `M` (MatCaps), `W` and `P` still work as before.
+
+**Parts tab**
+- Every separate object in the file is listed with a colour swatch, its face count, and whether it is textured. FBX, DAE and the other formats read through Assimp show the part's own name when the file has one.
+- Untick a part to hide it. Selecting a part outlines it in the view. **Show all**, **Invert** and **Isolate selected** speed things up.
+- Hidden parts are ignored by the ground grid, the shadow, **Fit view**, the Model info panel (which says how many are hidden) and **Export / convert**, so you can export just the pieces you want.
+
+**Textures tab**
+- Lists the distinct textures with a thumbnail, size and how many parts use them. Base colour is always shown; occlusion/roughness/metallic, normal and emissive maps appear when the file provides them (glTF/GLB does).
+- Double-click one for a large preview, with **R, G, B and A** buttons to look at a single channel. This is handy for checking a roughness map or whether a texture hides stray transparency.
+
+## Scene settings (ground, camera, display, screenshots)
 
 Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with:
 
@@ -192,8 +218,6 @@ Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with
 - **Screenshot size and transparency:** choose 1×, 2× or 4× the window size, and optionally a **transparent background**. `F12` and `Ctrl+C` use these settings. The shadow blob stays semi-transparent in the PNG, so it drops straight onto another image.
 
 ## Environment (sky, lighting, shadow)
-
-<img width="889" height="541" alt="EnviroBlue-11-10 095843" src="https://github.com/user-attachments/assets/f6957ac5-ec76-4336-a52d-cd3cd240403e" />
 
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
