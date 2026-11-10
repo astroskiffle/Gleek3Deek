@@ -187,6 +187,8 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 
 ## Scene settings (ground, camera, display, screenshots)
 
+<img width="864" height="550" alt="Scene 102246" src="https://github.com/user-attachments/assets/03eadfe0-15c5-4984-890b-ec5907a03e76" />
+
 Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with:
 
 - **Ground grid (`G`):** a flat grid under the model. Its lines follow the world axes and its cell size adapts to the model. It sits at the model's lowest point, next to the blob shadow.
