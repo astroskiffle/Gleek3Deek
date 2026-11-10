@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+<img width="1110" height="729" alt="1 Title" src="https://github.com/user-attachments/assets/d8c5909a-8251-4271-8250-6f372855abd8" />
 
 ## Features
 
@@ -111,6 +109,8 @@ python main.py
 
 ## MatCap editor and presets
 
+<img width="714" height="504" alt="3 Matcap" src="https://github.com/user-attachments/assets/eeef10d8-879a-4d82-93dd-d14e90e3bfb7" />
+
 Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
@@ -138,6 +138,8 @@ Notes:
 - If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
 
 ## Managing files from the gallery
+
+<img width="1044" height="738" alt="2 Thumbs" src="https://github.com/user-attachments/assets/db991f42-9a11-499d-86b1-593075554204" />
 
 Right-click a thumbnail (or select it and use the keys) to:
 
@@ -188,6 +190,8 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 
 ## Material views, textures and parts
 
+<img width="1001" height="612" alt="7  materials  watch" src="https://github.com/user-attachments/assets/26540031-4ee2-4154-af55-4ef2619ab418" />
+
 Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or pick one from **Main ▾ → Material view**. `Shift+M` opens the **Materials & parts** panel, which has the same view choice plus two tabs.
 
 **Views**
@@ -206,6 +210,8 @@ Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or
 
 ## Scene settings (ground, camera, display, screenshots)
 
+<img width="864" height="550" alt="4 Scene" src="https://github.com/user-attachments/assets/ddb98b2e-f6b3-43de-89c9-4cd74548d73c" />
+
 Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with:
 
 - **Ground grid (`G`):** a flat grid under the model. Its lines follow the world axes and its cell size adapts to the model. It sits at the model's lowest point, next to the blob shadow.
@@ -218,6 +224,8 @@ Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with
 - **Screenshot size and transparency:** choose 1×, 2× or 4× the window size, and optionally a **transparent background**. `F12` and `Ctrl+C` use these settings. The shadow blob stays semi-transparent in the PNG, so it drops straight onto another image.
 
 ## Environment (sky, lighting, shadow)
+
+<img width="889" height="541" alt="5 Environment" src="https://github.com/user-attachments/assets/c889eb92-67f6-4152-8c18-13da5bd83a40" />
 
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 
