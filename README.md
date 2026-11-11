@@ -4,7 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<img width="1110" height="729" alt="1 Title" src="https://github.com/user-attachments/assets/d8c5909a-8251-4271-8250-6f372855abd8" />
+![matcap_devil Image](images/matcap_devil.jpg)
 
 ## Features
 
