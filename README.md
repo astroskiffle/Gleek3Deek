@@ -1,6 +1,6 @@
 # Gleek3Deek
 
-Gleek3Deek is a lightweight, self-hosted 3D asset viewer built for digital sculptors who need fast, frictionless inspection of their work without sacrificing privacy. Created in response to restrictive platform terms of service, over-reaching content moderation on the human form, and the loss of data sovereignty on commercial sharing sites, this tool keeps your assets local, protects your intellectual property from third-party scraping, and restores complete control over your portfolio.. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
+Gleek3Deek is a lightweight, self-hosted 3D asset viewer built for digital sculptors or 3D generalists who need fast, frictionless inspection of their work without sacrificing privacy. Created in response to restrictive platform terms of service, over-reaching content moderation on the human form, and the loss of data sovereignty on commercial sharing sites, this tool keeps your assets local, protects your intellectual property from third-party scraping, and restores complete control over your portfolio.. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
