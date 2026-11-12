@@ -115,6 +115,8 @@ python main.py
 
 ## MatCap editor and presets
 
+![Matcap Editor](images/matcap_laliqueGlassGirl.jpg)
+
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
