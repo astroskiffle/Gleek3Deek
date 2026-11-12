@@ -1,10 +1,12 @@
 # Gleek3Deek
 
-Gleek3Deek is a lightweight, self-hosted 3D asset viewer built for digital sculptors or 3D generalists who need fast, frictionless inspection of their work without sacrificing privacy. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK. A fast, free library browser to organize thousands of local .obj, .glb, .fbx, or .stl files and quickly inspect meshes with ZBrush-style MatCaps, with basic export and mesh reduction functionality.
+A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![Gleek3Deek](images/SplitCow_Matcap.jpg)
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -67,6 +69,7 @@ python main.py
 | Action | Input |
 |---|---|
 | Open an asset | Double-click a card or a file in the tree |
+| Go to a folder | Type or paste a path in the address bar at the left of the toolbar and press Enter (`Alt+D` jumps there). A file path opens that file. The bar turns red if the path does not exist. The **↑** button goes to the parent folder (`Alt+Up`) |
 | Search | Type in the search box (matches name and extension) |
 | Sort | Drop-down: name, date, size or type |
 | Card size | Slider at the right of the toolbar (remembered) |
@@ -94,6 +97,9 @@ python main.py
 | Scene settings panel | `Shift+G` (or **Panels → Scene**) |
 | Hide/show the whole side panel | `Ctrl+B` (or the arrow on the right edge) |
 | Cycle material view: shaded, albedo, normals | `V` |
+| Reference sheet for AI 3D tools (Meshy, Tripo, Rodin, Luma) | `Shift+F12` (or **Main ▾ → Reference sheet…**) |
+| Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
+| Split style: vertical, horizontal, diagonal | `Shift+D` |
 | Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
 | Ground grid on/off | `G` |
 | Fit the model in view (keeps your angle) | `F` |
@@ -113,6 +119,7 @@ python main.py
 
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
+- **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
@@ -136,6 +143,28 @@ Notes:
 - The image is turned into a compact smooth formula inside the shader (no lookup table or texture), which keeps rendering fast. If a graphics driver rejects the full-detail version, the viewer automatically retries with a simpler one.
 - ZBrush's own `.ZMT` material files can't be read; export the sphere as an image first.
 - If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
+
+## Split compare (MatCap vs normal shading)
+
+Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's normal shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
+
+- **Drag the line or its round handle** to move the split. Dragging anywhere else orbits, pans and zooms as usual.
+- **Double-click** the line to snap it back to the centre.
+- **`D`** hides or shows the split without losing its position. **`Shift+D`** cycles vertical, horizontal and diagonal. **Main ▾ → Split style** also has *Swap sides* and *Reset divider to centre*.
+- **Edges over shaded** (`Shift+W`) is drawn on the normal-shaded half of the split.
+- The split shows while a MatCap is active (`M`). Cycling back to normal shading hides it and it returns with the next MatCap.
+- The MatCap shader is re-baked with the new position shortly after you move the line, so with image MatCaps the shading can trail the line slightly while you drag.
+- Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
+
+## Reference sheets for AI 3D tools
+
+Press **Shift+F12** (or **Main ▾ → Reference sheet for AI 3D tools…**) to render the model from several angles onto one image, ready to upload to Meshy, Tripo, Rodin, Luma and similar 2D-to-3D tools.
+
+- **Layouts:** *4-view orthographic* (Front, Back, Left, Right; the best default) or *4-view 3/4 hybrid* (Front, 3/4 Front, Side, Back; helps with layered or overlapping geometry).
+- **Background:** pure white or neutral mid grey. **Size:** 512 to 2048 px per view (the sheet is four views wide). Optionally write the view names under each view (off is best for AI tools) and save every view as its own PNG too.
+- **Applied automatically, then undone:** orthographic projection, flat even lighting (no sun, so every side is lit the same and there are no hard shadows), grid, sky, sky gradient, blob shadow, edge overlay, axes gizmo and the split compare are switched off, and the background becomes solid. Your camera, lighting, background and display settings are restored afterwards.
+- **Shared baseline:** every view uses the same scale and the same centre height, so the top and the bottom of the model sit on exactly the same pixel rows in every view. All views look horizontally (no tilt), including the 3/4 view.
+- Views come from the live viewport, so a larger window gives a sharper result at the bigger sizes. The model uses its current colours and textures; hidden parts stay hidden.
 
 ## Managing files from the gallery
 
@@ -168,6 +197,12 @@ Open a model, then press **Ctrl+E** (or use **File → Export / convert…** or 
 
 Very strong simplification (under about 10%) can visibly change the shape, and open edges aren't specially protected, so thin or open surfaces may shrink at their edges.
 
+## About dialog
+
+Press **F1**, or choose **Help → About** (also in **Main ▾** while a model is open). It shows the app name, who made it, the legal notice, the MIT licence text and the open-source attributions. Close it with the ✕ button, the **Close** button, the window's own close button or **Esc**.
+
+All of its wording lives in one dictionary named `ABOUT`, just under `APP_NAME` near the top of `main.py`: your name and alias, copyright line, legal notice, licence text, the list of third-party projects, and an optional version string (blank means it is hidden). Edit those values and nothing else needs to change.
+
 ## Model info panel
 
 Press **I** (or **Main ▾ → Model info**) to show a small card under the top toolbar. It lists:
@@ -193,8 +228,6 @@ The four side panels (**Materials**, **MatCap**, **Environment** and **Scene**) 
 - **Remembered:** your arrangement, the open panels, whether the drawer is expanded, its width and the window size are saved automatically and restored the next time you start the app. **Panels → Reset panel layout** puts the four tabs back in the default order (Materials, MatCap, Environment, Scene) with the drawer open.
 
 ## Material views, textures and parts
-
-<img width="1001" height="612" alt="7  materials  watch" src="https://github.com/user-attachments/assets/046e85ef-4454-41a1-b5f6-9d2f0a2a407c" />
 
 Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or pick one from **Main ▾ → Material view**. `Shift+M` opens the **Materials & parts** panel, which has the same view choice plus two tabs.
 

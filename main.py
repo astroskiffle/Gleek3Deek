@@ -69,6 +69,10 @@ from vtkmodules.vtkRenderingCore import (vtkActor, vtkPolyDataMapper,
                                          vtkRenderer, vtkRenderWindow,
                                          vtkLight, vtkSkybox, vtkTexture, vtkWindowToImageFilter)
 from vtkmodules.vtkIOImage import vtkImageReader2Factory
+try:                                          # 2D overlay props for the split-compare divider
+    from vtkmodules.vtkRenderingCore import vtkActor2D, vtkPolyDataMapper2D
+except Exception:  # pragma: no cover
+    vtkActor2D = vtkPolyDataMapper2D = None
 from vtkmodules.vtkFiltersSources import vtkOutlineSource, vtkPlaneSource
 try:                                          # exporters: optional so the viewer never depends on them
     from vtkmodules.vtkIOGeometry import vtkOBJWriter, vtkSTLWriter
@@ -106,16 +110,16 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.6.8",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.6.9",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle/",                  # optional extra line, e.g. a website or contact address
+    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": ("[Placeholder]"
+    "legal_notice": (""
                      ""),
     # --- licence and attributions
     "licence_heading": "Licence",
@@ -1761,6 +1765,72 @@ def bake_image_matcap(img: QImage, n: int = IMAGE_MATCAP_RES) -> bytes:
     return bake_matcap_array(raw.reshape(m, m, 3).astype(np.float32), n)
 
 
+def _smoothstep(a: float, b: float, x):
+    t = np.clip((x - a) / (b - a), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def render_matcap_sphere(spec: dict, size: int = 132) -> QImage:
+    """Software preview of a MatCap on a sphere (numpy; same maths as the shader, no GPU needed)."""
+    r = size / 2.0
+    ys, xs = np.mgrid[0:size, 0:size].astype(np.float32)
+    x = (xs + 0.5 - r) / r
+    y = -(ys + 0.5 - r) / r
+    d2 = x * x + y * y
+    inside = d2 < 1.0
+    z = np.sqrt(np.clip(1.0 - d2, 0.0, 1.0))
+    if spec.get("type") == "image":
+        n = int(spec["n"])
+        tab = np.frombuffer(spec["data"], np.uint8).reshape(n, n, 3).astype(np.float32) / 255.0
+        px = np.clip((x * 0.5 + 0.5) * (n - 1), 0, n - 1.001)
+        py = np.clip((y * 0.5 + 0.5) * (n - 1), 0, n - 1.001)      # row 0 = bottom
+        x0, y0 = px.astype(int), py.astype(int)
+        fx, fy = (px - x0)[..., None], (py - y0)[..., None]
+        col = (tab[y0, x0] * (1 - fx) * (1 - fy) + tab[y0, x0 + 1] * fx * (1 - fy)
+               + tab[y0 + 1, x0] * (1 - fx) * fy + tab[y0 + 1, x0 + 1] * fx * fy)
+    else:
+        p = clean_params(spec.get("params"))
+        az, el = math.radians(p["light_az"]), math.radians(p["light_el"])
+        L = np.array([math.cos(el) * math.sin(az), math.sin(el), math.cos(el) * math.cos(az)], np.float32)
+        L /= np.linalg.norm(L)
+        dot = x * L[0] + y * L[1] + z * L[2]
+        dd = (dot * 0.5 + 0.5)[..., None]
+        H = L + np.array([0.0, 0.0, 1.0], np.float32)
+        H /= np.linalg.norm(H)
+        sp = np.clip(x * H[0] + y * H[1] + z * H[2], 0.0, 1.0)[..., None]
+        rim = np.power(1.0 - np.clip(z, 0.0, 1.0), p["rim_power"])[..., None]
+        a, b = p["shadow_start"], p["light_start"]
+        c = lambda k: np.array(p[k], np.float32)
+        col = c("shadow") + (c("body") - c("shadow")) * _smoothstep(a, a + 0.55, dd)
+        col = col + (c("light") - col) * (_smoothstep(b, b + 0.45, dd) * 0.75)
+        col = col + c("rim_color") * rim * p["rim_strength"]
+        col = col + c("spec_color") * (np.power(sp, p["spec_tight_pow"]) * p["spec_tight"]
+                                       + np.power(sp, p["spec_broad_pow"]) * p["spec_broad"])
+    col = np.clip(col, 0.0, 1.0)
+    bg = 0.10 + 0.05 * (((xs // 11).astype(int) + (ys // 11).astype(int)) % 2)    # faint checker
+    alpha = np.clip((1.0 - np.sqrt(d2)) * r, 0.0, 1.0)[..., None]                 # soft edge
+    out = col * alpha + bg[..., None] * (1.0 - alpha)
+    img = np.ascontiguousarray((out * 255.0 + 0.5).astype(np.uint8))
+    return QImage(img.data, size, size, size * 3, QImage.Format_RGB888).copy()
+
+
+class MatCapPreview(QLabel):
+    """Small live sphere shown in the MatCap editor."""
+    SIZE = 132
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setToolTip("Live preview of this MatCap on a sphere")
+        self.setStyleSheet("border:1px solid #2f3947; border-radius:6px;")
+
+    def set_spec(self, spec: dict):
+        try:
+            self.setPixmap(QPixmap.fromImage(render_matcap_sphere(spec, self.SIZE)))
+        except Exception:                         # a preview must never break the editor
+            self.clear()
+
+
 class MatCapEditor(QWidget):
     """Floating editor: sliders and colours for a procedural MatCap, plus preset and image loading."""
     changed = Signal(object)                      # emits a spec dict (debounced)
@@ -1800,6 +1870,9 @@ class MatCapEditor(QWidget):
             b.clicked.connect(fn)
             row.addWidget(b)
         root.addLayout(row)
+
+        self.preview = MatCapPreview()
+        root.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignHCenter)
 
         self.note = QLabel("")
         self.note.setObjectName("barLabel")
@@ -1860,6 +1933,7 @@ class MatCapEditor(QWidget):
         self.note.setVisible(is_img)
         self.note.setText(f"Image MatCap ({self.spec.get('n', 0)}×{self.spec.get('n', 0)} baked). "
                           "Colour and light controls are off while an image is used." if is_img else "")
+        self.preview.set_spec(self.spec)
 
     def _style_color(self, key: str):
         c = self.spec["params"][key]
@@ -1869,6 +1943,7 @@ class MatCapEditor(QWidget):
             f"color:{'#101418' if lum > 0.55 else '#f2f5f8'};border:1px solid #3a4656;")
 
     def _touched(self):
+        self.preview.set_spec(self.spec)          # instant; only the 3D shader recompile is debounced
         self._timer.start(120)                    # debounce: shader recompiles on every change
 
     def _name_edited(self, text: str):
@@ -3347,6 +3422,46 @@ class MaterialsPanel(QWidget):
         TexturePreview(self, e["role"], arr, f"{e['role']}  ·  {size}  ·  {arr.shape[2]} channel(s)").exec()
 
 
+# ---------------------------------------------------------------------------
+# Reference sheets for 2D-to-3D AI tools (Meshy, Tripo, Rodin, Luma ...)
+# ---------------------------------------------------------------------------
+SHEET_LAYOUTS = [
+    ("ortho4", "4-view orthographic: Front, Back, Left, Right  (recommended)"),
+    ("hybrid4", "4-view 3/4 hybrid: Front, 3/4 Front, Side, Back"),
+]
+SHEET_BACKGROUNDS = [("white", "White", (1.0, 1.0, 1.0)), ("grey", "Neutral mid grey", (0.5, 0.5, 0.5))]
+SHEET_CELLS = [512, 768, 1024, 1536, 2048]
+# Flat, even light: with no sun, the hemispheric ambient depends only on how much a surface faces
+# up, so every side of the model is lit identically (no hard shadows, nothing that changes with angle).
+SHEET_ENV = {"enabled": True, "skybox": False, "lighting": True, "shadow": False, "gradient_bg": False,
+             "sky": [0.95, 0.95, 0.95], "equator": [0.88, 0.88, 0.88], "ground": [0.76, 0.76, 0.76],
+             "sun_int": 0.0, "highlight": 0.0, "ambient": 1.0, "exposure": 0.0, "tonemap": "none",
+             "sky_blur": 0.0, "yaw": 0.0}
+
+
+def sheet_views(layout: str, u, f, r):
+    """[(file label, caption, direction from the model towards the camera)] for a layout.
+    Every view is level with the horizon (no elevation), which is what keeps the baselines identical."""
+    if layout == "hybrid4":
+        d34 = (f + r) / np.linalg.norm(f + r)
+        return [("front", "Front", f), ("three_quarter", "3/4 Front", d34), ("side", "Side", r), ("back", "Back", -f)]
+    return [("front", "Front", f), ("back", "Back", -f), ("left", "Left", -r), ("right", "Right", r)]
+
+
+def sheet_framing(lo, hi, dirs, up, pad: float = 0.06):
+    """One shared orthographic framing for all views: (centre, half-size of a square cell in model units).
+    Same centre height and same scale in every view => head and feet land on the same pixel rows."""
+    lo, hi, up = np.asarray(lo, float), np.asarray(hi, float), np.asarray(up, float)
+    c = (lo + hi) / 2.0
+    corners = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]) - c
+    half = float(np.abs(corners @ up).max())
+    for d in dirs:
+        right = np.cross(-np.asarray(d, float), up)
+        right /= np.linalg.norm(right)
+        half = max(half, float(np.abs(corners @ right).max()))
+    return c, max(half, 1e-9) * (1.0 + pad)
+
+
 # (name, bottom colour, top colour); equal colours = flat background
 BACKGROUNDS = [
     ("Dark gradient", (0.07, 0.08, 0.10), (0.17, 0.19, 0.23)),
@@ -3360,6 +3475,74 @@ ORBIT_SPEEDS = [("Slow", 12.0), ("Medium", 30.0), ("Fast", 60.0)]   # degrees pe
 VIEW_LABELS = [("front", "Front\t1"), ("back", "Back\t2"), ("right", "Right\t3"),
                ("left", "Left\t4"), ("top", "Top\t5"), ("bottom", "Bottom\t6"),
                ("iso", "Isometric\t7")]
+
+
+class ReferenceSheetDialog(QDialog):
+    """Options for the AI reference sheet."""
+
+    def __init__(self, parent, settings: QSettings):
+        super().__init__(parent)
+        self.setWindowTitle("Reference sheet for AI 3D tools")
+        self.setMinimumWidth(520)
+        lay = QVBoxLayout(self)
+        intro = QLabel("Renders the model from several angles on one image, for Meshy, Tripo, Rodin, Luma and "
+                       "similar tools. While capturing, the viewer temporarily switches to orthographic "
+                       "projection, flat even lighting and a plain background with no grid, sky or edges, "
+                       "then puts everything back.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        form = QFormLayout()
+        self.layout_box = QComboBox()
+        for key, label in SHEET_LAYOUTS:
+            self.layout_box.addItem(label, key)
+        self.bg_box = QComboBox()
+        for key, label, _c in SHEET_BACKGROUNDS:
+            self.bg_box.addItem(label, key)
+        self.cell_box = QComboBox()
+        for c in SHEET_CELLS:
+            self.cell_box.addItem(f"{c} × {c} px per view", c)
+        self.labels_cb = QCheckBox("Write the view names under each view (off is best for AI tools)")
+        self.single_cb = QCheckBox("Also save each view as its own PNG")
+        form.addRow("Layout", self.layout_box)
+        form.addRow("Background", self.bg_box)
+        form.addRow("Size", self.cell_box)
+        form.addRow("", self.labels_cb)
+        form.addRow("", self.single_cb)
+        lay.addLayout(form)
+        self.note = QLabel("")
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color:#8a96a6;")
+        lay.addWidget(self.note)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        ok = QPushButton("Render and save…")
+        ok.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        ok.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+        try:                                          # last choices
+            self.layout_box.setCurrentIndex(max(0, self.layout_box.findData(str(settings.value("sheet_layout", "ortho4")))))
+            self.bg_box.setCurrentIndex(max(0, self.bg_box.findData(str(settings.value("sheet_bg", "white")))))
+            self.cell_box.setCurrentIndex(max(0, self.cell_box.findData(int(settings.value("sheet_cell", 1024)))))
+            self.labels_cb.setChecked(str(settings.value("sheet_labels", "false")).lower() in ("1", "true"))
+            self.single_cb.setChecked(str(settings.value("sheet_single", "false")).lower() in ("1", "true"))
+        except Exception:
+            pass
+        self.cell_box.currentIndexChanged.connect(self._note)
+        self._note()
+
+    def _note(self):
+        c = int(self.cell_box.currentData())
+        self.note.setText(f"The sheet will be {4 * c} × {c} px. Views are rendered from the live viewport, so a "
+                          f"larger window gives a sharper result at big sizes.")
+
+    def values(self) -> dict:
+        return {"layout": self.layout_box.currentData(), "bg": self.bg_box.currentData(),
+                "cell": int(self.cell_box.currentData()), "labels": self.labels_cb.isChecked(),
+                "single": self.single_cb.isChecked()}
 
 
 class Viewer(QWidget):
@@ -3407,6 +3590,19 @@ class Viewer(QWidget):
         self._scene_panel = None
         self.turntable = str(self.settings.value("turntable", "true")).lower() in ("1", "true")
         self._tt_drag = None
+        self.split_on = False                      # MatCap | normal shading comparison
+        self.split_style = "vertical"
+        self.split_pos = 0.5
+        self.split_swap = False
+        self._split_drag = False
+        self._split_props = None
+        self._split_cursor = False
+        self._split_timer = QTimer(self)
+        self._split_timer.setSingleShot(True)
+        self._split_timer.timeout.connect(self._split_rebake)
+        self._split_resize_timer = QTimer(self)
+        self._split_resize_timer.setSingleShot(True)
+        self._split_resize_timer.timeout.connect(self._split_after_resize)
         self._materials_panel = None
         self._outline = self._outline_src = None
         self._outline_added = False
@@ -3543,6 +3739,23 @@ class Viewer(QWidget):
         self.act_turntable.setChecked(self.turntable)
         self.act_turntable.toggled.connect(self.set_turntable)
         menu.addAction(self.act_turntable)
+        self.act_split = QAction("Split compare: MatCap | normal\tD", menu, checkable=True)
+        self.act_split.toggled.connect(self.set_split)
+        menu.addAction(self.act_split)
+        sm = menu.addMenu("Split style\tShift+D")
+        self._split_style_acts = {}
+        grp = QActionGroup(sm)
+        for key, label in (("vertical", "Vertical (left | right)"), ("horizontal", "Horizontal (top / bottom)"),
+                           ("diagonal", "Diagonal")):
+            act = QAction(label, sm, checkable=True)
+            act.setChecked(key == self.split_style)
+            act.triggered.connect(lambda _=False, k=key: self.set_split_style(k))
+            grp.addAction(act)
+            sm.addAction(act)
+            self._split_style_acts[key] = act
+        sm.addSeparator()
+        sm.addAction("Swap sides", lambda _=False: self.swap_split_sides())
+        sm.addAction("Reset divider to centre", lambda _=False: self.reset_split())
         chan = menu.addMenu("Material view\tV")
         for key, label in VIEW_CHANNELS:
             chan.addAction(label, lambda _=False, k=key: self.set_view_channel(k))
@@ -3553,6 +3766,7 @@ class Viewer(QWidget):
         menu.addAction("Export / convert…\tCtrl+E", lambda _=False: self.open_export_dialog())
         menu.addAction("About " + ABOUT["app_name"] + "\tF1", lambda _=False: self.about_requested.emit())
         menu.addSeparator()
+        menu.addAction("Reference sheet for AI 3D tools…\tShift+F12", lambda _=False: self.open_reference_sheet_dialog())
         menu.addAction("Save screenshot…\tF12", lambda _=False: self.save_screenshot())
         menu.addAction("Copy screenshot\tCtrl+C", lambda _=False: self.copy_screenshot())
 
@@ -3575,6 +3789,8 @@ class Viewer(QWidget):
         self._place_hud()
         if self.overlay.isVisible():
             self.overlay.reposition()
+        if self._split_visible():
+            self._split_resize_timer.start(150)
 
     # ----- scene state ------------------------------------------------------
     def clear_scene(self):
@@ -3589,6 +3805,7 @@ class Viewer(QWidget):
         if getattr(self, "info_panel", None) is not None:
             self.info_panel.hide()
         self._sync_axes()
+        self._split_sync()
         self.rw.Render()
 
     def show_loading(self, name: str):
@@ -3678,6 +3895,7 @@ class Viewer(QWidget):
         self._sync_env_lights(mode)
         self._apply_edges(mode)
         self.mode = mode
+        self._split_sync()
         label = entries[self.matcap_idx][0]
         self.matcap_btn.setText((label if len(label) <= 16 else label[:15] + "…")
                                 if mode == "matcap" else "MatCap")
@@ -3717,6 +3935,8 @@ class Viewer(QWidget):
                 pass
 
     def _install_matcap(self, impl: str, decl: str):
+        if self.split_on:
+            impl = self._wrap_split(impl)
         for a in self.actors:
             sp = a.GetShaderProperty()
             sp.ClearAllFragmentShaderReplacements()
@@ -3735,6 +3955,7 @@ class Viewer(QWidget):
             a.GetProperty().SetRepresentationToSurface()
         self.mode = "surface"
         self.matcap_btn.setText("MatCap")
+        self._split_sync()
         self.rw.Render()
         self.message.emit("That MatCap shader failed to compile on this GPU, so normal shading was "
                           "restored (details are in the VTK log in your temp folder)")
@@ -3770,6 +3991,243 @@ class Viewer(QWidget):
         self.panel_requested.emit("matcap")
         if self.custom is None:
             self.set_custom_matcap(spec)
+
+    # ----- split compare: MatCap on one side, normal shading on the other ----------------
+    # One render only. The fragment shader chooses the look per pixel from its screen position
+    # (gl_FragCoord), so there is no second pass. The divider position is baked into the shader as
+    # a literal (this app avoids custom uniforms), so while the divider is dragged the shader is
+    # re-baked on a short throttle; the divider line itself is a 2D overlay and follows instantly.
+    def _split_visible(self) -> bool:
+        return bool(self.split_on and self.actors and self.mode == "matcap")
+
+    def _view_px(self):
+        try:
+            w, h = self.rw.GetSize()
+        except Exception:
+            w = h = 0
+        if w < 2 or h < 2:
+            dpr = self.vtk_widget.devicePixelRatioF()
+            w, h = self.vtk_widget.width() * dpr, self.vtk_widget.height() * dpr
+        return max(int(w), 2), max(int(h), 2)
+
+    def _split_geom(self, w: int, h: int):
+        """(line start, line end, handle centre, GLSL condition that is true on the MatCap side)."""
+        pos = min(1.0, max(0.0, self.split_pos))
+        if self.split_style == "horizontal":
+            cy = (1.0 - pos) * h
+            p0, p1, hp, cond = (0.0, cy), (float(w), cy), (w / 2.0, cy), f"gl_FragCoord.y > {cy:.1f}"
+        elif self.split_style == "diagonal":
+            cx, cy = pos * w, h / 2.0
+            s = cx + cy
+            p0, p1, hp, cond = (s - 2.0 * h, 2.0 * h), (s + h, -float(h)), (cx, cy), \
+                f"gl_FragCoord.x + gl_FragCoord.y < {s:.1f}"
+        else:
+            cx = pos * w
+            p0, p1, hp, cond = (cx, 0.0), (cx, float(h)), (cx, h / 2.0), f"gl_FragCoord.x < {cx:.1f}"
+        if self.split_swap:
+            cond = f"!({cond})"
+        return p0, p1, hp, cond
+
+    def _wrap_split(self, impl: str) -> str:
+        """Matcap on one side of the divider; the other side keeps the normal look (the
+        environment lighting if it is on, otherwise stock VTK shading)."""
+        w, h = self._view_px()
+        cond = self._split_geom(w, h)[3]
+        base = self._current_env_code() if self._env_on("lighting") else "//VTK::Light::Impl\n"
+        return f"{base}\n  if ({cond}) {{\n{impl}\n  }}\n"
+
+    def _split_build(self):
+        if self._split_props is not None or vtkActor2D is None:
+            return
+        props = []
+        for layer, colour, width, opacity in ((0, (0, 0, 0), 5, 0.45), (1, (1, 1, 1), 2, 1.0),
+                                              (2, (0, 0, 0), 0, 0.85), (3, (1, 1, 1), 0, 1.0)):
+            pd = vtkPolyData()
+            pd.SetPoints(vtkPoints())
+            m = vtkPolyDataMapper2D()
+            m.SetInputData(pd)
+            a = vtkActor2D()
+            a.SetMapper(m)
+            a.SetLayerNumber(layer)
+            a.GetProperty().SetColor(*colour)
+            a.GetProperty().SetOpacity(opacity)
+            if width:
+                a.GetProperty().SetLineWidth(width)
+            a.SetVisibility(False)
+            self.renderer.AddViewProp(a)
+            props.append((pd, a))
+        self._split_props = props
+
+    def _split_fill(self):
+        if self._split_props is None:
+            return
+        w, h = self._view_px()
+        scale = w / max(self.vtk_widget.width(), 1)
+        p0, p1, hp, _c = self._split_geom(w, h)
+
+        def disc(radius):
+            pts, cells = vtkPoints(), vtkCellArray()
+            n = 28
+            cells.InsertNextCell(n)
+            for i in range(n):
+                ang = 2.0 * math.pi * i / n
+                cells.InsertCellPoint(pts.InsertNextPoint(hp[0] + radius * math.cos(ang),
+                                                          hp[1] + radius * math.sin(ang), 0.0))
+            return pts, cells
+
+        for idx in (0, 1):                                    # shadow + line
+            pd = self._split_props[idx][0]
+            pts, cells = vtkPoints(), vtkCellArray()
+            cells.InsertNextCell(2)
+            cells.InsertCellPoint(pts.InsertNextPoint(p0[0], p0[1], 0.0))
+            cells.InsertCellPoint(pts.InsertNextPoint(p1[0], p1[1], 0.0))
+            pd.SetPoints(pts)
+            pd.SetLines(cells)
+            pd.Modified()
+        for idx, radius in ((2, 13.0 * scale), (3, 10.0 * scale)):   # handle: dark ring, white disc
+            pd = self._split_props[idx][0]
+            pts, cells = disc(radius)
+            pd.SetPoints(pts)
+            pd.SetPolys(cells)
+            pd.Modified()
+
+    def _split_sync(self):
+        """Show or hide the divider and bring its geometry up to date."""
+        vis = self._split_visible()
+        if vis:
+            self._split_build()
+        if self._split_props is not None:
+            for _pd, a in self._split_props:
+                a.SetVisibility(bool(vis))
+            if vis:
+                self._split_fill()
+        if not vis and self._split_cursor:
+            self.vtk_widget.unsetCursor()
+            self._split_cursor = False
+
+    def _split_request_rebake(self):
+        if not self._split_visible():
+            return
+        heavy = False
+        try:
+            heavy = self._matcaps()[self.matcap_idx][3] is not None      # image MatCaps compile slower
+        except Exception:
+            pass
+        if not self._split_timer.isActive():
+            self._split_timer.start(260 if heavy else 70)
+
+    def _split_rebake(self):
+        if self._split_visible():
+            self.set_mode("matcap", force=True)
+
+    def _split_after_resize(self):
+        if self._split_visible():
+            self._split_fill()
+            self._split_rebake()
+
+    def set_split(self, on: bool):
+        if on and not self.actors:
+            self.message.emit("Open a model first")
+            self.act_split.blockSignals(True)
+            self.act_split.setChecked(False)
+            self.act_split.blockSignals(False)
+            return
+        self.split_on = bool(on)
+        if self.actors:
+            self._split_timer.stop()
+            if self.split_on or self.mode == "matcap":
+                self.set_mode("matcap", force=True)   # re-bakes (and switches to MatCap when turning on)
+        self.message.emit("Split compare on: drag the line, double-click it to centre, D hides it"
+                          if on else "Split compare off")
+
+    def toggle_split(self):
+        self.act_split.toggle()
+
+    def set_split_style(self, style: str):
+        if style not in ("vertical", "horizontal", "diagonal"):
+            return
+        self.split_style = style
+        self._split_style_acts[style].setChecked(True)
+        if self.split_on:
+            self._split_sync()
+            self._split_rebake()
+        else:
+            self.act_split.setChecked(True)            # choosing a style implies you want to see it
+
+    def cycle_split_style(self):
+        order = ["vertical", "horizontal", "diagonal"]
+        self.set_split_style(order[(order.index(self.split_style) + 1) % 3])
+
+    def swap_split_sides(self):
+        self.split_swap = not self.split_swap
+        if self._split_visible():
+            self._split_rebake()
+
+    def reset_split(self):
+        self.split_pos = 0.5
+        if self._split_visible():
+            self._split_fill()
+            self.rw.Render()
+            self._split_rebake()
+
+    def _split_hit(self, dx: float, dy: float, w: int, h: int, scale: float) -> bool:
+        p0, p1, hp, _c = self._split_geom(w, h)
+        if math.hypot(dx - hp[0], dy - hp[1]) < 16.0 * scale:
+            return True
+        reach = 8.0 * scale
+        if self.split_style == "horizontal":
+            return abs(dy - p0[1]) < reach
+        if self.split_style == "diagonal":
+            return abs(dx + dy - (p0[0] + p0[1])) / 1.4142 < reach
+        return abs(dx - p0[0]) < reach
+
+    def _split_move_to(self, dx: float, dy: float, w: int, h: int):
+        if self.split_style == "horizontal":
+            pos = 1.0 - dy / h
+        elif self.split_style == "diagonal":
+            pos = (dx + dy - h / 2.0) / w
+        else:
+            pos = dx / w
+        self.split_pos = min(1.0, max(0.0, pos))
+        self._split_fill()
+        self.rw.Render()
+        self._split_request_rebake()
+
+    def _split_event(self, ev, t) -> bool:
+        """Mouse handling for the divider. Only the visible line / handle is grabbed, so normal
+        orbit, pan and zoom elsewhere in the viewport are untouched."""
+        w, h = self._view_px()
+        scale = w / max(self.vtk_widget.width(), 1)
+        pos = ev.position()
+        dx, dy = pos.x() * scale, h - pos.y() * scale
+        if self._split_drag:
+            if t == QEvent.MouseMove:
+                self._split_move_to(dx, dy, w, h)
+            elif t == QEvent.MouseButtonRelease:
+                self._split_drag = False
+                self._split_timer.stop()
+                self._split_rebake()
+            return True
+        near = self._split_hit(dx, dy, w, h, scale)
+        if t == QEvent.MouseMove:
+            if ev.buttons() == Qt.NoButton:
+                if near != self._split_cursor:
+                    self._split_cursor = near
+                    if near:
+                        shape = {"horizontal": Qt.SizeVerCursor, "diagonal": Qt.SizeAllCursor}.get(
+                            self.split_style, Qt.SizeHorCursor)
+                        self.vtk_widget.setCursor(shape)
+                    else:
+                        self.vtk_widget.unsetCursor()
+            return False
+        if near and ev.button() == Qt.LeftButton:
+            if t == QEvent.MouseButtonPress:
+                self._split_drag = True
+                return True
+            if t == QEvent.MouseButtonDblClick:
+                self.reset_split()
+                return True
+        return False
 
     # ----- camera -----------------------------------------------------------
     def _axes_vectors(self):
@@ -3851,6 +4309,8 @@ class Viewer(QWidget):
         """Two scene lights carry 'world up' and 'the sun' into the shader (surface mode only,
         so every other mode keeps VTK's normal headlight)."""
         mode = mode or self.mode
+        if mode == "matcap" and self.split_on:
+            mode = "surface"                      # the 'normal' half of a split needs the scene lights
         want = (self._env_on("lighting") and mode == "surface" and bool(self.actors)
                 and not self._env_view_locked)
         if want:
@@ -4009,6 +4469,10 @@ class Viewer(QWidget):
             # W = wireframe, P = pick, E/Q = exit, ...) must never reach the scene: they changed the
             # ground grid and could alter other props.
             return True
+        if self.split_on and t in (QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.MouseButtonRelease,
+                                   QEvent.MouseButtonDblClick) and self._split_visible():
+            if self._split_event(ev, t):
+                return True
         # Shift + right-drag: rotate the lighting
         if (t == QEvent.MouseButtonPress and ev.button() == Qt.RightButton
                 and bool(ev.modifiers() & Qt.ShiftModifier) and self.env.get("enabled") and self.actors):
@@ -4107,6 +4571,9 @@ class Viewer(QWidget):
         self._sync_env_scene()
         if self.mode == "surface" and self._current_env_code() != self._env_code:
             self.set_mode("surface")              # reinstalls (or removes) the shader and renders
+        elif self._split_visible():
+            self._split_request_rebake()          # the 'normal' half follows the environment
+            self.rw.Render()
         else:
             self.rw.Render()
 
@@ -4496,7 +4963,9 @@ class Viewer(QWidget):
 
     # -- edges over shaded
     def _apply_edges(self, mode=None):
-        on = self.edges_on and (mode or self.mode) == "surface"
+        m = mode or self.mode
+        # In a split compare the edges belong on the normal-shaded half (the MatCap half covers them).
+        on = self.edges_on and (m == "surface" or (m == "matcap" and self.split_on))
         for a in self.actors:
             p = a.GetProperty()
             if on:
@@ -4754,6 +5223,145 @@ class Viewer(QWidget):
         self._sync_axes()
         self.rw.Render()
 
+    # ----- reference sheet for AI 3D tools ----------------------------------------------
+    def open_reference_sheet_dialog(self):
+        if not self.actors:
+            self.message.emit("Open a model first")
+            return
+        if not [a for a in self.actors if a.GetVisibility()]:
+            self.message.emit("All parts are hidden, so there is nothing to capture")
+            return
+        dlg = ReferenceSheetDialog(self.window(), self.settings)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        opt = dlg.values()
+        for k, v in (("sheet_layout", opt["layout"]), ("sheet_bg", opt["bg"]), ("sheet_cell", opt["cell"]),
+                     ("sheet_labels", "true" if opt["labels"] else "false"),
+                     ("sheet_single", "true" if opt["single"] else "false")):
+            self.settings.setValue(k, v)
+        pics = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation) or str(Path.home())
+        stem = Path(self.path).stem if self.path else "model"
+        fn, _ = QFileDialog.getSaveFileName(self, "Save reference sheet",
+                                            os.path.join(pics, f"{stem}_reference_sheet.png"), "PNG image (*.png)")
+        if not fn:
+            return
+        if not fn.lower().endswith(".png"):
+            fn += ".png"
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            sheet, cells = self.render_reference_sheet(opt)
+        except Exception as e:
+            sheet, cells = None, []
+            self.message.emit(f"Could not render the reference sheet: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        if sheet is None:
+            return
+        ok = sheet.save(fn, "PNG")
+        if ok and opt["single"]:
+            base = fn[:-4]
+            for label, img in cells:
+                img.save(f"{base}_{label}.png", "PNG")
+        self.message.emit(f"Saved reference sheet: {fn}" if ok else "Could not save the reference sheet")
+
+    def render_reference_sheet(self, opt: dict):
+        """Capture every view with temporary overrides, always restoring the viewer afterwards.
+        Returns (sheet QImage, [(file label, cell QImage)])."""
+        u, f, r = self._axes_vectors()
+        views = sheet_views(opt["layout"], u, f, r)
+        lo, hi = self._model_bounds()
+        centre, half = sheet_framing(lo, hi, [v[2] for v in views], u)
+        cell = int(opt["cell"])
+        bg = next(c for k, _l, c in SHEET_BACKGROUNDS if k == opt["bg"])
+
+        cam = self.renderer.GetActiveCamera()
+        saved = {"cam": (cam.GetPosition(), cam.GetFocalPoint(), cam.GetViewUp(), cam.GetViewAngle(),
+                         cam.GetParallelProjection(), cam.GetParallelScale()),
+                 "env": copy.deepcopy(self.env), "mode": self.mode, "split": self.split_on,
+                 "edges": self.edges_on, "grid": self.grid_on,
+                 "axes": self._axes_widget is not None and self.axes_on,
+                 "orbit": self._orbit_timer.isActive()}
+        self._orbit_timer.stop()
+        if saved["axes"]:
+            self._axes_widget.SetEnabled(0)
+        cells = []
+        try:
+            # --- temporary scene: flat light, no sky/grid/edges/shadow, solid background, orthographic
+            self.split_on = False
+            self.edges_on = False
+            self.grid_on = False
+            self.env = clean_env({**saved["env"], **SHEET_ENV})
+            self._env_refresh()
+            self.set_mode("surface", force=True)           # shaded look, with the flat environment lighting
+            self._sync_ground()
+            self.renderer.SetBackground(*bg)
+            self.renderer.SetBackground2(*bg)
+            self.renderer.SetGradientBackground(False)
+
+            cam.SetParallelProjection(True)
+            wpx, hpx = self._view_px()
+            side = max(1, min(wpx, hpx))
+            aspect = wpx / float(hpx)
+            cam.SetParallelScale(half if aspect >= 1.0 else half / aspect)   # the square cell is exactly `half` wide
+            scale = max(1, min(4, int(math.ceil(cell / float(side)))))
+            dist = half * 6.0 + float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
+            for label, _caption, d in views:
+                cam.SetFocalPoint(*centre)
+                cam.SetPosition(*(centre + np.asarray(d, float) * dist))
+                cam.SetViewUp(*u)
+                self.renderer.ResetCameraClippingRange()
+                arr, _s = self._grab_pass(bg, scale)
+                if arr is None:
+                    raise RuntimeError("the viewport could not be captured")
+                h, w, _ = arr.shape
+                sq = min(h, w)
+                y0, x0 = (h - sq) // 2, (w - sq) // 2
+                crop = np.ascontiguousarray(arr[y0:y0 + sq, x0:x0 + sq])
+                img = QImage(crop.data, sq, sq, 3 * sq, QImage.Format_RGB888).copy()
+                if sq != cell:
+                    img = img.scaled(cell, cell, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                cells.append((label, img))
+        finally:
+            # --- put everything back
+            cam.SetPosition(*saved["cam"][0])
+            cam.SetFocalPoint(*saved["cam"][1])
+            cam.SetViewUp(*saved["cam"][2])
+            cam.SetViewAngle(saved["cam"][3])
+            cam.SetParallelProjection(bool(saved["cam"][4]))
+            cam.SetParallelScale(saved["cam"][5])
+            self.env = saved["env"]
+            self.split_on = saved["split"]
+            self.edges_on = saved["edges"]
+            self.grid_on = saved["grid"]
+            self._env_refresh()
+            self.set_mode(saved["mode"], force=True)
+            self._sync_ground()
+            if self._bg_from_env:
+                self._sync_background()
+            else:
+                self.set_background(self.bg_idx, announce=False)
+            if saved["axes"]:
+                self._axes_widget.SetEnabled(1)
+            self.renderer.ResetCameraClippingRange()
+            if saved["orbit"]:
+                self._orbit_timer.start(20)
+            self.rw.Render()
+
+        sheet = QImage(cell * len(cells), cell, QImage.Format_RGB888)
+        sheet.fill(QColor.fromRgbF(*bg))
+        p = QPainter(sheet)
+        for i, (label, img) in enumerate(cells):
+            p.drawImage(i * cell, 0, img)
+        if opt.get("labels"):
+            p.setPen(QColor(60, 60, 60) if sum(bg) > 2.0 else QColor(235, 235, 235))
+            fnt = QFont()
+            fnt.setPixelSize(max(12, cell // 40))
+            p.setFont(fnt)
+            for i, (label, _caption, _d) in enumerate(views):
+                p.drawText(i * cell + cell // 40, cell - cell // 40, _caption)
+        p.end()
+        return sheet, cells
+
     # ----- screenshots ------------------------------------------------------
     def _grab_pass(self, background, scale: int):
         """One capture of the render window. background=None keeps what the viewer shows;
@@ -4790,6 +5398,13 @@ class Viewer(QWidget):
         axes_were_on = self._axes_widget is not None and self.axes_on
         if axes_were_on:
             self._axes_widget.SetEnabled(0)               # clean shot without the gizmo
+        # Enlarged captures are rendered in tiles, which would shift the split's screen positions,
+        # so those shots show the plain MatCap. At 1x the split is captured as you see it.
+        split_paused = scale > 1 and self._split_visible()
+        if split_paused:
+            self.split_on = False
+            self.set_mode("matcap", force=True)
+            self.message.emit("Screenshot taken without the split (use screenshot scale 1x to include it)")
         try:
             if self.shot_transparent:
                 black, s = self._grab_pass((0.0, 0.0, 0.0), scale)
@@ -4805,6 +5420,9 @@ class Viewer(QWidget):
             h, w, _ = arr.shape
             return QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         finally:
+            if split_paused:
+                self.split_on = True
+                self.set_mode("matcap", force=True)
             if self._sky_added:
                 self.renderer.AddActor(self._skybox)
             if self._bg_from_env:
@@ -4881,6 +5499,9 @@ QMenu::separator { height:1px; background:#2f3947; margin:4px 8px; }
 #galleryBar { background:#10141a; border-bottom:1px solid #0b0e12; }
 QLineEdit, QComboBox { background:#1b2028; border:1px solid #2f3947; border-radius:6px; padding:4px 8px; color:#d5dbe3; }
 QLineEdit:focus, QComboBox:focus { border-color:#3d6fa5; }
+QLineEdit#addressBar[bad="true"] { border-color:#c0504d; color:#f0b4b2; }
+QToolButton#upBtn { background:#1b2028; border:1px solid #2f3947; border-radius:6px; padding:3px 6px; }
+QToolButton#upBtn:hover { background:#252d38; }
 QComboBox QAbstractItemView { background:#1b2028; selection-background-color:#34506f; border:1px solid #2f3947; }
 QSlider::groove:horizontal { height:4px; background:#2c3542; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-5px 0; background:#6aa8e8; border-radius:6px; }
@@ -5061,6 +5682,18 @@ class MainWindow(QMainWindow):
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(10, 6, 10, 6)
         bl.setSpacing(8)
+        self.up_btn = QToolButton()
+        self.up_btn.setObjectName("upBtn")
+        self.up_btn.setArrowType(Qt.ArrowType.UpArrow)
+        self.up_btn.setToolTip("Go to the parent folder  (Alt+Up)")
+        self.up_btn.clicked.connect(self._go_up)
+        self.address = QLineEdit()
+        self.address.setObjectName("addressBar")
+        self.address.setPlaceholderText("Type a folder path and press Enter…")
+        self.address.setClearButtonEnabled(True)
+        self.address.setToolTip("Type or paste a folder path and press Enter  (Alt+D to jump here)")
+        self.address.returnPressed.connect(self._address_entered)
+        self.address.textEdited.connect(lambda _t: self._address_error(False))
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search models…")
         self.search.setClearButtonEnabled(True)
@@ -5084,9 +5717,10 @@ class MainWindow(QMainWindow):
         self.size_slider.setValue(max(64, min(card, 192)))
         self.gallery.set_card_size(self.size_slider.value())
         self.size_slider.valueChanged.connect(self._size_changed)
+        bl.addWidget(self.up_btn)
+        bl.addWidget(self.address, 1)
         bl.addWidget(self.search)
         bl.addWidget(self.sort_box)
-        bl.addStretch(1)
         bl.addWidget(self.count_label)
         bl.addWidget(size_label)
         bl.addWidget(self.size_slider)
@@ -5133,14 +5767,14 @@ class MainWindow(QMainWindow):
             ("R", v.reset_camera), ("O", v.toggle_orbit), ("B", v.cycle_background),
             ("A", v.act_axes.toggle), ("C", v.act_ortho.toggle), ("U", v.toggle_up_axis),
             ("T", v.toggle_transparency),
-            ("F12", v.save_screenshot), ("Ctrl+C", v.copy_screenshot),
+            ("F12", v.save_screenshot), ("Shift+F12", v.open_reference_sheet_dialog), ("Ctrl+C", v.copy_screenshot),
             ("Left", lambda: self._step(-1)), ("Right", lambda: self._step(1)),
             ("E", v.open_matcap_editor),
             ("L", v.toggle_environment), ("Shift+L", v.open_environment_panel),
             ("Ctrl+L", v.cycle_lighting_preset),
             ("I", v.toggle_info),
             ("G", v.toggle_grid), ("F", v.fit_view), ("H", v.toggle_turntable),
-            ("V", v.cycle_view_channel), ("Shift+M", v.open_materials_panel),
+            ("V", v.cycle_view_channel), ("D", v.toggle_split), ("Shift+D", v.cycle_split_style), ("Shift+M", v.open_materials_panel),
             ("Shift+W", v.toggle_edges), ("Shift+G", v.open_scene_panel),
             ("Esc", self.close_viewer),
         ]
@@ -5149,6 +5783,8 @@ class MainWindow(QMainWindow):
         for n in (1, 2, 3):                        # saved camera views
             bindings.append((f"Ctrl+Shift+{n}", lambda n=n: v.save_bookmark(n)))
             bindings.append((f"Alt+{n}", lambda n=n: v.go_bookmark(n)))
+        QShortcut(QKeySequence("Alt+D"), self, activated=self._focus_address)
+        QShortcut(QKeySequence("Alt+Up"), self, activated=self._go_up)
         self._viewer_shortcuts = [QShortcut(QKeySequence(k), self, activated=fn)
                                   for k, fn in bindings]
         self._build_docks()
@@ -5673,7 +6309,49 @@ class MainWindow(QMainWindow):
         if file:
             self.open_asset(file)
 
+    # ----- address bar
+    def _address_error(self, bad: bool):
+        self.address.setProperty("bad", bool(bad))
+        self.address.style().unpolish(self.address)
+        self.address.style().polish(self.address)
+
+    def _current_folder(self) -> str:
+        return str(self.settings.value("last_dir", str(Path.home())))
+
+    def _address_entered(self):
+        raw = self.address.text().strip().strip('"').strip("'")
+        if not raw:
+            self.address.setText(self._current_folder())
+            self._address_error(False)
+            return
+        path = os.path.normpath(os.path.expandvars(os.path.expanduser(raw)))
+        if os.path.isfile(path):
+            self._address_error(False)
+            self.goto_folder(os.path.dirname(path))
+            self.open_asset(path)
+        elif os.path.isdir(path):
+            self._address_error(False)
+            self.goto_folder(path)
+            self.gallery.setFocus()
+        else:
+            self._address_error(True)
+            self.statusBar().showMessage(f"Folder not found: {raw}", 6000)
+
+    def _focus_address(self):
+        if self.stack.currentWidget() is self.viewer:
+            self.close_viewer()
+        self.address.setFocus()
+        self.address.selectAll()
+
+    def _go_up(self):
+        cur = self._current_folder()
+        parent = os.path.dirname(os.path.normpath(cur))
+        if parent and parent != cur and os.path.isdir(parent):
+            self.goto_folder(parent)
+
     def goto_folder(self, folder: str):
+        self.address.setText(os.path.normpath(folder))
+        self._address_error(False)
         idx = self.fs.index(folder)
         self.tree.setCurrentIndex(idx)   # triggers _tree_changed -> gallery
         self.tree.scrollTo(idx, QAbstractItemView.PositionAtCenter)
@@ -5683,6 +6361,8 @@ class MainWindow(QMainWindow):
         path = self.fs.filePath(cur)
         if os.path.isdir(path):
             self.settings.setValue("last_dir", path)
+            self.address.setText(os.path.normpath(path))
+            self._address_error(False)
             self.search.blockSignals(True)
             self.search.clear()
             self.search.blockSignals(False)
