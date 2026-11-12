@@ -4,7 +4,9 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![matcap_devil Image](images/matcap_devil.jpg)
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -14,6 +16,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 - **Export / convert:** save the model as STL, OBJ or PLY, optionally simplified to a percentage of its faces.
 - **Model info:** a card with the model's vertex and face counts, dimensions, materials, textures and file size.
 - **Menus:** a File menu (open folder, export, quit) and a Help menu (About), alongside the keyboard shortcuts.
+- **Side panels:** Materials, MatCap, Environment and Scene panels in a right-hand drawer that you can tab, stack and collapse, with the layout remembered between sessions.
 - **Material views:** an albedo view (colours and textures with no lighting), a normals view, a texture inspector with channel previews, and a parts list to hide or isolate pieces of a model.
 - **Scene tools:** ground grid, field of view, saved camera views, edges over shaded, move to ground or origin, and screenshots with 1×/2×/4× size and a transparent background.
 - **Environment:** an infinite panorama sky, cheap hemispheric ambient light, one sun and a soft blob shadow, all fitted automatically from a panorama image. Built to stay fast on low-end machines.
@@ -87,12 +90,13 @@ python main.py
 | Copy screenshot | `Ctrl+C` |
 | Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
 | Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal, then normal shading) |
-| MatCap editor | `E` (or **Main ▾ → MatCap editor…**) |
+| MatCap editor | `E` (or **Panels → MatCap**) |
 | Environment on/off | `L` |
 | Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
-| Scene settings panel | `Shift+G` (or **Main ▾ → Scene settings…**) |
+| Scene settings panel | `Shift+G` (or **Panels → Scene**) |
+| Hide/show the whole side panel | `Ctrl+B` (or the arrow on the right edge) |
 | Cycle material view: shaded, albedo, normals | `V` |
-| Materials & parts panel | `Shift+M` (or **Main ▾ → Materials & parts…**) |
+| Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
 | Ground grid on/off | `G` |
 | Fit the model in view (keeps your angle) | `F` |
 | Lock the horizon (turntable) / free rotation | `H` (on by default) |
@@ -101,7 +105,7 @@ python main.py
 | Export / convert | `Ctrl+E` (or **File → Export / convert…**) |
 | About | `F1` (or **Help → About**) |
 | Open folder | `Ctrl+O` (**File → Open folder…**) |
-| Environment settings | `Shift+L` (or **Main ▾ → Environment settings…**) |
+| Environment settings | `Shift+L` (or **Panels → Environment**) |
 | Cycle built-in lighting presets | `Ctrl+L` (or **Main ▾ → Lighting preset**) |
 | Rotate the lighting and sky | `Shift` + right-drag in the viewer (with the environment on) |
 | Reset camera | `R` |
@@ -109,9 +113,7 @@ python main.py
 
 ## MatCap editor and presets
 
-<img width="714" height="504" alt="3 Matcap" src="https://github.com/user-attachments/assets/eeef10d8-879a-4d82-93dd-d14e90e3bfb7" />
-
-Press **E** (or **Main ▾ → MatCap editor…**) with a model open. The editor floats beside the viewer and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
+Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
@@ -138,8 +140,6 @@ Notes:
 - If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
 
 ## Managing files from the gallery
-
-<img width="1044" height="738" alt="2 Thumbs" src="https://github.com/user-attachments/assets/db991f42-9a11-499d-86b1-593075554204" />
 
 Right-click a thumbnail (or select it and use the keys) to:
 
@@ -188,9 +188,19 @@ Press **I** (or **Main ▾ → Model info**) to show a small card under the top 
 - **Materials and textures:** distinct materials and texture images. Plain meshes such as STL show "none (plain mesh)"
 - **Has:** vertex colours and UV coordinates, when present
 
-## Material views, textures and parts
+## Side panels (a collapsible drawer on the right)
 
-<img width="1001" height="612" alt="7  materials  watch" src="https://github.com/user-attachments/assets/26540031-4ee2-4154-af55-4ef2619ab418" />
+The four side panels (**Materials**, **MatCap**, **Environment** and **Scene**) live in one drawer on the right edge of the window, so they sit beside the viewer instead of covering it. This helps most on a laptop screen.
+
+- **Open a panel** with its key (`Shift+M`, `E`, `Shift+L`, `Shift+G`) or by ticking it in the **Panels** menu. The menu lists the panels in the same left-to-right order as the tabs: Materials, MatCap, Environment, Scene. Untick a panel, or use the ✕ on its title bar, to put it away.
+- **Collapse and expand the whole drawer:** click the slim arrow button on the right edge of the workspace, use **Panels → Show/Hide Panel**, or press `Ctrl+B`. The drawer slides out of the way and the workspace grows to fill the space; the arrow stays visible so you can bring it back. Which panels were open, and which tab was in front, are remembered.
+- **In the gallery** the drawer closes by itself and the arrow button is hidden, because the panels only apply to an open model. It comes back, as you left it, when you open a model.
+- **Docking is right-edge only.** Panels can't be docked to the top, left or bottom. Within the right edge you can rearrange them: drag a tab to reorder it, drag a panel's title bar onto another to group them as tabs, or to the top or bottom half of another to stack the two vertically. Drag a whole tab group by its title bar to move the group.
+- **Floating panels:** drag a panel out of the drawer and release it anywhere to leave it as its own window, for instance on a second screen. Drag either the tab itself or the panel's title text out of the drawer. Drag it back onto the right edge to dock it again. Floating panels are independent windows: they can overlap each other freely, and clicking one brings it to the front. A floating panel is not part of the drawer, so **Show/Hide Panel** and `Ctrl+B` leave it where it is. All panels, floating ones included, are put away in the gallery and return when you open a model.
+- **Scrolling:** every panel scrolls on its own, so nothing is clipped when a panel is short or narrow.
+- **Remembered:** your arrangement, the open panels, whether the drawer is expanded, its width and the window size are saved automatically and restored the next time you start the app. **Panels → Reset panel layout** puts the four tabs back in the default order (Materials, MatCap, Environment, Scene) with the drawer open.
+
+## Material views, textures and parts
 
 Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or pick one from **Main ▾ → Material view**. `Shift+M` opens the **Materials & parts** panel, which has the same view choice plus two tabs.
 
@@ -210,9 +220,7 @@ Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or
 
 ## Scene settings (ground, camera, display, screenshots)
 
-<img width="864" height="550" alt="4 Scene" src="https://github.com/user-attachments/assets/ddb98b2e-f6b3-43de-89c9-4cd74548d73c" />
-
-Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with:
+Press **Shift+G** (or **Panels → Scene**) for a small panel with:
 
 - **Ground grid (`G`):** a flat grid under the model. Its lines follow the world axes and its cell size adapts to the model. It sits at the model's lowest point, next to the blob shadow.
 - **Move to ground, Move to origin, Reset position:** *Move to ground* drops the model so its lowest point is at height 0. *Move to origin* puts the centre of the model at 0, 0, 0. *Reset position* undoes both. These change where the model sits in the world, so they also affect files you export.
@@ -224,8 +232,6 @@ Press **Shift+G** (or **Main ▾ → Scene settings…**) for a small panel with
 - **Screenshot size and transparency:** choose 1×, 2× or 4× the window size, and optionally a **transparent background**. `F12` and `Ctrl+C` use these settings. The shadow blob stays semi-transparent in the PNG, so it drops straight onto another image.
 
 ## Environment (sky, lighting, shadow)
-
-<img width="889" height="541" alt="5 Environment" src="https://github.com/user-attachments/assets/c889eb92-67f6-4152-8c18-13da5bd83a40" />
 
 Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
 

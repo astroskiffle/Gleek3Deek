@@ -31,15 +31,17 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import (QDir, QEvent, QFile, QMimeData, QObject, QRunnable, QSettings, QSize,
-                            QStandardPaths, Qt, QThreadPool, QTimer, QUrl, Signal)
+from PySide6.QtCore import (QByteArray, QDir, QEasingCurve, QEvent, QFile, QMimeData, QObject, QRunnable, QSettings, QSize,
+                            QStandardPaths, Qt, QThreadPool, QTimer, QUrl, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter,
                            QPen, QPixmap, QPolygonF, QShortcut)
 from PySide6.QtCore import QPointF
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (QTextBrowser, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFormLayout,
                                QGridLayout, QInputDialog, QLineEdit, QMenu, QMessageBox, QPushButton,
+                               QSizePolicy,
                                QSlider, QTabWidget)
+from PySide6.QtWidgets import QDockWidget, QScrollArea, QTabBar
 from PySide6.QtWidgets import (QApplication, QFileSystemModel, QFrame,
                                QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QListView, QMainWindow,
@@ -104,17 +106,17 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.6.7",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": ("[Placeholder]"
-                     ""),
+    "legal_notice": ("[Placeholder] Replace this text with your own legal notice, terms of use "
+                     "and contact details."),
     # --- licence and attributions
     "licence_heading": "Licence",
     "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
@@ -1759,15 +1761,14 @@ def bake_image_matcap(img: QImage, n: int = IMAGE_MATCAP_RES) -> bytes:
     return bake_matcap_array(raw.reshape(m, m, 3).astype(np.float32), n)
 
 
-class MatCapEditor(QDialog):
+class MatCapEditor(QWidget):
     """Floating editor: sliders and colours for a procedural MatCap, plus preset and image loading."""
     changed = Signal(object)                      # emits a spec dict (debounced)
 
     def __init__(self, parent, spec: dict):
         super().__init__(parent)
         self.setWindowTitle("MatCap editor")
-        self.setWindowFlag(Qt.Tool, True)
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(300)
         self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
         self.spec = copy.deepcopy(spec)
         self._sliders: dict = {}
@@ -1832,12 +1833,7 @@ class MatCapEditor(QDialog):
             self._labels[key] = lab
         root.addLayout(form)
 
-        row = QHBoxLayout()
-        row.addStretch(1)
-        close = QPushButton("Close")
-        close.clicked.connect(self.close)
-        row.addWidget(close)
-        root.addLayout(row)
+        root.addStretch(1)
         self.set_spec(self.spec)
 
     # ----- state <-> widgets
@@ -2290,7 +2286,7 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
 """
 
 
-class EnvironmentPanel(QDialog):
+class EnvironmentPanel(QWidget):
     """Floating panel for the environment: panorama, three ambient colours, sun and shadow."""
     changed = Signal(object)
     load_requested = Signal(str)
@@ -2302,8 +2298,7 @@ class EnvironmentPanel(QDialog):
     def __init__(self, parent, env: dict, pano_path: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Environment")
-        self.setWindowFlag(Qt.Tool, True)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(300)
         self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
         self.env = copy.deepcopy(env)
         self._checks: dict = {}
@@ -2384,10 +2379,8 @@ class EnvironmentPanel(QDialog):
         reset.clicked.connect(self.reset)
         row.addWidget(reset)
         row.addStretch(1)
-        close = QPushButton("Close")
-        close.clicked.connect(self.close)
-        row.addWidget(close)
         root.addLayout(row)
+        root.addStretch(1)
         self.set_env(self.env, pano_path)
 
     def set_env(self, env: dict, pano_path=None):
@@ -2973,7 +2966,7 @@ def matte_rgba(on_black: np.ndarray, on_white: np.ndarray) -> np.ndarray:
 SHOT_SCALES = [1, 2, 4]
 
 
-class ScenePanel(QDialog):
+class ScenePanel(QWidget):
     """Floating panel for ground, camera, display and screenshot options. It talks to the
     viewer directly; every control has a matching menu item or key as well."""
 
@@ -2981,8 +2974,7 @@ class ScenePanel(QDialog):
         super().__init__(parent)
         self.viewer = viewer
         self.setWindowTitle("Scene")
-        self.setWindowFlag(Qt.Tool, True)
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(300)
         root = QVBoxLayout(self)
         root.setSpacing(8)
 
@@ -3066,15 +3058,14 @@ class ScenePanel(QDialog):
             row.addWidget(b)
         root.addLayout(row)
 
-        row = QHBoxLayout()
-        row.addStretch(1)
-        close = QPushButton("Close")
-        close.clicked.connect(self.close)
-        row.addWidget(close)
-        root.addLayout(row)
+        root.addStretch(1)
         for act in (viewer.act_grid, viewer.act_edges, viewer.act_ortho, viewer.act_turntable):
             act.toggled.connect(self.sync)             # keep in step when a key is used instead
         self.sync()
+
+    def showEvent(self, e):
+        self.sync()
+        super().showEvent(e)
 
     def sync(self, *_):
         v = self.viewer
@@ -3225,7 +3216,7 @@ class TexturePreview(QDialog):
         self.view.setPixmap(pm.scaled(720, 720, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
 
-class MaterialsPanel(QDialog):
+class MaterialsPanel(QWidget):
     """Floating panel: pick a material view, hide or isolate parts, inspect textures."""
 
     def __init__(self, parent, viewer):
@@ -3233,8 +3224,7 @@ class MaterialsPanel(QDialog):
         self.viewer = viewer
         self._textures: list = []
         self.setWindowTitle("Materials & parts")
-        self.setWindowFlag(Qt.Tool, True)
-        self.setMinimumSize(460, 520)
+        self.setMinimumSize(300, 300)
         root = QVBoxLayout(self)
         root.setSpacing(8)
         row = QHBoxLayout()
@@ -3279,17 +3269,17 @@ class MaterialsPanel(QDialog):
         self.tabs.addTab(tw, "Textures")
         self.tabs.currentChanged.connect(lambda _i: viewer.highlight_part(None))
 
-        row = QHBoxLayout()
-        row.addStretch(1)
-        close = QPushButton("Close")
-        close.clicked.connect(self.close)
-        row.addWidget(close)
-        root.addLayout(row)
+        self.parts.setMinimumHeight(180)
+        self.tex_list.setMinimumHeight(180)
         self.refresh()
 
     def hideEvent(self, e):
         self.viewer.highlight_part(None)
         super().hideEvent(e)
+
+    def showEvent(self, e):
+        self.refresh()
+        super().showEvent(e)
 
     def refresh(self):
         v = self.viewer
@@ -3378,6 +3368,7 @@ class Viewer(QWidget):
     message = Signal(str)                 # short status text for the main window
     orientation_changed = Signal(str)     # path whose up-axis changed
     about_requested = Signal()            # open the About dialog
+    panel_requested = Signal(str)         # show/raise a docked panel: environment, matcap, scene, materials
 
     def __init__(self):
         super().__init__()
@@ -3533,12 +3524,10 @@ class Viewer(QWidget):
             group.addAction(a)
             speed.addAction(a)
 
-        menu.addAction("MatCap editor…\tE", lambda _=False: self.open_matcap_editor())
         self.act_env = QAction("Environment (sky, light, shadow)\tL", menu, checkable=True)
         self.act_env.setChecked(bool(self.env["enabled"]))
         self.act_env.toggled.connect(self.set_environment_enabled)
         menu.addAction(self.act_env)
-        menu.addAction("Environment settings…\tShift+L", lambda _=False: self.open_environment_panel())
         presets = menu.addMenu("Lighting preset\tCtrl+L")
         for preset_name in ENV_BUILTIN_PRESETS:
             presets.addAction(preset_name, lambda _=False, n=preset_name: self.apply_builtin_preset(n))
@@ -3554,11 +3543,9 @@ class Viewer(QWidget):
         self.act_turntable.setChecked(self.turntable)
         self.act_turntable.toggled.connect(self.set_turntable)
         menu.addAction(self.act_turntable)
-        menu.addAction("Scene settings…\tShift+G", lambda _=False: self.open_scene_panel())
         chan = menu.addMenu("Material view\tV")
         for key, label in VIEW_CHANNELS:
             chan.addAction(label, lambda _=False, k=key: self.set_view_channel(k))
-        menu.addAction("Materials && parts…\tShift+M", lambda _=False: self.open_materials_panel())
         self.act_info = QAction("Model info\tI", menu, checkable=True)
         self.act_info.setChecked(self.info_on)
         self.act_info.toggled.connect(self.set_info_visible)
@@ -3769,18 +3756,18 @@ class Viewer(QWidget):
             self.matcap_idx = len(MATCAPS)
             self.set_mode("matcap", force=True)
 
+    def matcap_editor(self):
+        if self._editor is None:
+            self._editor = MatCapEditor(None, self.custom if self.custom is not None else default_spec())
+            self._editor.changed.connect(self.set_custom_matcap)
+        return self._editor
+
     def open_matcap_editor(self):
         if not self.actors and self.custom is None:
             self.message.emit("Open a model first, then edit its MatCap")
         spec = self.custom if self.custom is not None else default_spec()
-        if self._editor is None:
-            self._editor = MatCapEditor(self.window(), spec)
-            self._editor.changed.connect(self.set_custom_matcap)
-        else:
-            self._editor.set_spec(spec)
-        self._editor.show()
-        self._editor.raise_()
-        self._editor.activateWindow()
+        self.matcap_editor().set_spec(spec)
+        self.panel_requested.emit("matcap")
         if self.custom is None:
             self.set_custom_matcap(spec)
 
@@ -4237,20 +4224,20 @@ class Viewer(QWidget):
         note = f" (panorama '{missing}' was not found, so it uses the saved colours only)" if missing else ""
         self.message.emit(f"Environment preset loaded: {name}{note}")
 
-    def open_environment_panel(self):
+    def environment_panel(self):
         if self._env_panel is None:
-            self._env_panel = EnvironmentPanel(self.window(), self.env, self._pano_path)
+            self._env_panel = EnvironmentPanel(None, self.env, self._pano_path)
             self._env_panel.changed.connect(self.apply_environment)
             self._env_panel.load_requested.connect(self.load_panorama)
             self._env_panel.fit_requested.connect(self.fit_to_panorama)
             self._env_panel.clear_requested.connect(self.clear_panorama)
             self._env_panel.preset_loaded.connect(self.apply_environment_preset)
             self._env_panel.builtin_requested.connect(self.apply_builtin_preset)
-        else:
-            self._env_panel.set_env(self.env, self._pano_path)
-        self._env_panel.show()
-        self._env_panel.raise_()
-        self._env_panel.activateWindow()
+        return self._env_panel
+
+    def open_environment_panel(self):
+        self.environment_panel().set_env(self.env, self._pano_path)
+        self.panel_requested.emit("environment")
 
     # ----- model info panel -------------------------------------------------
     def _place_info(self):
@@ -4527,13 +4514,14 @@ class Viewer(QWidget):
     def toggle_edges(self):
         self.act_edges.toggle()
 
-    def open_scene_panel(self):
+    def scene_panel(self):
         if self._scene_panel is None:
-            self._scene_panel = ScenePanel(self.window(), self)
-        self._scene_panel.sync()
-        self._scene_panel.show()
-        self._scene_panel.raise_()
-        self._scene_panel.activateWindow()
+            self._scene_panel = ScenePanel(None, self)
+        return self._scene_panel
+
+    def open_scene_panel(self):
+        self.scene_panel().sync()
+        self.panel_requested.emit("scene")
 
     # ----- material views (albedo / normals) and parts -----------------------
     def set_view_channel(self, name: str):
@@ -4616,13 +4604,14 @@ class Viewer(QWidget):
             self._outline_added = True
         self.rw.Render()
 
-    def open_materials_panel(self):
+    def materials_panel(self):
         if self._materials_panel is None:
-            self._materials_panel = MaterialsPanel(self.window(), self)
-        self._materials_panel.refresh()
-        self._materials_panel.show()
-        self._materials_panel.raise_()
-        self._materials_panel.activateWindow()
+            self._materials_panel = MaterialsPanel(None, self)
+        return self._materials_panel
+
+    def open_materials_panel(self):
+        self.materials_panel().refresh()
+        self.panel_requested.emit("materials")
 
     # ----- transparency (solid by default) ---------------------------------
     def _tr_actors(self):
@@ -4896,6 +4885,17 @@ QComboBox QAbstractItemView { background:#1b2028; selection-background-color:#34
 QSlider::groove:horizontal { height:4px; background:#2c3542; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-5px 0; background:#6aa8e8; border-radius:6px; }
 #barLabel { color:#7c8794; background:transparent; }
+#drawerBtn { background:#10141a; border:none; border-left:1px solid #1c232c; color:#aeb8c4; }
+#drawerBtn:hover { background:#27486b; }
+QDockWidget { color:#d5dbe3; }
+QDockWidget::title { background:#10141a; padding:6px 8px; border-bottom:1px solid #1c232c; }
+QMainWindow::separator { background:#0e1116; width:4px; height:4px; }
+QMainWindow::separator:hover { background:#34506f; }
+QTabBar::tab { background:#1b2028; color:#aeb8c4; padding:6px 12px; border:1px solid #2f3947; border-bottom:none; border-top-left-radius:6px; border-top-right-radius:6px; margin-right:2px; }
+QTabBar::tab:selected { background:#27486b; color:#ffffff; }
+QTabBar::tab:hover:!selected { background:#252d38; }
+QTabWidget::pane { border:1px solid #2f3947; border-radius:4px; top:-1px; }
+QScrollArea { background:#14181e; border:none; }
 QMenuBar { background:#10141a; color:#d5dbe3; }
 QMenuBar::item { padding:4px 10px; background:transparent; }
 QMenuBar::item:selected { background:#34506f; border-radius:4px; }
@@ -4916,6 +4916,99 @@ QCheckBox { color:#d5dbe3; spacing:6px; }
 QCheckBox::indicator { width:14px; height:14px; border:1px solid #3a4656; border-radius:3px; background:#1b2028; }
 QCheckBox::indicator:checked { background:#3d6fa5; }
 """
+
+
+class PanelDock(QDockWidget):
+    """A dock for one side panel. Tells us when the user closes it with its own title-bar button
+    (hiding it from code does not count)."""
+    closed = Signal(str)
+
+    def __init__(self, key: str, title: str, parent=None):
+        super().__init__(title, parent)
+        self.key = key
+
+    def closeEvent(self, e):
+        self.closed.emit(self.key)
+        super().closeEvent(e)
+
+
+class TabDragOut(QObject):
+    """Lets a panel be torn off by dragging its TAB out of the tab strip (Qt only does this itself
+    with 'grouped dragging', which we keep off because it merges overlapping floating panels).
+    Reordering tabs inside the strip is left entirely to Qt."""
+    MARGIN = 36                                      # px beyond the tab strip before we tear off
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.win = window
+        self.bar = None
+        self.start = None
+        self.text = ""
+        self.done = False
+
+    def _is_panel_bar(self, obj) -> bool:
+        return (isinstance(obj, QTabBar) and obj.metaObject().className() == "QMainWindowTabBar"
+                and obj.window() is self.win)
+
+    def eventFilter(self, obj, ev):
+        t = ev.type()
+        if t not in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseMove, QEvent.Type.MouseButtonRelease):
+            return False
+        if not self._is_panel_bar(obj):
+            return False
+        try:
+            if t == QEvent.Type.MouseButtonPress:
+                self.done = False
+                self.bar = None
+                if ev.button() == Qt.MouseButton.LeftButton:
+                    i = obj.tabAt(ev.position().toPoint())
+                    if i >= 0:
+                        self.bar, self.start, self.text = obj, ev.position().toPoint(), obj.tabText(i)
+                return False
+            if t == QEvent.Type.MouseButtonRelease:
+                swallow = self.done
+                self.bar = None
+                self.done = False
+                return swallow
+            # mouse move
+            if self.done:
+                return True
+            if self.bar is obj and (ev.buttons() & Qt.MouseButton.LeftButton):
+                zone = obj.rect().adjusted(-self.MARGIN, -self.MARGIN, self.MARGIN, self.MARGIN)
+                if not zone.contains(ev.position().toPoint()):
+                    self.done = True
+                    text = self.text
+                    QTimer.singleShot(0, lambda: self._tear_off(obj, text))
+                    return True
+        except RuntimeError:
+            pass
+        return False
+
+    def _tear_off(self, bar, text):
+        """Runs after the current event, because floating the panel can delete the tab strip."""
+        from PySide6.QtGui import QCursor, QMouseEvent
+        dock = next((d for d in self.win.docks.values() if d.windowTitle().replace("&", "") == text.replace("&", "")), None)
+        if dock is None or dock.isFloating():
+            return
+        try:
+            pos = bar.mapFromGlobal(QCursor.pos())
+            QApplication.sendEvent(bar, QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(pos),
+                                   Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+        except RuntimeError:
+            pass
+        w, h = max(dock.width(), 340), max(dock.height(), 480)
+        dock.setFloating(True)
+        c = QCursor.pos()
+        dock.setGeometry(c.x() - w // 2, c.y() - 14, w, h)      # title bar under the pointer
+        dock.show()
+        dock.raise_()
+        dock.activateWindow()
+        h_ = dock.windowHandle()
+        if h_ is not None:
+            try:
+                h_.startSystemMove()                 # keep dragging the new window with the mouse
+            except Exception:
+                pass
 
 
 class MainWindow(QMainWindow):
@@ -5006,6 +5099,7 @@ class MainWindow(QMainWindow):
         self.viewer.message.connect(lambda m: self.statusBar().showMessage(m, 6000))
         self.viewer.orientation_changed.connect(self.thumbs.refresh)
         self.viewer.about_requested.connect(self.show_about)
+        self.viewer.panel_requested.connect(self._show_panel)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.gallery_page)
         self.stack.addWidget(self.viewer)
@@ -5016,7 +5110,19 @@ class MainWindow(QMainWindow):
         split.setStretchFactor(1, 1)
         split.setSizes([300, 1060])
         split.setChildrenCollapsible(False)
-        self.setCentralWidget(split)
+        holder = QWidget()                           # workspace + a slim edge button that stays visible
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(0)
+        hl.addWidget(split, 1)
+        self.drawer_btn = QToolButton()
+        self.drawer_btn.setObjectName("drawerBtn")
+        self.drawer_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self.drawer_btn.setFixedWidth(18)
+        self.drawer_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.drawer_btn.clicked.connect(self._toggle_drawer)
+        hl.addWidget(self.drawer_btn)
+        self.setCentralWidget(holder)
 
         # ---- viewer hotkeys: only enabled while the viewer is showing, so the
         #      tree and gallery keep normal keyboard navigation (arrows, type-ahead)
@@ -5045,11 +5151,13 @@ class MainWindow(QMainWindow):
             bindings.append((f"Alt+{n}", lambda n=n: v.go_bookmark(n)))
         self._viewer_shortcuts = [QShortcut(QKeySequence(k), self, activated=fn)
                                   for k, fn in bindings]
+        self._build_docks()
         self._build_menus()
         self._sync_shortcuts()
 
         self.statusBar().setStyleSheet("color:#7c8794;")
         self._restore(start)
+        self._drawer_animate_ok = True               # animate from now on, not while starting up
 
     # ----- toolbar slots
     def _sort_changed(self, idx: int):
@@ -5078,6 +5186,21 @@ class MainWindow(QMainWindow):
         quit_act = fm.addAction("Quit")
         quit_act.setShortcut(QKeySequence("Ctrl+Q"))
         quit_act.triggered.connect(self.close)
+        pm = mb.addMenu("&Panels")
+        self.act_drawer = QAction("Show/Hide Panel", pm, checkable=True)
+        self.act_drawer.setShortcut(QKeySequence("Ctrl+B"))
+        self.act_drawer.triggered.connect(self._set_drawer_pref)
+        pm.addAction(self.act_drawer)
+        pm.addSeparator()
+        self._panel_actions = {}
+        for key, title, _factory in self.DOCK_SPECS:       # same left-to-right order as the tabs
+            act = QAction(title, pm, checkable=True)
+            act.triggered.connect(lambda checked, k=key: self._set_panel_open(k, checked))
+            pm.addAction(act)
+            self._panel_actions[key] = act
+        pm.addSeparator()
+        reset = pm.addAction("Reset panel layout")
+        reset.triggered.connect(self._reset_layout)
         hm = mb.addMenu("&Help")
         about = hm.addAction("About " + ABOUT["app_name"])
         about.setShortcut(QKeySequence("F1"))
@@ -5085,6 +5208,309 @@ class MainWindow(QMainWindow):
 
     def show_about(self):
         AboutDialog(self).exec()
+
+    # ----- dockable panels: right edge only, one collapsible drawer -----------------
+    # Native QDockWidget does the tabbing and vertical stacking. Panels may only dock on the right.
+    # The whole right-hand group slides in and out as a "drawer" (YouTube-style), driven by the
+    # edge button, the Panels menu or Ctrl+B, and it collapses automatically in the gallery.
+    DOCK_STATE_VERSION = 3                           # bumped: older layouts allowed other edges / grouped floating windows
+    DOCK_SPECS = [("materials", "Materials", "materials_panel"),
+                  ("matcap", "MatCap", "matcap_editor"),
+                  ("environment", "Environment", "environment_panel"),
+                  ("scene", "Scene", "scene_panel")]
+    DRAWER_DEFAULT_WIDTH = 380
+
+    def _make_dock(self, key: str, title: str, panel) -> "PanelDock":
+        scroll = QScrollArea()                       # scrolls cleanly when the dock is short or narrow
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(panel)
+        scroll.setMinimumSize(280, 220)              # a panel can never be squeezed to nothing
+        dock = PanelDock(key, title, self)
+        dock.setObjectName(f"dock_{key}")            # required for saveState / restoreState
+        dock.setAllowedAreas(Qt.DockWidgetArea.RightDockWidgetArea)      # right edge only
+        dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable
+                         | QDockWidget.DockWidgetFeature.DockWidgetMovable
+                         | QDockWidget.DockWidgetFeature.DockWidgetFloatable)   # can float; re-docks right only
+        dock.setWidget(scroll)
+        dock.closed.connect(self._on_dock_closed)
+        return dock
+
+    def _group_docks(self):
+        """Default arrangement: one tabbed group on the right, in DOCK_SPECS order, left to right."""
+        for dock in self.docks.values():
+            if self._docks_added and dock.isFloating():
+                dock.setFloating(False)              # bring floating panels home first
+            if self.dockWidgetArea(dock) != Qt.DockWidgetArea.NoDockWidgetArea:
+                self.removeDockWidget(dock)          # forgets any old stacking or tab order
+        first = None
+        for key, _title, _factory in self.DOCK_SPECS:
+            dock = self.docks[key]
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            if first is None:
+                first = dock
+            else:
+                self.tabifyDockWidget(first, dock)
+            dock.hide()
+        self._docks_added = True
+
+    def _build_docks(self):
+        # No GroupedDragging: with it Qt merges floating panels that are dropped on top of each other
+        # into nested group windows, which shrank/minimised them and broke the drawer bookkeeping.
+        # Without it each floating panel stays an independent window with normal OS stacking.
+        self.setDockOptions(QMainWindow.DockOption.AllowTabbedDocks
+                            | QMainWindow.DockOption.AnimatedDocks)
+        self.setTabPosition(Qt.DockWidgetArea.RightDockWidgetArea, QTabWidget.TabPosition.North)
+        self.docks = {key: self._make_dock(key, title, getattr(self.viewer, factory)())
+                      for key, title, factory in self.DOCK_SPECS}
+        valid = [k for k, _t, _f in self.DOCK_SPECS]
+        saved = [k for k in str(self.settings.value("open_docks", "")).split(",") if k in valid]
+        self._open_keys = set(saved) or set(valid)           # first run: all four tabs
+        cur = str(self.settings.value("current_dock", valid[0]))
+        self._current_key = cur if cur in valid else valid[0]
+        self._drawer_pref = str(self.settings.value("drawer_expanded", "true")).lower() in ("1", "true")
+        self._drawer_width = max(280, _setting_int(self.settings, "drawer_width", self.DRAWER_DEFAULT_WIDTH))
+        self._drawer_open = None                              # unknown until the first _apply_drawer
+        self._drawer_busy = False
+        self._drawer_anim = None
+        self._drawer_animate_ok = False
+        self._docks_added = False
+        self._group_docks()
+        geo = self.settings.value("window_geometry")
+        if geo:
+            self.restoreGeometry(geo if isinstance(geo, QByteArray) else QByteArray(geo))
+        state = self.settings.value("dock_state")
+        if state:
+            self.restoreState(state if isinstance(state, QByteArray) else QByteArray(state),
+                              self.DOCK_STATE_VERSION)
+        self._layout_timer = QTimer(self)
+        self._layout_timer.setSingleShot(True)
+        self._layout_timer.timeout.connect(self._save_layout)
+        for dock in self.docks.values():
+            dock.visibilityChanged.connect(self._layout_changed)
+            dock.dockLocationChanged.connect(self._layout_changed)
+            dock.topLevelChanged.connect(lambda floating, k=dock.key: self._on_float_changed(k, floating))
+        self.tabifiedDockWidgetActivated.connect(self._on_tab_activated)
+        self._tab_dragout = TabDragOut(self)
+        QApplication.instance().installEventFilter(self._tab_dragout)
+
+    # -- bookkeeping: which panels the user has open is kept here, not read back from Qt, so
+    #    collapsing the drawer (which hides every dock) never forgets the arrangement.
+    def _on_tab_activated(self, dock):
+        if not self._drawer_busy and isinstance(dock, PanelDock):
+            self._current_key = dock.key
+            self._layout_changed()
+
+    def _on_dock_closed(self, key: str):
+        """The user pressed the dock's own close button."""
+        if self._drawer_busy:
+            return
+        self._open_keys.discard(key)
+        if key == self._current_key and self._open_keys:
+            self._current_key = next(k for k, _t, _f in self.DOCK_SPECS if k in self._open_keys)
+        if not self._open_keys:
+            self._set_drawer_pref(False)             # nothing left open: collapse the drawer
+        else:
+            self._update_drawer_ui()
+        self._layout_changed()
+
+    def _on_float_changed(self, key: str, floating: bool):
+        """A panel was dragged out into its own window, or dropped back onto the right edge."""
+        if self._drawer_busy:
+            return
+        self._open_keys.add(key)
+        # Qt is still in the middle of its own drag when this fires: change nothing about the layout
+        # now, only after the event loop has settled.
+        QTimer.singleShot(0, lambda k=key, f=floating: self._after_float_changed(k, f))
+
+    def _after_float_changed(self, key: str, floating: bool):
+        try:
+            dock = self.docks.get(key)
+            if dock is None or dock.isFloating() != floating:
+                return                               # stale: the panel moved again meanwhile
+            if floating:
+                dock.raise_()                        # new window comes to the front
+            else:
+                self._current_key = key
+                if not self._drawer_open:
+                    self._set_drawer_pref(True)      # dropped onto an empty edge: bring the drawer back
+            self._update_drawer_ui()
+            self._layout_changed()
+        except RuntimeError:
+            pass
+
+    def _sync_floating(self):
+        """Floating panels follow the viewer: shown with an open model, put away in the gallery."""
+        want = self._in_viewer()
+        self._drawer_busy = True
+        try:
+            for key, dock in self.docks.items():
+                if dock.isFloating():
+                    dock.setVisible(want and key in self._open_keys)
+        finally:
+            self._drawer_busy = False
+
+    def _in_viewer(self) -> bool:
+        return self.stack.currentWidget() is self.viewer
+
+    def _set_docks_visible(self, on: bool):
+        """Show or hide the DOCKED panels. Floating panels are their own windows and are left alone."""
+        self._drawer_busy = True
+        try:
+            for key, dock in self.docks.items():
+                if dock.isFloating():
+                    continue
+                if on and key in self._open_keys:
+                    dock.show()
+                else:
+                    dock.hide()
+            cur = self.docks[self._current_key]
+            if on and self._current_key in self._open_keys and not cur.isFloating():
+                cur.raise_()                                     # selects its tab
+        finally:
+            self._drawer_busy = False
+
+    def _apply_drawer(self, animate: bool = True):
+        """Bring the drawer in line with what is wanted: open in the viewer if the user wants it,
+        always closed in the gallery."""
+        target = self._drawer_pref and self._in_viewer()
+        if self._drawer_open is None:                # first call at start-up: no animation
+            self._set_docks_visible(target)
+            self._drawer_open = target
+        elif target != self._drawer_open:
+            (self._expand_drawer if target else self._collapse_drawer)(animate)
+        self._sync_floating()
+        self._update_drawer_ui()
+
+    def _stop_drawer_anim(self):
+        if self._drawer_anim is not None:
+            try:
+                self._drawer_anim.finished.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            self._drawer_anim.stop()
+            self._drawer_anim = None
+
+    def _animate_drawer(self, dock, w0: int, w1: int, done=None):
+        """Slide the right-hand column between two widths. The workspace resizes with it."""
+        self._stop_drawer_anim()
+        anim = QVariantAnimation(self)
+        anim.setDuration(180)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.setStartValue(int(w0))
+        anim.setEndValue(int(w1))
+        anim.valueChanged.connect(lambda v: self.resizeDocks([dock], [int(v)], Qt.Orientation.Horizontal))
+        if done is not None:
+            anim.finished.connect(done)
+        self._drawer_anim = anim
+        anim.start()
+
+    def _expand_drawer(self, animate: bool):
+        self._stop_drawer_anim()
+        if not self._open_keys:
+            self._open_keys.add(self.DOCK_SPECS[0][0])
+        docked = [k for k, _t, _f in self.DOCK_SPECS if k in self._open_keys and not self.docks[k].isFloating()]
+        self._set_docks_visible(True)
+        self._drawer_open = True
+        if not docked:                               # every open panel is floating: nothing to slide
+            return
+        lead = self.docks[self._current_key if self._current_key in docked else docked[0]]
+        start_w = lead.width() if not lead.isHidden() else 40
+        if animate:
+            self._animate_drawer(lead, start_w, self._drawer_width)
+        else:
+            self.resizeDocks([lead], [self._drawer_width], Qt.Orientation.Horizontal)
+
+    def _collapse_drawer(self, animate: bool):
+        self._stop_drawer_anim()
+        shown = [d for d in self.docks.values() if not d.isHidden() and not d.isFloating()]
+        if shown:
+            self._drawer_width = max(280, max(d.width() for d in shown))   # remember for next time
+        self._drawer_open = False
+        if animate and shown:
+            self._animate_drawer(shown[0], shown[0].width(), 0, lambda: self._set_docks_visible(False))
+        else:
+            self._set_docks_visible(False)
+
+    def _update_drawer_ui(self):
+        in_viewer = self._in_viewer()
+        opened = bool(self._drawer_open)
+        self.drawer_btn.setVisible(in_viewer)                 # no panel to bring back in the gallery
+        self.drawer_btn.setArrowType(Qt.ArrowType.RightArrow if opened else Qt.ArrowType.LeftArrow)
+        self.drawer_btn.setToolTip(("Hide side panel" if opened else "Show side panel") + "  (Ctrl+B)")
+        for act, checked in [(self.act_drawer, opened)] + [(a, k in self._open_keys)
+                                                           for k, a in self._panel_actions.items()]:
+            act.blockSignals(True)
+            act.setChecked(checked)
+            act.blockSignals(False)
+            act.setEnabled(in_viewer)
+
+    def _set_drawer_pref(self, on: bool):
+        self._drawer_pref = bool(on)
+        self.settings.setValue("drawer_expanded", "true" if on else "false")
+        self._apply_drawer(True)
+        self._layout_changed()
+
+    def _toggle_drawer(self):
+        if self._in_viewer():
+            self._set_drawer_pref(not bool(self._drawer_open))
+
+    def _set_panel_open(self, key: str, on: bool):
+        dock = self.docks.get(key)
+        if dock is None:
+            return
+        if on:
+            self._open_keys.add(key)
+            self._current_key = key
+            if self._drawer_open:
+                self._drawer_busy = True
+                dock.show()
+                dock.raise_()
+                self._drawer_busy = False
+            self._set_drawer_pref(True)
+        else:
+            self._open_keys.discard(key)
+            self._drawer_busy = True
+            dock.hide()
+            self._drawer_busy = False
+            if not self._open_keys:
+                self._set_drawer_pref(False)
+        self._update_drawer_ui()
+        self._layout_changed()
+
+    def _show_panel(self, key: str):
+        """A panel's own key or button was used: make sure it is open and in front."""
+        self._set_panel_open(key, True)
+
+    def _layout_changed(self, *_):
+        self._layout_timer.start(600)
+
+    def _save_layout(self):
+        shown = [d for d in self.docks.values() if not d.isHidden() and not d.isFloating()]
+        if shown and self._drawer_open:
+            self._drawer_width = max(280, max(d.width() for d in shown))
+        s = self.settings
+        s.setValue("dock_state", self.saveState(self.DOCK_STATE_VERSION))
+        s.setValue("window_geometry", self.saveGeometry())
+        s.setValue("open_docks", ",".join(k for k, _t, _f in self.DOCK_SPECS if k in self._open_keys))
+        s.setValue("current_dock", self._current_key)
+        s.setValue("drawer_expanded", "true" if self._drawer_pref else "false")
+        s.setValue("drawer_width", int(self._drawer_width))
+
+    def _reset_layout(self):
+        """Back to the default: Materials, MatCap, Environment, Scene as tabs on the right."""
+        self._stop_drawer_anim()
+        self._group_docks()
+        self._open_keys = {k for k, _t, _f in self.DOCK_SPECS}
+        self._current_key = self.DOCK_SPECS[0][0]
+        self._drawer_width = self.DRAWER_DEFAULT_WIDTH
+        self._drawer_pref = True
+        self.settings.remove("dock_state")
+        self.settings.setValue("drawer_expanded", "true")
+        self._drawer_open = None                     # re-evaluate from scratch, without animation
+        self._apply_drawer(False)
+        self._layout_changed()
+        self.statusBar().showMessage("Panel layout reset", 6000)
 
     # ----- file operations from the gallery (rename / copy / paste / delete) --------
     @staticmethod
@@ -5232,6 +5658,7 @@ class MainWindow(QMainWindow):
         self.act_export.setEnabled(on)
         for sc in self._viewer_shortcuts:
             sc.setEnabled(on)
+        self._apply_drawer(self._drawer_animate_ok)      # closes in the gallery, reopens in the viewer
 
     # ----- helpers
     def _restore(self, start: str | None):
@@ -5326,6 +5753,7 @@ class MainWindow(QMainWindow):
             self.gallery.select_path(self.current_path)
 
     def closeEvent(self, e):
+        self._save_layout()
         self.thumbs.shutdown()
         self.viewer.shutdown()
         super().closeEvent(e)
