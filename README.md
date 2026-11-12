@@ -4,7 +4,7 @@ Gleek3Deek is a lightweight, self-hosted 3D asset viewer built for digital sculp
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![Gleek3Deek](images/matcap_devil.jpg)
+![Gleek3Deek](images/SplitCow_Matcap.jpg)
 
 ## Features
 
