@@ -1,0 +1,42 @@
+{
+  "gleek3deek_matcap": 1,
+  "name": "JellyBean",
+  "type": "procedural",
+  "params": {
+    "shadow": [
+      0.3333333432674408,
+      0.22745098173618317,
+      0.1882352977991104
+    ],
+    "body": [
+      0.3333333432674408,
+      0.0,
+      0.0
+    ],
+    "light": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "rim_color": [
+      0.55,
+      0.1,
+      0.06
+    ],
+    "spec_color": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "light_az": -66.0,
+    "light_el": 51.0,
+    "shadow_start": 0.21,
+    "light_start": 0.42,
+    "rim_strength": 1.1400000000000001,
+    "rim_power": 3.0,
+    "spec_tight": 0.45,
+    "spec_tight_pow": 40.0,
+    "spec_broad": 0.05,
+    "spec_broad_pow": 28.0
+  }
+}
