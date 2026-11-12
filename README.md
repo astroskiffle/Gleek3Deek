@@ -194,6 +194,8 @@ The four side panels (**Materials**, **MatCap**, **Environment** and **Scene**) 
 
 ## Material views, textures and parts
 
+<img width="1001" height="612" alt="7  materials  watch" src="https://github.com/user-attachments/assets/046e85ef-4454-41a1-b5f6-9d2f0a2a407c" />
+
 Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or pick one from **Main ▾ → Material view**. `Shift+M` opens the **Materials & parts** panel, which has the same view choice plus two tabs.
 
 **Views**
