@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+![Gleek3Deek](images/SplitCow_Matcap.jpg)
 
 ## Features
 
@@ -118,6 +116,8 @@ python main.py
 
 ## MatCap editor and presets
 
+![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
+
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
@@ -158,6 +158,8 @@ Press **D** with a model open. The viewport is split by a line: the MatCap on on
 - Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
 
 ## UV inspection
+
+![Gleek3Deek](images/UV_HeatMap.jpg)
 
 Open **Materials** and go to the **UV** tab, or press **Shift+U**. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
 
