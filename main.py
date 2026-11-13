@@ -35,13 +35,15 @@ from PySide6.QtCore import (QByteArray, QDir, QEasingCurve, QEvent, QFile, QMime
                             QStandardPaths, Qt, QThreadPool, QTimer, QUrl, QVariantAnimation, Signal)
 from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter,
                            QPen, QPixmap, QPolygonF, QShortcut)
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QLineF, QPointF, QRectF
+from PySide6.QtGui import QPainterPath
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (QTextBrowser, QCheckBox, QColorDialog, QComboBox, QDialog, QFileDialog, QFormLayout,
                                QGridLayout, QInputDialog, QLineEdit, QMenu, QMessageBox, QPushButton,
                                QSizePolicy,
                                QSlider, QTabWidget)
-from PySide6.QtWidgets import QDockWidget, QScrollArea, QTabBar
+from PySide6.QtWidgets import QDockWidget, QScrollArea, QTabBar, QDoubleSpinBox
+from PySide6.QtGui import QLinearGradient
 from PySide6.QtWidgets import (QApplication, QFileSystemModel, QFrame,
                                QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QListView, QMainWindow,
@@ -110,17 +112,17 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.6.9",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": (""
-                     ""),
+    "legal_notice": ("[Placeholder] Replace this text with your own legal notice, terms of use "
+                     "and contact details."),
     # --- licence and attributions
     "licence_heading": "Licence",
     "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
@@ -260,9 +262,70 @@ _MC_BODIES = [
 MATCAPS = [(name, _MC_PRELUDE + body + _MC_OUT) for name, body in _MC_BODIES]
 
 # ---------------------------------------------------------------------------
-# glTF compatibility: VTK can't read EXT_texture_webp, so convert those textures to PNG
-# in a temp folder (GLB only) and hand VTK an equivalent .gltf + .bin + .png set.
+# glTF compatibility (GLB only). VTK's loader rejects two things that modern exporters (Tripo,
+# Meshy, gltfpack ...) produce, so a temp copy is made in which they are converted away:
+#   * EXT_texture_webp        -> WebP textures are re-encoded as PNG
+#   * KHR_mesh_quantization   -> 8/16-bit (often normalised) vertex data is expanded to float32
+# VTK is then handed an equivalent .gltf + .bin + .png set.
 # ---------------------------------------------------------------------------
+_GLTF_COMP = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
+_GLTF_NCOMP = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}
+_GLTF_NORM = {5120: 127.0, 5121: 255.0, 5122: 32767.0, 5123: 65535.0}
+
+
+def _dequantize_gltf(doc: dict, binc: bytes) -> bytes:
+    """Expand every non-float vertex attribute accessor (positions, normals, UVs, colours, tangents,
+    morph targets) to float32. Returns the (possibly longer) binary buffer and edits `doc` in place.
+    Node transforms are left alone: they already carry the de-quantisation scale/offset."""
+    accessors, views = doc.get("accessors", []), doc.get("bufferViews", [])
+    wanted = set()
+    for mesh in doc.get("meshes", []):
+        for prim in mesh.get("primitives", []):
+            groups = [prim.get("attributes", {})] + list(prim.get("targets", []))
+            for g in groups:
+                for idx in g.values():
+                    wanted.add(int(idx))
+    extra = bytearray()
+    pad = (-len(binc)) % 4                            # appended data starts on a 4-byte boundary
+    base = len(binc) + pad
+    for ai in sorted(wanted):
+        if ai >= len(accessors):
+            continue
+        acc = accessors[ai]
+        ct = acc.get("componentType")
+        if ct == 5126 or ct not in _GLTF_COMP or acc.get("sparse") or "bufferView" not in acc:
+            continue
+        ncomp = _GLTF_NCOMP.get(acc.get("type"))
+        if ncomp is None:
+            continue
+        view = views[acc["bufferView"]]
+        dt = np.dtype(_GLTF_COMP[ct]).newbyteorder("<")
+        count = int(acc["count"])
+        stride = int(view.get("byteStride") or ncomp * dt.itemsize)
+        off = int(view.get("byteOffset", 0)) + int(acc.get("byteOffset", 0))
+        raw = np.ndarray(shape=(count, ncomp), dtype=dt, buffer=binc, offset=off, strides=(stride, dt.itemsize))
+        vals = raw.astype(np.float32)
+        if acc.get("normalized") and ct in _GLTF_NORM:
+            vals = vals / np.float32(_GLTF_NORM[ct])
+            if ct in (5120, 5122):
+                vals = np.maximum(vals, -1.0)
+        data = np.ascontiguousarray(vals, dtype="<f4").tobytes()
+        while len(extra) % 4:
+            extra.append(0)
+        views.append({"buffer": view.get("buffer", 0), "byteOffset": base + len(extra), "byteLength": len(data)})
+        extra += data
+        acc["bufferView"] = len(views) - 1
+        acc["byteOffset"] = 0
+        acc["componentType"] = 5126
+        acc.pop("normalized", None)
+        if count:
+            acc["min"] = [float(x) for x in vals.min(0)]
+            acc["max"] = [float(x) for x in vals.max(0)]
+    if not extra:
+        return binc
+    return bytes(binc) + b"\0" * pad + bytes(extra)
+
+
 def _fix_glb_webp(path: str):
     with open(path, "rb") as f:
         if f.read(4) != b"glTF":
@@ -270,7 +333,7 @@ def _fix_glb_webp(path: str):
         f.seek(12)
         ln, _typ = struct.unpack("<II", f.read(8))
         raw = f.read(ln)                           # first chunk is always the JSON
-        if b"EXT_texture_webp" not in raw:
+        if b"EXT_texture_webp" not in raw and b"KHR_mesh_quantization" not in raw:
             return path, None
         doc = json.loads(raw.decode("utf-8"))
         binc = None
@@ -285,9 +348,13 @@ def _fix_glb_webp(path: str):
             f.seek(ln, 1)
     tmp = tempfile.mkdtemp(prefix="gleek_glb_")
     try:
+        if binc is not None and "KHR_mesh_quantization" in (doc.get("extensionsUsed", []) + doc.get("extensionsRequired", [])):
+            binc = _dequantize_gltf(doc, binc)
+            if doc.get("buffers"):
+                doc["buffers"][0]["byteLength"] = len(binc)
         for key in ("extensionsUsed", "extensionsRequired"):
             if key in doc:
-                doc[key] = [e for e in doc[key] if e != "EXT_texture_webp"]
+                doc[key] = [e for e in doc[key] if e not in ("EXT_texture_webp", "KHR_mesh_quantization")]
                 if not doc[key]:
                     del doc[key]
         for t in doc.get("textures", []):
@@ -3342,6 +3409,89 @@ class MaterialsPanel(QWidget):
         thint.setWordWrap(True)
         tl.addWidget(thint)
         self.tabs.addTab(tw, "Textures")
+
+        uw = QWidget()
+        ul = QVBoxLayout(uw)
+        self.uv_show = QCheckBox("Show the UV layout beside the model  (Shift+U)")
+        self.uv_show.toggled.connect(viewer.set_uv_view)
+        ul.addWidget(self.uv_show)
+        prow = QHBoxLayout()
+        prow.addWidget(QLabel("Part"))
+        self.uv_part_box = QComboBox()
+        self.uv_part_box.currentIndexChanged.connect(lambda i: viewer.set_uv_part(i - 1))
+        prow.addWidget(self.uv_part_box, 1)
+        ul.addLayout(prow)
+        hrow = QHBoxLayout()
+        hrow.addWidget(QLabel("Heatmap"))
+        self.uv_heat_box = QComboBox()
+        for key, label in UV_HEAT_MODES:
+            self.uv_heat_box.addItem(label, key)
+        self.uv_heat_box.setToolTip("Texel density: how much texture resolution each part of the surface gets, "
+                                    "relative to the model's median. Stretch: how much the UVs distort the "
+                                    "surface (1 = none; scale and rotation do not count).")
+        self.uv_heat_box.currentIndexChanged.connect(lambda _i: viewer.set_uv_heat(self.uv_heat_box.currentData()))
+        hrow.addWidget(self.uv_heat_box, 1)
+        ul.addLayout(hrow)
+        self.uv_spins = {}
+        for key, label, lo, hi, step, tip in (
+                ("dens_low", "Density is too low below ×", 0.05, 0.95, 0.05, "Triangles with less than this share of the median density turn blue"),
+                ("dens_high", "Density is too high above ×", 1.05, 20.0, 0.25, "Triangles with more than this multiple of the median density turn red"),
+                ("stretch", "Stretch warning above", 1.05, 20.0, 0.1, "Triangles distorted more than this turn red (1 = undistorted)")):
+            r = QHBoxLayout()
+            r.addWidget(QLabel(label))
+            sp = QDoubleSpinBox()
+            sp.setRange(lo, hi)
+            sp.setSingleStep(step)
+            sp.setDecimals(2)
+            sp.setValue(UV_HEAT_DEFAULTS[key])
+            sp.setToolTip(tip)
+            sp.valueChanged.connect(lambda val, k=key: viewer.set_uv_threshold(k, val))
+            r.addStretch(1)
+            r.addWidget(sp)
+            ul.addLayout(r)
+            self.uv_spins[key] = sp
+        self.uv_heat_stats = QLabel("")
+        self.uv_heat_stats.setObjectName("barLabel")
+        self.uv_heat_stats.setWordWrap(True)
+        ul.addWidget(self.uv_heat_stats)
+        ul.addWidget(QLabel("Tests (they colour the model and the layout)"))
+        self.uv_checks, self.uv_count_labels = {}, {}
+        for key, label, tip, col in UV_TESTS:
+            row = QHBoxLayout()
+            sw = QLabel()
+            pix = QPixmap(14, 14)
+            pix.fill(QColor(*col))
+            sw.setPixmap(pix)
+            cb = QCheckBox(label)
+            cb.setToolTip(tip)
+            cb.toggled.connect(lambda on, k=key: viewer.set_uv_test(k, on))
+            cnt = QLabel("")
+            cnt.setObjectName("barLabel")
+            row.addWidget(sw)
+            row.addWidget(cb, 1)
+            row.addWidget(cnt)
+            ul.addLayout(row)
+            self.uv_checks[key], self.uv_count_labels[key] = cb, cnt
+        self.uv_tex_cb = QCheckBox("Show the texture behind the layout")
+        self.uv_tex_cb.setChecked(True)
+        self.uv_tex_cb.toggled.connect(viewer.set_uv_backdrop)
+        self.uv_below_cb = QCheckBox("Put the layout below the model instead of beside it")
+        self.uv_below_cb.toggled.connect(viewer.set_uv_below)
+        ul.addWidget(self.uv_tex_cb)
+        ul.addWidget(self.uv_below_cb)
+        self.uv_note = QLabel("")
+        self.uv_note.setObjectName("barLabel")
+        self.uv_note.setWordWrap(True)
+        ul.addWidget(self.uv_note)
+        uhint = QLabel("In the layout: mouse wheel zooms, drag pans, double-click fits. Grey is fine; a test colour "
+                       "marks a failing triangle, and magenta means it fails more than one. “Flipped” means the "
+                       "opposite winding to most of the model, so a deliberately mirrored half is reported too.")
+        uhint.setObjectName("barLabel")
+        uhint.setWordWrap(True)
+        ul.addWidget(uhint)
+        ul.addStretch(1)
+        self.tabs.addTab(uw, "UV")
+        viewer.uv_changed.connect(self._uv_sync)
         self.tabs.currentChanged.connect(lambda _i: viewer.highlight_part(None))
 
         self.parts.setMinimumHeight(180)
@@ -3388,6 +3538,57 @@ class MaterialsPanel(QWidget):
                 icon, f"{e['role']}\n{size}  ·  used by {n} part{'s' if n != 1 else ''}"))
         if not self._textures:
             self.tex_list.addItem(QListWidgetItem("This model has no textures (colours only)."))
+        self._uv_sync()
+
+    def _uv_sync(self):
+        v = self.viewer
+        if not hasattr(self, "uv_part_box"):
+            return
+        self.uv_part_box.blockSignals(True)
+        self.uv_part_box.clear()
+        self.uv_part_box.addItem("All parts")
+        for i, a in enumerate(v.actors):
+            self.uv_part_box.addItem(getattr(a, "_name", "") or f"Part {i + 1}")
+        self.uv_part_box.setCurrentIndex(v.uv_part + 1 if -1 <= v.uv_part < len(v.actors) else 0)
+        self.uv_part_box.blockSignals(False)
+        for w, state in ((self.uv_show, v.uv_on), *[(self.uv_checks[k], k in v.uv_tests) for k in self.uv_checks]):
+            w.blockSignals(True)
+            w.setChecked(bool(state))
+            w.blockSignals(False)
+        c = v.uv_counts()
+        for k, lab in self.uv_count_labels.items():
+            if not c["has_uv"]:
+                lab.setText("")
+            elif k in UV_ISLAND_TESTS:
+                lab.setText(f"{c['inv_' + k]:,} islands" if c["isl_ok"] else "not run")
+            else:
+                lab.setText(f"{c[k]:,}")
+        self.uv_heat_box.blockSignals(True)
+        self.uv_heat_box.setCurrentIndex(max(0, self.uv_heat_box.findData(v.uv_heat)))
+        self.uv_heat_box.blockSignals(False)
+        for k, sp in self.uv_spins.items():
+            sp.blockSignals(True)
+            sp.setValue(v.uv_th[k])
+            sp.blockSignals(False)
+            sp.setEnabled(v.uv_heat == ("stretch" if k == "stretch" else "density"))
+        st = v.uv_heat_stats()
+        if v.uv_heat == "density" and st["n"]:
+            self.uv_heat_stats.setText(f"{100.0 * st['low'] / st['n']:.1f}% of triangles are too low (blue), "
+                                       f"{100.0 * st['high'] / st['n']:.1f}% too high (red) against the median.")
+        elif v.uv_heat == "stretch" and st["n"]:
+            self.uv_heat_stats.setText(f"{100.0 * st['bad'] / st['n']:.1f}% of triangles are stretched past "
+                                       f"{v.uv_th['stretch']:g} (red).")
+        else:
+            self.uv_heat_stats.setText("")
+        if not v.actors:
+            self.uv_note.setText("Open a model to analyse its UVs.")
+        elif not c["has_uv"]:
+            self.uv_note.setText("This model (or part) has no UV coordinates, so there is nothing to test. "
+                                 "STL, PLY and most CAD files carry no UVs.")
+        else:
+            extra = f", {c['islands']:,} islands" if c["isl_ok"] else (
+                ". Island tests were skipped because the model is very large")
+            self.uv_note.setText(f"{c['tris']:,} triangles analysed{extra}.")
 
     def _part_toggled(self, item):
         self.viewer.set_part_visible(self.parts.row(item), item.checkState() == Qt.Checked)
@@ -3420,6 +3621,311 @@ class MaterialsPanel(QWidget):
             return
         size = f"{e['size'][0]}×{e['size'][1]}" if e["size"] else ""
         TexturePreview(self, e["role"], arr, f"{e['role']}  ·  {size}  ·  {arr.shape[2]} channel(s)").exec()
+
+
+# ---------------------------------------------------------------------------
+# UV diagnostics (pure numpy, so they are easy to test)
+# ---------------------------------------------------------------------------
+UV_TESTS = [
+    ("oob", "Out-of-bounds UVs", "Triangles with a UV outside the 0 to 1 square (they sample a repeated or empty texture)",
+     (255, 150, 30)),
+    ("flip", "Flipped UVs", "Stray triangles whose UV winding is opposite to the rest of the model (they sample the texture mirrored). Whole mirrored islands are reported under Mirrored islands instead",
+     (230, 40, 50)),
+    ("zero", "Zero-area UVs", "Triangles squashed to a line or point in UV space (they have no texture of their own)",
+     (240, 215, 40)),
+    ("overlap", "Overlapping islands", "Islands that partly cover each other in UV space (they share texture pixels by accident)",
+     (50, 200, 230)),
+    ("stack", "Stacked islands", "Islands that sit (almost) exactly on top of each other (they share the same texture pixels on purpose or by mistake)",
+     (150, 95, 235)),
+    ("mirror", "Mirrored islands", "Whole islands laid out the opposite way round to the model (their texture reads mirrored)",
+     (235, 115, 175)),
+]
+UV_ISLAND_TESTS = ("overlap", "stack", "mirror")      # need island detection, which is computed on demand
+UV_COLOR_OK = (176, 184, 194)
+UV_COLOR_MIX = (250, 250, 250)                     # more than one problem on the same triangle
+
+
+def fan_triangulate(offsets, conn):
+    """Polygon connectivity (VTK offsets + connectivity) -> (triangles Mx3, parent polygon index per triangle)."""
+    offsets = np.asarray(offsets, np.int64)
+    conn = np.asarray(conn, np.int64)
+    sizes = np.diff(offsets)
+    if len(sizes) == 0:
+        return np.empty((0, 3), np.int64), np.empty(0, np.int64)
+    if (sizes == 3).all():
+        return conn[offsets[0]:offsets[0] + 3 * len(sizes)].reshape(-1, 3), np.arange(len(sizes))
+    tris, parents = [], []
+    for k in np.unique(sizes):
+        if k < 3:
+            continue
+        idx = np.nonzero(sizes == k)[0]
+        st = offsets[idx]
+        for i in range(1, int(k) - 1):
+            tris.append(np.stack([conn[st], conn[st + i], conn[st + i + 1]], 1))
+            parents.append(idx)
+    if not tris:
+        return np.empty((0, 3), np.int64), np.empty(0, np.int64)
+    return np.concatenate(tris), np.concatenate(parents)
+
+
+def uv_diagnose(uv, tris, tol: float = 1e-4):
+    """Per-triangle UV tests. Returns bool arrays oob / flip / zero plus the winding that counts as normal.
+    'Flipped' means: opposite winding to the majority of the model (the majority sets the UV convention,
+    which differs between exporters), so a mirrored half of a symmetrical model is reported too."""
+    uv = np.asarray(uv, np.float64)[:, :2]
+    tris = np.asarray(tris, np.int64)
+    a, b, c = uv[tris[:, 0]], uv[tris[:, 1]], uv[tris[:, 2]]
+    area2 = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
+    tri_uv = np.stack([a, b, c], 1)
+    oob = ((tri_uv < -tol) | (tri_uv > 1.0 + tol)).any(axis=(1, 2))
+    zero = np.abs(area2) < 1e-12
+    sign = np.sign(area2)
+    pos, neg = int((sign > 0).sum()), int((sign < 0).sum())
+    ref = 1.0 if pos >= neg else -1.0
+    flip = (~zero) & (sign != ref)
+    return {"oob": oob, "flip": flip, "zero": zero, "ref": ref, "area2": area2}
+
+
+# ----- islands, overlaps, stacking, mirroring (UV Phase 3)
+def _hash_rows(cols):
+    """One 64-bit key per row from several int64 columns (collisions are astronomically unlikely)."""
+    h = np.zeros(len(cols[0]), np.uint64)
+    for k, c in enumerate(cols):
+        h = (h * np.uint64(0x9E3779B97F4A7C15) + c.astype(np.uint64) + np.uint64(k + 1)) * np.uint64(0xBF58476D1CE4E5B9)
+        h ^= h >> np.uint64(29)
+    return h
+
+
+def connected_components(n: int, a, b):
+    """Component label per node for an undirected edge list (vectorised union-find with pointer jumping)."""
+    parent = np.arange(n)
+    a, b = np.asarray(a, np.int64), np.asarray(b, np.int64)
+    while True:
+        pa, pb = parent[a], parent[b]
+        diff = pa != pb
+        if not diff.any():
+            break
+        lo, hi = np.minimum(pa[diff], pb[diff]), np.maximum(pa[diff], pb[diff])
+        np.minimum.at(parent, hi, lo)
+        while True:
+            pp = parent[parent]
+            if (pp == parent).all():
+                break
+            parent = pp
+    return parent
+
+
+def uv_islands(points, uv, tris):
+    """Island index per triangle. Vertices that share both their 3D position and their UV count as one (so
+    vertices split only for normals do not break an island), and islands are what stays connected through
+    shared vertices. Stacked copies of a part stay separate because they sit at different 3D positions."""
+    P = np.asarray(points, np.float64)[:, :3]
+    uv = np.asarray(uv, np.float64)[:, :2]
+    tris = np.asarray(tris, np.int64)
+    size = max(float(np.ptp(P, axis=0).max()) if len(P) else 1.0, 1e-12)
+    q3 = np.round(P / (size * 1e-6)).astype(np.int64)
+    q2 = np.round(uv * 1e6).astype(np.int64)
+    key = _hash_rows([q3[:, 0], q3[:, 1], q3[:, 2], q2[:, 0], q2[:, 1]])
+    _u, weld = np.unique(key, return_inverse=True)
+    weld = weld.ravel()
+    t = weld[tris]
+    comp = connected_components(len(_u), np.concatenate([t[:, 0], t[:, 1], t[:, 2]]),
+                                np.concatenate([t[:, 1], t[:, 2], t[:, 0]]))
+    _c, island = np.unique(comp[t[:, 0]], return_inverse=True)
+    return island.ravel(), len(_c)
+
+
+def uv_raster_overlaps(uv, tris, island, n_islands: int, res: int = 512, max_candidates: int = 24_000_000):
+    """Rasterise every triangle on a pixel grid (pixel centres, so the result does not depend on vertex order)
+    and count: pixels covered per island, and pixels shared by each pair of islands.
+    Returns (area[n_islands], {(a, b): shared pixels}) with a < b."""
+    uv = np.clip(np.asarray(uv, np.float64)[:, :2], -16.0, 16.0)
+    tris = np.asarray(tris, np.int64)
+    lo = np.floor(uv.min(0))
+    tri_uv = uv[tris]                                       # (M, 3, 2)
+    d = (tri_uv[:, 1, 0] - tri_uv[:, 0, 0]) * (tri_uv[:, 2, 1] - tri_uv[:, 0, 1]) \
+        - (tri_uv[:, 1, 1] - tri_uv[:, 0, 1]) * (tri_uv[:, 2, 0] - tri_uv[:, 0, 0])
+    keep = np.abs(d) > 1e-14
+    idx = np.nonzero(keep)[0]
+    if not len(idx):
+        return np.zeros(n_islands), {}
+    R = float(res)
+    for _ in range(6):                                      # lower the resolution if the work would explode
+        X = (tri_uv[idx, :, 0] - lo[0]) * R
+        Y = (tri_uv[idx, :, 1] - lo[1]) * R
+        x0, x1 = np.floor(X.min(1)).astype(np.int64), np.floor(X.max(1)).astype(np.int64)
+        y0, y1 = np.floor(Y.min(1)).astype(np.int64), np.floor(Y.max(1)).astype(np.int64)
+        w, h = x1 - x0 + 1, y1 - y0 + 1
+        cnt = w * h
+        if cnt.sum() <= max_candidates:
+            break
+        R *= 0.6
+    NI = np.int64(max(n_islands, 1))
+    W = np.int64(1 << 20)
+    found = []
+    start, total = 0, len(idx)
+    cum = np.cumsum(cnt)
+    while start < total:
+        base = cum[start - 1] if start else 0
+        end = int(np.searchsorted(cum, base + 3_000_000, side="right"))
+        end = min(max(end, start + 1), total)
+        c, ww = cnt[start:end], w[start:end]
+        rep_i = np.repeat(np.arange(start, end), c)
+        k = np.arange(int(c.sum())) - np.repeat(np.cumsum(c) - c, c)
+        wr = ww[rep_i - start]
+        px = x0[rep_i] + (k % wr)
+        py = y0[rep_i] + (k // wr)
+        cx, cy = px + 0.5, py + 0.5
+        ax, ay = X[rep_i, 0], Y[rep_i, 0]
+        bx, by = X[rep_i, 1], Y[rep_i, 1]
+        qx, qy = X[rep_i, 2], Y[rep_i, 2]
+        dd = (bx - ax) * (qy - ay) - (by - ay) * (qx - ax)
+        w0 = ((bx - cx) * (qy - cy) - (by - cy) * (qx - cx)) / dd
+        w1 = ((qx - cx) * (ay - cy) - (qy - cy) * (ax - cx)) / dd
+        w2 = 1.0 - w0 - w1
+        ok = (w0 >= -1e-9) & (w1 >= -1e-9) & (w2 >= -1e-9)
+        pix = (py[ok] + 4096) * W + (px[ok] + 4096)
+        isl = island[idx[rep_i[ok]]].astype(np.int64)
+        found.append(np.unique(pix * NI + isl))
+        start = end
+    keys = np.unique(np.concatenate(found)) if found else np.empty(0, np.int64)
+    if not len(keys):
+        return np.zeros(n_islands), {}
+    pix, isl = keys // NI, keys % NI
+    area = np.bincount(isl, minlength=n_islands).astype(float)
+    # pixels shared by islands: keys are sorted by pixel, then island, so islands that share a pixel are
+    # neighbours in the list. Distances 1..3 cover every pair in groups of up to four islands.
+    pairs = {}
+    for dist in (1, 2, 3):
+        if len(keys) <= dist:
+            break
+        same = pix[dist:] == pix[:-dist]
+        if not same.any():
+            continue
+        a, b = isl[:-dist][same], isl[dist:][same]
+        pk, pc = np.unique(a * NI + b, return_counts=True)
+        for k, c in zip(pk, pc):
+            key2 = (int(k // NI), int(k % NI))
+            pairs[key2] = pairs.get(key2, 0) + int(c)
+    return area, pairs
+
+
+def uv_island_tests(points, uv, tris, flip, stack_ratio: float = 0.8, min_ratio: float = 0.05):
+    """Overlapping / stacked / mirrored islands. Returns per-triangle bool flags, the island count, the
+    number of islands involved in each test, and the 'flip' flags with whole mirrored islands taken out
+    (those are reported as mirrored islands instead of as thousands of single flipped triangles)."""
+    island, n = uv_islands(points, uv, tris)
+    flip = np.asarray(flip, bool)
+    ntri = np.bincount(island, minlength=n).astype(float)
+    nflip = np.bincount(island, weights=flip.astype(float), minlength=n)
+    mirrored = nflip > 0.5 * np.maximum(ntri, 1)
+    area, pairs = uv_raster_overlaps(uv, tris, island, n)
+    over = np.zeros(n, bool)
+    stack = np.zeros(n, bool)
+    for (a, b), px in pairs.items():
+        r = px / max(min(area[a], area[b]), 1.0)
+        if r >= stack_ratio:
+            stack[a] = stack[b] = True
+        elif r >= min_ratio:
+            over[a] = over[b] = True
+    return {"overlap": over[island], "stack": stack[island], "mirror": mirrored[island],
+            "flip": flip & ~mirrored[island], "n": n,
+            "involved": {"overlap": int(over.sum()), "stack": int(stack.sum()), "mirror": int(mirrored.sum())}}
+
+
+# ----- texel density and stretch (UV Phase 2)
+UV_HEAT_MODES = [("off", "Off"), ("density", "Texel density"), ("stretch", "Stretch (distortion)")]
+UV_HEAT_DEFAULTS = {"dens_low": 0.5, "dens_high": 2.0, "stretch": 2.0}
+_HEAT_STOPS = [(0.0, (50, 110, 255)), (0.5, (60, 200, 100)), (1.0, (230, 50, 50))]      # blue, green, red
+_STRETCH_STOPS = [(0.0, (60, 200, 100)), (0.5, (240, 215, 60)), (1.0, (230, 50, 50))]    # green, yellow, red
+
+
+def uv_metrics(points, uv, tris):
+    """Per-triangle texel density and stretch.
+    dens   = sqrt(UV area / 3D area): UV units per model unit (0 when either area is degenerate)
+    stretch = larger / smaller singular value of the 3D->UV mapping (1 = no distortion apart from uniform
+              scale; independent of density; 1000 stands in for 'infinitely squashed')
+    area3  = 3D area of the triangle (used to weight the reference density)."""
+    P = np.asarray(points, np.float64)[:, :3]
+    uv = np.asarray(uv, np.float64)[:, :2]
+    tris = np.asarray(tris, np.int64)
+    p0, p1, p2 = P[tris[:, 0]], P[tris[:, 1]], P[tris[:, 2]]
+    q0, q1, q2 = uv[tris[:, 0]], uv[tris[:, 1]], uv[tris[:, 2]]
+    area3 = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0), axis=1)
+    a2 = (q1[:, 0] - q0[:, 0]) * (q2[:, 1] - q0[:, 1]) - (q1[:, 1] - q0[:, 1]) * (q2[:, 0] - q0[:, 0])
+    auv = 0.5 * np.abs(a2)
+    ok = (auv > 1e-12) & (area3 > 1e-18)
+    dens = np.zeros(len(tris))
+    dens[ok] = np.sqrt(auv[ok] / area3[ok])
+    stretch = np.full(len(tris), 1000.0)
+    if ok.any():
+        d = np.where(ok, a2, 1.0)[:, None]                                  # 2A, avoiding 0/0
+        ss = (p0 * (q1[:, 1] - q2[:, 1])[:, None] + p1 * (q2[:, 1] - q0[:, 1])[:, None]
+              + p2 * (q0[:, 1] - q1[:, 1])[:, None]) / d
+        st = (p0 * (q2[:, 0] - q1[:, 0])[:, None] + p1 * (q0[:, 0] - q2[:, 0])[:, None]
+              + p2 * (q1[:, 0] - q0[:, 0])[:, None]) / d
+        a, b, c = (ss * ss).sum(1), (ss * st).sum(1), (st * st).sum(1)
+        root = np.sqrt(np.maximum((a - c) ** 2 + 4 * b * b, 0.0))
+        big = np.sqrt(np.maximum((a + c + root) / 2, 0.0))
+        small = np.sqrt(np.maximum((a + c - root) / 2, 0.0))
+        good = ok & (small > 1e-12)
+        stretch[good] = np.minimum(big[good] / small[good], 1000.0)
+    return {"dens": dens, "stretch": stretch, "area3": area3, "valid": ok}
+
+
+def weighted_median(values, weights):
+    values, weights = np.asarray(values, float), np.asarray(weights, float)
+    if not len(values):
+        return 0.0
+    order = np.argsort(values)
+    cum = np.cumsum(weights[order])
+    return float(values[order][min(np.searchsorted(cum, cum[-1] / 2.0), len(values) - 1)])
+
+
+def _ramp(u, stops):
+    u = np.clip(np.asarray(u, float), 0.0, 1.0)
+    xs = [x for x, _c in stops]
+    return np.stack([np.interp(u, xs, [c[k] for _x, c in stops]) for k in range(3)], 1).astype(np.uint8)
+
+
+def uv_heat_density(dens, valid, ref, low, high):
+    """Colours for texel density relative to the reference: blue when below `low` x, green at 1 x, red above
+    `high` x (all in log space). Invalid triangles are grey."""
+    low = min(max(low, 0.01), 0.99)
+    high = max(high, 1.01)
+    lr = np.log2(np.maximum(np.asarray(dens, float), 1e-12) / max(ref, 1e-12))
+    u = np.where(lr < 0, 0.5 * (1 - lr / np.log2(low)), 0.5 + 0.5 * lr / np.log2(high))
+    out = _ramp(u, _HEAT_STOPS)
+    out[~np.asarray(valid, bool)] = UV_COLOR_OK
+    return out
+
+
+def uv_heat_stretch(stretch, warn):
+    """Colours for stretch: green at 1 (undistorted), yellow half way, red at `warn` and beyond."""
+    warn = max(warn, 1.05)
+    return _ramp((np.asarray(stretch, float) - 1.0) / (warn - 1.0), _STRETCH_STOPS)
+
+
+def uv_poly_colors(npoly: int, parent, flags: dict, active: list, base=None):
+    """RGB (uint8, npoly x 3) per polygon for the 3D heatmap: grey (or the density / stretch colour given in
+    `base`, one per triangle) when fine, a test colour when it fails one of the active tests, magenta when it
+    fails several."""
+    colors = np.tile(np.array(UV_COLOR_OK, np.uint8), (npoly, 1))
+    if base is not None:
+        colors[np.asarray(parent)] = base
+    hits = np.zeros(npoly, np.int32)
+    last = np.zeros(npoly, np.int32)
+    for n, (key, _l, _t, col) in enumerate(UV_TESTS):
+        if key not in active or key not in flags:
+            continue
+        poly = np.zeros(npoly, bool)
+        poly[np.asarray(parent)[flags[key]]] = True
+        hits += poly
+        last[poly] = n
+    for n, (_k, _l, _t, col) in enumerate(UV_TESTS):
+        colors[(hits == 1) & (last == n)] = col
+    colors[hits > 1] = UV_COLOR_MIX
+    return colors, hits > 0
 
 
 # ---------------------------------------------------------------------------
@@ -3545,6 +4051,228 @@ class ReferenceSheetDialog(QDialog):
                 "single": self.single_cb.isChecked()}
 
 
+class UVLayoutView(QWidget):
+    """The UV layout beside the 3D view: island edges over an optional texture, failing triangles filled.
+    Wheel = zoom, drag = pan, double-click = fit. The drawing is cached and only redrawn after the view stops
+    moving, so big meshes stay responsive."""
+    MAX_EDGES = 300000
+    MAX_FILL = 120000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(200, 160)
+        self.setMouseTracking(True)
+        self.parts: list = []                 # dicts: uv, tris, flags (dict of bool arrays)
+        self.active: list = []                # test keys currently on
+        self.backdrop = None                  # QImage or None
+        self.title = ""
+        self.summary = ""
+        self.legend = None                    # {"title", "stops": [(pos, rgb)], "labels": [(pos, text)]}
+        self.scale = 300.0                    # pixels per UV unit
+        self.off = [30.0, 330.0]              # screen position of UV (0, 0)
+        self._drag = None
+        self._pm = None
+        self._base = (self.scale, (self.off[0], self.off[1]))
+        self._fit_pending = True
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._redraw)
+
+    # ----- data
+    def set_data(self, parts: list, active: list, backdrop, title: str, summary: str, legend=None):
+        self.parts, self.active, self.backdrop, self.title, self.summary = parts, list(active), backdrop, title, summary
+        self.legend = legend
+        self.fit()
+
+    def _bounds(self):
+        lo, hi = np.array([0.0, 0.0]), np.array([1.0, 1.0])
+        for part in self.parts:
+            uv = part["uv"]
+            if len(uv):
+                lo = np.minimum(lo, np.clip(uv.min(0), -8, 8))
+                hi = np.maximum(hi, np.clip(uv.max(0), -8, 8))
+        return lo, hi
+
+    def fit(self):
+        lo, hi = self._bounds()
+        w, h = max(self.width(), 50), max(self.height(), 50)
+        pad = 26.0
+        sc = min((w - 2 * pad) / max(hi[0] - lo[0], 1e-6), (h - 2 * pad - 18) / max(hi[1] - lo[1], 1e-6))
+        self.scale = max(sc, 1.0)
+        self.off = [pad + (w - 2 * pad - (hi[0] - lo[0]) * self.scale) / 2 - lo[0] * self.scale,
+                    h - pad - 18 - (h - 2 * pad - 18 - (hi[1] - lo[1]) * self.scale) / 2 + lo[1] * self.scale]
+        self._fit_pending = False
+        self._redraw()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self._fit_pending or self._pm is None:
+            self.fit()
+        else:
+            self._timer.start(80)
+
+    # ----- interaction
+    def wheelEvent(self, e):
+        k = 1.15 if e.angleDelta().y() > 0 else 1 / 1.15
+        p = e.position()
+        self.off[0] = p.x() - (p.x() - self.off[0]) * k
+        self.off[1] = p.y() - (p.y() - self.off[1]) * k
+        self.scale *= k
+        self.update()
+        self._timer.start(90)
+
+    def mousePressEvent(self, e):
+        if e.button() in (Qt.LeftButton, Qt.MiddleButton):
+            self._drag = (e.position().x(), e.position().y(), self.off[0], self.off[1])
+
+    def mouseMoveEvent(self, e):
+        if self._drag is not None:
+            x0, y0, ox, oy = self._drag
+            self.off = [ox + e.position().x() - x0, oy + e.position().y() - y0]
+            self.update()
+            self._timer.start(90)
+
+    def mouseReleaseEvent(self, e):
+        self._drag = None
+
+    def mouseDoubleClickEvent(self, e):
+        self.fit()
+
+    # ----- drawing
+    def _redraw(self):
+        if self.width() < 4 or self.height() < 4:
+            return
+        pm = QPixmap(self.size())
+        pm.fill(QColor(18, 21, 27))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        sc, ox, oy = self.scale, self.off[0], self.off[1]
+        lo, hi = self._bounds()
+        # texture tile and tile grid
+        x0, y0, x1, y1 = ox, oy - sc, ox + sc, oy
+        if self.backdrop is not None:
+            p.setOpacity(0.55)
+            p.drawImage(QRectF(x0, y0, sc, sc), self.backdrop)
+            p.setOpacity(1.0)
+        else:
+            p.fillRect(QRectF(x0, y0, sc, sc), QColor(30, 35, 43))
+        p.setPen(QPen(QColor(60, 70, 84), 1))
+        for gx in range(int(math.floor(lo[0])), int(math.ceil(hi[0])) + 1):
+            p.drawLine(QPointF(ox + gx * sc, oy - hi[1] * sc - sc), QPointF(ox + gx * sc, oy - lo[1] * sc + sc))
+        for gy in range(int(math.floor(lo[1])), int(math.ceil(hi[1])) + 1):
+            p.drawLine(QPointF(ox + lo[0] * sc - sc, oy - gy * sc), QPointF(ox + hi[0] * sc + sc, oy - gy * sc))
+        p.setPen(QPen(QColor(120, 140, 165), 1.5))
+        p.drawRect(QRectF(x0, y0, sc, sc))
+        colors = {k: QColor(*c) for k, _l, _t, c in UV_TESTS}
+        # density / stretch heat: every triangle filled with its colour (grouped into a few shades)
+        for part in self.parts:
+            heat = part.get("heat")
+            if heat is None:
+                continue
+            n = len(heat)
+            idx = np.arange(n)
+            if n > self.MAX_FILL:
+                idx = idx[np.linspace(0, n - 1, self.MAX_FILL).astype(int)]
+            q = (heat[idx].astype(np.int32) // 24)
+            code = q[:, 0] * 10000 + q[:, 1] * 100 + q[:, 2]
+            for c in np.unique(code):
+                sel = idx[code == c]
+                path = QPainterPath()
+                pts = part["uv"][part["tris"][sel]]
+                sx, sy = (ox + pts[..., 0] * sc).tolist(), (oy - pts[..., 1] * sc).tolist()
+                for a_x, a_y in zip(sx, sy):
+                    path.moveTo(a_x[0], a_y[0])
+                    path.lineTo(a_x[1], a_y[1])
+                    path.lineTo(a_x[2], a_y[2])
+                    path.closeSubpath()
+                rgb = heat[sel].mean(0)
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]), 190))
+                p.drawPath(path)
+        # failing triangles, filled
+        for part in self.parts:
+            uv, tris = part["uv"], part["tris"]
+            for key in self.active:
+                flag = part["flags"].get(key)
+                if flag is None:
+                    continue
+                idx = np.nonzero(flag)[0]
+                if len(idx) > self.MAX_FILL:
+                    idx = idx[np.linspace(0, len(idx) - 1, self.MAX_FILL).astype(int)]
+                if not len(idx):
+                    continue
+                path = QPainterPath()
+                pts = uv[tris[idx]]                                 # (n, 3, 2)
+                sx = ox + pts[..., 0] * sc
+                sy = oy - pts[..., 1] * sc
+                for a_x, a_y in zip(sx.tolist(), sy.tolist()):
+                    path.moveTo(a_x[0], a_y[0])
+                    path.lineTo(a_x[1], a_y[1])
+                    path.lineTo(a_x[2], a_y[2])
+                    path.closeSubpath()
+                col = QColor(colors[key])
+                col.setAlpha(150)
+                p.setPen(Qt.NoPen)
+                p.setBrush(col)
+                p.drawPath(path)
+        # all edges
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(120, 165, 215, 170), 1))
+        for part in self.parts:
+            e = part.get("edges")
+            if e is None:
+                t = part["tris"]
+                e = np.concatenate([t[:, [0, 1]], t[:, [1, 2]], t[:, [2, 0]]])
+                e.sort(1)
+                e = np.unique(e, axis=0)
+                part["edges"] = e
+            if len(e) > self.MAX_EDGES:
+                e = e[np.linspace(0, len(e) - 1, self.MAX_EDGES).astype(int)]
+            a, b = part["uv"][e[:, 0]], part["uv"][e[:, 1]]
+            arr = np.stack([ox + a[:, 0] * sc, oy - a[:, 1] * sc, ox + b[:, 0] * sc, oy - b[:, 1] * sc], 1)
+            p.drawLines([QLineF(x0_, y0_, x1_, y1_) for x0_, y0_, x1_, y1_ in arr.tolist()])
+        if self.legend and self.parts:
+            lg = self.legend
+            bw, bx, by = 150, self.width() - 166, 24
+            grad = QLinearGradient(bx, 0, bx + bw, 0)
+            for pos, rgb in lg["stops"]:
+                grad.setColorAt(pos, QColor(*rgb))
+            p.setPen(QPen(QColor(10, 12, 16), 1))
+            p.setBrush(grad)
+            p.drawRect(QRectF(bx, by, bw, 10))
+            p.setPen(QColor(190, 198, 210))
+            p.drawText(QPointF(bx, by - 5), lg["title"])
+            for pos, text in lg["labels"]:
+                tw = p.fontMetrics().horizontalAdvance(text)
+                p.drawText(QPointF(min(max(bx + pos * bw - tw / 2, 4), self.width() - tw - 4), by + 24), text)
+        p.setPen(QColor(150, 160, 175))
+        if not self.parts:
+            p.drawText(self.rect(), Qt.AlignCenter | Qt.TextWordWrap, self.summary or "No UV data")
+        else:
+            p.drawText(QPointF(10, 16), self.title)
+            p.drawText(QPointF(10, self.height() - 8), self.summary)
+        p.end()
+        self._pm = pm
+        self._base = (self.scale, (self.off[0], self.off[1]))
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        if self._pm is None:
+            p.fillRect(self.rect(), QColor(18, 21, 27))
+            return
+        s0, (o0x, o0y) = self._base
+        k = self.scale / s0
+        if abs(k - 1.0) < 1e-6 and abs(self.off[0] - o0x) < 0.5 and abs(self.off[1] - o0y) < 0.5:
+            p.drawPixmap(0, 0, self._pm)
+        else:                                  # moving: reuse the last drawing until the timer redraws
+            p.fillRect(self.rect(), QColor(18, 21, 27))
+            p.translate(self.off[0], self.off[1])
+            p.scale(k, k)
+            p.translate(-o0x, -o0y)
+            p.drawPixmap(0, 0, self._pm)
+
+
 class Viewer(QWidget):
     closed = Signal()
     step = Signal(int)                    # -1 previous model, +1 next model
@@ -3552,6 +4280,7 @@ class Viewer(QWidget):
     orientation_changed = Signal(str)     # path whose up-axis changed
     about_requested = Signal()            # open the About dialog
     panel_requested = Signal(str)         # show/raise a docked panel: environment, matcap, scene, materials
+    uv_changed = Signal()                 # UV analysis or UV view settings changed
 
     def __init__(self):
         super().__init__()
@@ -3604,6 +4333,16 @@ class Viewer(QWidget):
         self._split_resize_timer.setSingleShot(True)
         self._split_resize_timer.timeout.connect(self._split_after_resize)
         self._materials_panel = None
+        self.uv_on = False                         # UV layout shown beside the 3D view
+        self.uv_tests: set = set()                 # active UV diagnostics (keys of UV_TESTS)
+        self.uv_part = -1                          # -1 = all parts
+        self.uv_backdrop_on = True
+        self.uv_heat = "off"                       # off | density | stretch
+        self.uv_th = dict(UV_HEAT_DEFAULTS)
+        self._uv_ref = 0.0                         # reference texel density (area-weighted median)
+        self._uv_data: list = []
+        self._uv_saved: dict = {}
+        self._uv_tex_cache: dict = {}
         self._outline = self._outline_src = None
         self._outline_added = False
         try:                                      # last custom MatCap from the previous session
@@ -3623,9 +4362,25 @@ class Viewer(QWidget):
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        self.vtk_widget = QVTKRenderWindowInteractor(self)
+        # The 3D view lives in a stage (with its HUD and messages) inside a splitter, so the UV layout
+        # can sit beside it.
+        self.view_split = QSplitter(Qt.Horizontal)
+        self.view_split.setChildrenCollapsible(False)
+        self.view_split.setHandleWidth(5)
+        lay.addWidget(self.view_split)
+        self.stage = QWidget()
+        sl = QVBoxLayout(self.stage)
+        sl.setContentsMargins(0, 0, 0, 0)
+        self.stage.installEventFilter(self)
+        self.vtk_widget = QVTKRenderWindowInteractor(self.stage)
         self.vtk_widget.installEventFilter(self)       # Shift + right-drag rotates the lighting
-        lay.addWidget(self.vtk_widget)
+        sl.addWidget(self.vtk_widget)
+        self.view_split.addWidget(self.stage)
+        self.uv_view = UVLayoutView()
+        self.uv_view.hide()
+        self.view_split.addWidget(self.uv_view)
+        self.view_split.setStretchFactor(0, 3)
+        self.view_split.setStretchFactor(1, 2)
 
         self.renderer = vtkRenderer()
         self.rw = self.vtk_widget.GetRenderWindow()
@@ -3644,7 +4399,7 @@ class Viewer(QWidget):
         self._orbit_timer.timeout.connect(self._orbit_tick)
 
         # ----- floating HUD (native child so it sits above the GL surface)
-        self.hud = QFrame(self)
+        self.hud = QFrame(self.stage)
         self.hud.setAttribute(Qt.WA_NativeWindow, True)
         self.hud.setObjectName("hud")
         h = QHBoxLayout(self.hud)
@@ -3669,9 +4424,9 @@ class Viewer(QWidget):
         x.setObjectName("hudClose")
         h.addWidget(x)
 
-        self.info_panel = InfoPanel(self)
+        self.info_panel = InfoPanel(self.stage)
         self.info_panel.hide()
-        self.overlay = Overlay(self)
+        self.overlay = Overlay(self.stage)
         self.set_background(self.bg_idx, announce=False)
 
     # ----- HUD construction -------------------------------------------------
@@ -3739,6 +4494,9 @@ class Viewer(QWidget):
         self.act_turntable.setChecked(self.turntable)
         self.act_turntable.toggled.connect(self.set_turntable)
         menu.addAction(self.act_turntable)
+        self.act_uv = QAction("UV layout beside the model\tShift+U", menu, checkable=True)
+        self.act_uv.toggled.connect(self.set_uv_view)
+        menu.addAction(self.act_uv)
         self.act_split = QAction("Split compare: MatCap | normal\tD", menu, checkable=True)
         self.act_split.toggled.connect(self.set_split)
         menu.addAction(self.act_split)
@@ -3780,7 +4538,7 @@ class Viewer(QWidget):
     # ----- layout -----------------------------------------------------------
     def _place_hud(self):
         self.hud.adjustSize()
-        self.hud.move(max(8, self.width() - self.hud.width() - 12), 12)
+        self.hud.move(max(8, self.stage.width() - self.hud.width() - 12), 12)
         self.hud.raise_()
         self._place_info()
 
@@ -3794,6 +4552,8 @@ class Viewer(QWidget):
 
     # ----- scene state ------------------------------------------------------
     def clear_scene(self):
+        self._uv_saved, self._uv_data = {}, []
+        self._uv_tex_cache = {}
         for a in self.actors:
             self.renderer.RemoveActor(a)
         self.actors = []
@@ -3838,6 +4598,8 @@ class Viewer(QWidget):
         self._sync_axes()
         self._place_hud()
         self._update_info()
+        self.uv_part = -1
+        self.uv_refresh()
         if self._materials_panel is not None and self._materials_panel.isVisible():
             self._materials_panel.refresh()
 
@@ -4461,6 +5223,14 @@ class Viewer(QWidget):
 
     # ----- Shift + right-drag: rotate the lighting (and the sky) around the model -----
     def eventFilter(self, obj, ev):
+        if obj is self.stage:
+            if ev.type() == QEvent.Resize and hasattr(self, "overlay"):
+                self._place_hud()
+                if self.overlay.isVisible():
+                    self.overlay.reposition()
+                if self._split_visible():
+                    self._split_resize_timer.start(150)
+            return False
         if obj is not self.vtk_widget:
             return super().eventFilter(obj, ev)
         t = ev.type()
@@ -5223,6 +5993,273 @@ class Viewer(QWidget):
         self._sync_axes()
         self.rw.Render()
 
+    # ----- UV diagnostics: layout beside the model + heatmap on the model ----------------
+    def _uv_collect(self) -> list:
+        data = []
+        for a in self.actors:
+            info = None
+            try:
+                pd = _mapper_data(a.GetMapper())
+                tc = pd.GetPointData().GetTCoords() if pd is not None else None
+                if tc is not None and pd.GetNumberOfPolys() > 0:
+                    uv = numpy_support.vtk_to_numpy(tc).astype(np.float64)[:, :2]
+                    polys = pd.GetPolys()
+                    tris, parent = fan_triangulate(numpy_support.vtk_to_numpy(polys.GetOffsetsArray()),
+                                                   numpy_support.vtk_to_numpy(polys.GetConnectivityArray()))
+                    if len(tris):
+                        diag = uv_diagnose(uv, tris)
+                        pts = numpy_support.vtk_to_numpy(pd.GetPoints().GetData())
+                        flags = {"oob": diag["oob"], "flip": diag["flip"], "zero": diag["zero"],
+                                 **{k: np.zeros(len(tris), bool) for k in UV_ISLAND_TESTS}}
+                        isl = None
+                        if len(tris) <= 2_000_000:                  # island tests need real work: skip huge meshes
+                            try:
+                                isl = uv_island_tests(pts, uv, tris, diag["flip"])
+                                for k in UV_ISLAND_TESTS + ("flip",):
+                                    flags[k] = isl[k]
+                            except Exception:
+                                isl = None
+                        info = {"m": uv_metrics(pts, uv, tris), "uv": uv, "tris": tris, "parent": parent,
+                                "npoly": polys.GetNumberOfCells(),
+                                "first": pd.GetNumberOfVerts() + pd.GetNumberOfLines(),
+                                "flags": flags, "isl": isl, "ref": diag["ref"]}
+            except Exception:
+                info = None
+            data.append(info)
+        return data
+
+    def _uv_selected(self) -> list:
+        if 0 <= self.uv_part < len(self._uv_data):
+            return [self.uv_part]
+        return [i for i, d in enumerate(self._uv_data) if d is not None]
+
+    def uv_counts(self) -> dict:
+        """Totals for the chosen part(s): triangles, how many fail each test, and whether UVs exist."""
+        out = {"has_uv": False, "tris": 0, "islands": 0, "isl_ok": True,
+               **{k: 0 for k, *_r in UV_TESTS}, **{"inv_" + k: 0 for k in UV_ISLAND_TESTS}}
+        for i in self._uv_selected():
+            d = self._uv_data[i]
+            if d is None:
+                continue
+            out["has_uv"] = True
+            out["tris"] += len(d["tris"])
+            for k, *_r in UV_TESTS:
+                out[k] += int(d["flags"][k].sum())
+            if d.get("isl") is None:
+                out["isl_ok"] = False                   # too large (or failed): island tests were not run
+            else:
+                out["islands"] += d["isl"]["n"]
+                for k in UV_ISLAND_TESTS:
+                    out["inv_" + k] += d["isl"]["involved"][k]
+        return out
+
+    def uv_refresh(self):
+        """Re-analyse the open model, then bring the heatmap and the layout up to date."""
+        self._uv_restore_heatmap()
+        self._uv_data = self._uv_collect()
+        dens, w = [], []
+        for d in self._uv_data:
+            if d is not None:
+                ok = d["m"]["valid"]
+                dens.append(d["m"]["dens"][ok])
+                w.append(d["m"]["area3"][ok])
+        self._uv_ref = weighted_median(np.concatenate(dens), np.concatenate(w)) if dens else 0.0
+        if self._uv_heat_active():
+            self._uv_apply_heatmap()
+        self._uv_update_layout()
+        if self.actors:
+            self.rw.Render()
+        self.uv_changed.emit()
+
+    def _uv_heat_active(self) -> bool:
+        return bool(self.uv_tests) or self.uv_heat != "off"
+
+    def _uv_heat_colors(self, i: int):
+        """Per-triangle colours of the chosen heatmap for part i (None when the heatmap is off)."""
+        d = self._uv_data[i] if i < len(self._uv_data) else None
+        if d is None or self.uv_heat == "off":
+            return None
+        m = d["m"]
+        if self.uv_heat == "density":
+            return uv_heat_density(m["dens"], m["valid"], self._uv_ref, self.uv_th["dens_low"], self.uv_th["dens_high"])
+        return uv_heat_stretch(m["stretch"], self.uv_th["stretch"])
+
+    def uv_heat_stats(self) -> dict:
+        """Share of triangles (of the chosen parts) outside the thresholds, for the tab."""
+        n = lo = hi = bad = 0
+        for i in self._uv_selected():
+            d = self._uv_data[i]
+            if d is None:
+                continue
+            m = d["m"]
+            n += len(m["dens"])
+            if self.uv_heat == "density" and self._uv_ref > 0:
+                r = m["dens"] / self._uv_ref
+                lo += int(((r < self.uv_th["dens_low"]) & m["valid"]).sum())
+                hi += int(((r > self.uv_th["dens_high"]) & m["valid"]).sum())
+            elif self.uv_heat == "stretch":
+                bad += int((m["stretch"] > self.uv_th["stretch"]).sum())
+        return {"n": n, "low": lo, "high": hi, "bad": bad}
+
+    def _uv_update_layout(self):
+        if not self.uv_on:
+            return
+        idx = self._uv_selected()
+        names = [getattr(self.actors[i], "_name", "") or f"Part {i + 1}" for i in idx]
+        idx = [i for i in idx if self._uv_data[i] is not None]        # a part without UVs has nothing to draw
+        parts = [{"uv": self._uv_data[i]["uv"], "tris": self._uv_data[i]["tris"],
+                  "flags": self._uv_data[i]["flags"], "heat": self._uv_heat_colors(i)} for i in idx]
+        title = names[0] if (len(names) == 1 or 0 <= self.uv_part < len(self.actors)) else f"All parts ({len(names)})"
+        c = self.uv_counts()
+        if not self.actors:
+            summary = "Open a model to see its UV layout."
+        elif not c["has_uv"]:
+            summary = ("This part has no UV coordinates." if self.uv_part >= 0
+                       else "This model has no UV coordinates.")
+        else:
+            bits = [f"{c['tris']:,} triangles"]
+            bits += [f"{c[k]:,} {label.lower()}" for k, label, _t, _c in UV_TESTS if k in self.uv_tests]
+            st = self.uv_heat_stats()
+            if self.uv_heat == "density" and st["n"]:
+                bits.append(f"{100.0 * st['low'] / st['n']:.1f}% low, {100.0 * st['high'] / st['n']:.1f}% high density")
+            elif self.uv_heat == "stretch" and st["n"]:
+                bits.append(f"{100.0 * st['bad'] / st['n']:.1f}% stretched past {self.uv_th['stretch']:g}")
+            summary = "  ·  ".join(bits)
+        backdrop = None
+        if self.uv_backdrop_on:
+            for i in idx:
+                backdrop = self._uv_texture_image(self.actors[i])
+                if backdrop is not None:
+                    break
+        legend = None
+        if self.uv_heat == "density":
+            lo, hi = self.uv_th["dens_low"], self.uv_th["dens_high"]
+            legend = {"title": "Texel density (relative to the median)", "stops": _HEAT_STOPS,
+                      "labels": [(0.0, f"≤ ×{lo:g}"), (0.5, "×1"), (1.0, f"≥ ×{hi:g}")]}
+        elif self.uv_heat == "stretch":
+            w = self.uv_th["stretch"]
+            legend = {"title": "Stretch (1 = undistorted)", "stops": _STRETCH_STOPS,
+                      "labels": [(0.0, "1"), (0.5, f"{(1 + w) / 2:g}"), (1.0, f"≥ {w:g}")]}
+        self.uv_view.set_data(parts, sorted(self.uv_tests, key=[k for k, *_r in UV_TESTS].index),
+                              backdrop, title, summary, legend)
+
+    def _uv_texture_image(self, actor):
+        tex = actor.GetTexture()
+        if tex is None:
+            return None
+        key = id(tex)
+        if key not in self._uv_tex_cache:
+            arr = texture_to_array(tex, 1024)
+            self._uv_tex_cache[key] = None if arr is None else _rgb_to_qimage(texture_channel_rgb(arr))
+        return self._uv_tex_cache[key]
+
+    def _uv_apply_heatmap(self):
+        for i, a in enumerate(self.actors):
+            d = self._uv_data[i] if i < len(self._uv_data) else None
+            if d is None or id(a) in self._uv_saved:
+                continue
+            try:
+                m = a.GetMapper()
+                pd = _mapper_data(m)
+                colors, _bad = uv_poly_colors(d["npoly"], d["parent"], d["flags"], list(self.uv_tests),
+                                              base=self._uv_heat_colors(i))
+                full = np.tile(np.array(UV_COLOR_OK, np.uint8), (pd.GetNumberOfCells(), 1))
+                full[d["first"]:d["first"] + d["npoly"]] = colors
+                arr = numpy_support.numpy_to_vtk(np.ascontiguousarray(full), deep=True)
+                arr.SetName("gk_uvdiag")
+                cd = pd.GetCellData()
+                self._uv_saved[id(a)] = {"actor": a, "m": m, "pd": pd, "old": cd.GetScalars(),
+                                         "vis": m.GetScalarVisibility(), "smode": m.GetScalarMode(),
+                                         "cmode": m.GetColorMode(), "tex": a.GetTexture()}
+                cd.SetScalars(arr)
+                m.SetScalarModeToUseCellData()
+                m.SetColorModeToDirectScalars()
+                m.ScalarVisibilityOn()
+                a.SetTexture(None)                  # the heatmap replaces the texture while it is on
+            except Exception:
+                self._uv_saved.pop(id(a), None)
+
+    def _uv_restore_heatmap(self):
+        for st in list(self._uv_saved.values()):
+            try:
+                cd = st["pd"].GetCellData()
+                cd.RemoveArray("gk_uvdiag")
+                if st["old"] is not None:
+                    cd.SetScalars(st["old"])
+                m = st["m"]
+                m.SetScalarVisibility(st["vis"])
+                m.SetScalarMode(st["smode"])
+                m.SetColorMode(st["cmode"])
+                if st["tex"] is not None:
+                    st["actor"].SetTexture(st["tex"])
+            except Exception:
+                pass
+        self._uv_saved = {}
+
+    def set_uv_view(self, on: bool):
+        self.uv_on = bool(on)
+        self.uv_view.setVisible(self.uv_on)
+        if self.act_uv.isChecked() != self.uv_on:
+            self.act_uv.blockSignals(True)
+            self.act_uv.setChecked(self.uv_on)
+            self.act_uv.blockSignals(False)
+        if self.uv_on:
+            tot = max(sum(self.view_split.sizes()), 2)
+            self.view_split.setSizes([int(tot * 0.58), int(tot * 0.42)])
+            self._uv_update_layout()
+        self.uv_changed.emit()
+
+    def toggle_uv_view(self):
+        self.act_uv.toggle()
+
+    def _uv_recolor(self):
+        """Colours changed (a test or heatmap setting): redo the model colours and the layout."""
+        self._uv_restore_heatmap()
+        if self._uv_heat_active():
+            self._uv_apply_heatmap()
+        self._uv_update_layout()
+        if self.actors:
+            self.rw.Render()
+        self.uv_changed.emit()
+
+    def _uv_need_view(self):
+        if self.mode != "surface":
+            self.set_mode("surface")                # the heatmap shows in the shaded view
+        if not self.uv_on:
+            self.set_uv_view(True)
+
+    def set_uv_test(self, key: str, on: bool):
+        if on:
+            self.uv_tests.add(key)
+            self._uv_need_view()
+        else:
+            self.uv_tests.discard(key)
+        self._uv_recolor()
+
+    def set_uv_heat(self, mode: str):
+        self.uv_heat = mode if mode in ("off", "density", "stretch") else "off"
+        if self.uv_heat != "off":
+            self._uv_need_view()
+        self._uv_recolor()
+
+    def set_uv_threshold(self, key: str, value: float):
+        if key in self.uv_th:
+            self.uv_th[key] = float(value)
+            if self.uv_heat != "off":
+                self._uv_recolor()
+
+    def set_uv_part(self, idx: int):
+        self.uv_part = int(idx)
+        self._uv_update_layout()
+        self.uv_changed.emit()
+
+    def set_uv_backdrop(self, on: bool):
+        self.uv_backdrop_on = bool(on)
+        self._uv_update_layout()
+
+    def set_uv_below(self, below: bool):
+        self.view_split.setOrientation(Qt.Vertical if below else Qt.Horizontal)
+
     # ----- reference sheet for AI 3D tools ----------------------------------------------
     def open_reference_sheet_dialog(self):
         if not self.actors:
@@ -5774,7 +6811,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+L", v.cycle_lighting_preset),
             ("I", v.toggle_info),
             ("G", v.toggle_grid), ("F", v.fit_view), ("H", v.toggle_turntable),
-            ("V", v.cycle_view_channel), ("D", v.toggle_split), ("Shift+D", v.cycle_split_style), ("Shift+M", v.open_materials_panel),
+            ("V", v.cycle_view_channel), ("D", v.toggle_split), ("Shift+D", v.cycle_split_style), ("Shift+U", v.toggle_uv_view), ("Shift+M", v.open_materials_panel),
             ("Shift+W", v.toggle_edges), ("Shift+G", v.open_scene_panel),
             ("Esc", self.close_viewer),
         ]

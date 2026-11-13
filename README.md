@@ -1,10 +1,12 @@
 # Gleek3Deek
 
-Gleek3Deek is a lightweight, self-hosted 3D asset viewer built for digital sculptors or 3D generalists who need fast, frictionless inspection of their work without sacrificing privacy. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK. A fast, free library browser to organize thousands of local 3D model files and quickly inspect meshes with ZBrush-style MatCaps, with basic export and mesh reduction functionality.
+A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![Gleek3Deek](images/SplitCow_Matcap.jpg)
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -96,6 +98,7 @@ python main.py
 | Hide/show the whole side panel | `Ctrl+B` (or the arrow on the right edge) |
 | Cycle material view: shaded, albedo, normals | `V` |
 | Reference sheet for AI 3D tools (Meshy, Tripo, Rodin, Luma) | `Shift+F12` (or **Main ▾ → Reference sheet…**) |
+| UV layout beside the model | `Shift+U` (or **Main ▾ → UV layout beside the model**) |
 | Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
 | Split style: vertical, horizontal, diagonal | `Shift+D` |
 | Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
@@ -114,8 +117,6 @@ python main.py
 | Close viewer | `Esc` or the ✕ button |
 
 ## MatCap editor and presets
-
-![Matcap Editor](images/matcap_laliqueGlassGirl.jpg)
 
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
@@ -155,6 +156,28 @@ Press **D** with a model open. The viewport is split by a line: the MatCap on on
 - The split shows while a MatCap is active (`M`). Cycling back to normal shading hides it and it returns with the next MatCap.
 - The MatCap shader is re-baked with the new position shortly after you move the line, so with image MatCaps the shading can trail the line slightly while you drag.
 - Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
+
+## UV inspection
+
+Open **Materials** and go to the **UV** tab, or press **Shift+U**. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
+
+- **The layout:** every triangle edge in 0 to 1 UV space, over the part's texture if it has one. Mouse wheel zooms, drag pans, double-click fits the view. Pick one **Part** or **All parts**.
+- **Tests**, each shown on the model and in the layout (ticking one opens the layout and switches the model to the shaded view):
+  - **Out-of-bounds UVs** (orange): triangles with a UV outside the 0 to 1 square.
+  - **Flipped UVs** (red): stray triangles whose UV winding is opposite to most of the model (the majority sets the convention). Whole islands that are laid out the other way round are reported under *Mirrored islands* instead.
+  - **Zero-area UVs** (yellow): triangles squashed to a line or a point in UV space.
+  - **Overlapping islands** (cyan): islands that partly cover each other in UV space, so they share texture pixels, usually by accident.
+  - **Stacked islands** (purple): islands that sit (almost) exactly on top of each other, for example repeated parts sharing one texture area. This is often deliberate, but check it is what you meant.
+  - **Mirrored islands** (pink): whole islands whose layout is the opposite way round to the model, so their texture reads mirrored (text and logos show it first).
+  - A triangle that fails more than one active test is white; fine triangles are grey. The counts sit next to each test (islands for the last three).
+  - **How islands are found:** triangles that share vertices form an island, where vertices with the same 3D position and the same UV count as one (so a vertex split only for normals does not cut an island). Overlap is measured on a pixel grid (512 px per UV unit): more than about 80% shared with the smaller island counts as stacked, between about 5% and 80% as overlapping. Islands that only touch along their borders are not flagged. Meshes over 2 million triangles skip the island tests.
+- **Heatmap** (the drop-down above the tests). The tests are drawn on top of the heatmap colours.
+  - **Texel density:** how much texture resolution each triangle gets (UV area against 3D area), compared with the model's median (weighted by surface area, across all parts, so parts can be compared). Green is the median, blue is below the *too low* threshold, red is above the *too high* threshold. Defaults are ×0.5 and ×2; both are adjustable in the tab.
+  - **Stretch (distortion):** how much the UVs distort the surface. 1 means no distortion; scale, rotation and mirroring do not count, only squashing and shearing. Green is 1, yellow half way and red at the warning value (default 2, adjustable).
+  - A colour bar in the layout pane shows the scale, and the tab and the layout footer give the share of triangles outside the thresholds.
+  - Density compares triangles on the model as stored, so a part scaled differently by its node transform in the file can read differently from how it looks.
+- The texture on the model is replaced by the heatmap while a test or heatmap is on, and comes back when you switch them all off.
+- Models with no UV coordinates (STL, PLY, most CAD files) show "no UV data".
 
 ## Reference sheets for AI 3D tools
 
@@ -302,7 +325,7 @@ Notes:
 
 | Format | Extensions | How it's read | Notes |
 |---|---|---|---|
-| glTF / GLB | `.gltf` `.glb` | VTK glTF importer | Base colour textures; PBR is shown as simple shading. WebP textures in GLB files are converted automatically. Draco/Meshopt/KTX2-compressed models are not supported |
+| glTF / GLB | `.gltf` `.glb` | VTK glTF importer | Base colour textures; PBR is shown as simple shading. WebP textures and quantized geometry (`KHR_mesh_quantization`, used by Tripo AI and gltfpack) in GLB files are converted automatically. Draco/Meshopt/KTX2-compressed models are not supported |
 | OBJ | `.obj` | VTK OBJ reader / importer | Uses the `.mtl` file if present; reads `v x y z r g b` vertex colours |
 | STL | `.stl` | VTK | No colour data in the format, so it's shown grey |
 | PLY | `.ply` | VTK | Vertex and face colours |
