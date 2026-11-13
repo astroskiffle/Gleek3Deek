@@ -1,6 +1,7 @@
 # Gleek3Deek
 
-Gleek3Deek is a lightweight, self-hosted 3D asset viewer built for digital sculptors or 3D generalists who need fast, frictionless inspection of their work without sacrificing privacy. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. A fast, free library browser to organize thousands of local files and quickly inspect meshes with ZBrush-style MatCaps, with basic export and mesh reduction functionality.
+The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists.
+Spend less time digging through folders and more time creating.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
