@@ -222,12 +222,6 @@ Open a model, then press **Ctrl+E** (or use **File → Export / convert…** or 
 
 Very strong simplification (under about 10%) can visibly change the shape, and open edges aren't specially protected, so thin or open surfaces may shrink at their edges.
 
-## About dialog
-
-Press **F1**, or choose **Help → About** (also in **Main ▾** while a model is open). It shows the app name, who made it, the legal notice, the MIT licence text and the open-source attributions. Close it with the ✕ button, the **Close** button, the window's own close button or **Esc**.
-
-All of its wording lives in one dictionary named `ABOUT`, just under `APP_NAME` near the top of `main.py`: your name and alias, copyright line, legal notice, licence text, the list of third-party projects, and an optional version string (blank means it is hidden). Edit those values and nothing else needs to change.
-
 ## Model info panel
 
 Press **I** (or **Main ▾ → Model info**) to show a small card under the top toolbar. It lists:
