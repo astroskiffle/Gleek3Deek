@@ -36,6 +36,10 @@ python -m pip install --upgrade pip || goto :fail
 python -m pip install -r requirements.txt -r requirements-build.txt || goto :fail
 echo Installing optional FBX/DAE/LWO support ^(safe to fail^)...
 python -m pip install assimp-py
+echo Installing optional Draco / Meshopt GLB support ^(safe to fail^)...
+python -m pip install DracoPy
+python -m pip install meshoptimizer
+python -c "import importlib.util as u; print('Bundled in the exe:', [n for n in ('assimp_py','DracoPy','meshoptimizer') if u.find_spec(n)])"
 
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist

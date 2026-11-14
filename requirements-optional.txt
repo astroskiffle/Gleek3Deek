@@ -1,3 +1,5 @@
 # Optional extras. Gleek3Deek runs without these, but some formats need them.
 assimp-py      # in-process FBX / DAE / LWO / 3DS / etc.
+DracoPy        # Draco-compressed GLB / glTF geometry
+meshoptimizer  # Meshopt-compressed GLB / glTF geometry
 cadquery       # STEP / STP fallback when your VTK build has no OpenCASCADE module
