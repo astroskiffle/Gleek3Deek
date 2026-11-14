@@ -1,10 +1,12 @@
 # Gleek3Deek
 
-The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists. Spend less time digging through folders and more time creating.
+A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![Gleek3Deek](images/SplitCow_Matcap.jpg)
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -57,6 +59,7 @@ run.bat C:\Models\chair.glb
 ```bash
 pip install -r requirements.txt
 pip install assimp-py      # optional: FBX / DAE / LWO / 3DS
+pip install DracoPy meshoptimizer   # optional: Draco / Meshopt compressed GLB
 python main.py
 ```
 
@@ -116,8 +119,6 @@ python main.py
 | Close viewer | `Esc` or the ✕ button |
 
 ## MatCap editor and presets
-
-![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
 
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
@@ -186,12 +187,10 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 
 **Materials & parts → Mesh** analyses the geometry only when you press **Run integrity tests**, so models open quickly. Until then it shows just the polygon, part and material counts. After the run:
 - Counts: triangles, vertices (and how many are at unique positions), parts (draw calls in the viewer), distinct materials (the minimum draw calls an engine needs), loose vertices, vertices sharing a position, separate pieces, open edges, non-manifold edges.
-- Integrity tests that colour the failing triangles on the model, each with a count: **open (boundary) edges**, **non-manifold edges**, **zero-area triangles**, **inconsistent winding**, **inside-out pieces** (closed pieces with a negative volume) and **duplicate faces**.
+- Integrity tests that colour the failing triangles on the model, each with a count: **open (boundary) edges**, **non-manifold edges**, **zero-area triangles**, **inconsistent winding** (a patch of triangles wound the opposite way round to the surface around it is coloured whole, so you see the flipped area itself rather than just its edge), **inside-out pieces** (closed pieces with a negative volume) and **duplicate faces**.
 - Vertices at the same position count as joined, so UV and hard-edge seams are not reported as holes. A colour test replaces the texture while it is on, like the UV tests, and can be combined with them.
 
 ## Measurements and cross-section
-
-![Gleek3Deek](images/Cutaway.jpg)
 
 **Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
 
@@ -216,6 +215,8 @@ Run an audit from a console, without opening the window. Give a model file or a 
 python cli.py model.glb --all
 python cli.py ./assets --recursive --mesh --textures --fail-on holes,flipped
 python cli.py ./assets -r --all --units mm:cm --json --report audit.json
+python cli.py ./assets -r --all --report audit.csv      # one row per file, for a spreadsheet
+python cli.py ./assets -r --all --report audit.html     # one self-contained web page
 ```
 
 | Option | What it adds |
@@ -228,8 +229,8 @@ python cli.py ./assets -r --all --units mm:cm --json --report audit.json
 | `--lod` | triangle counts at the 50%, 25% and 10% levels (slow) |
 | `--all` | info, textures, mesh, uv and measure |
 | `--units m` / `--units mm:cm` | what one model unit means, and the unit to report in (mm, cm, m, in, ft) |
-| `--json` | JSON instead of text |
-| `--report FILE` | also write the output to a new file |
+| `--format text\|json\|csv\|html` | the output format (`--json` is short for `--format json`). `html` is for `--report` files only, because the console shows text |
+| `--report FILE` | also write the output to a new file. Its format follows `--format`, else the extension (`.csv`, `.html`, `.json`, `.txt`), else the console format |
 | `-r`, `--recursive` | include sub-folders |
 | `-q`, `--quiet` | print nothing except errors |
 
@@ -241,6 +242,10 @@ python cli.py ./assets -r --all --units mm:cm --json --report audit.json
 | 1 | a `--fail-on` or `--max-*` check failed |
 | 2 | bad usage: wrong path, unknown option, or an unsafe `--report` |
 | 3 | some files could not be loaded |
+
+**Report formats.**
+- **CSV** has one row per file and one column per figure: triangles, materials, texture memory, each mesh and UV test, size, volume and so on. The columns depend on the sections you ask for, so every row has the same columns. Failed loads still get a row (`result` is `ERROR`). The file is UTF-8 with a byte-order mark so Excel reads it correctly, and text that a spreadsheet would run as a formula (starting with `=`, `+`, `-` or `@`) is prefixed with a quote.
+- **HTML** is a single page with no external files: summary cards, a sortable and filterable table (click a heading, filter by name, or show only failures or errors), and a collapsible detail block for every file. It follows your light or dark setting and blocks any outside loading. File names and error messages are escaped, so a hostile file name cannot add anything to the page.
 
 **Folders.** Supported files are audited one at a time and a summary table follows. By default each file is loaded in its own child process, so a corrupt file that crashes the loader or hangs (`--timeout`, default 300 s) is reported as an error and the run carries on; `--no-isolate` is faster but loses that protection. Files larger than `--max-size-mb` (default 1024) and anything past `--max-files` (default 2000) are skipped and listed.
 
@@ -394,7 +399,7 @@ Notes:
 
 | Format | Extensions | How it's read | Notes |
 |---|---|---|---|
-| glTF / GLB | `.gltf` `.glb` | VTK glTF importer | Base colour textures; PBR is shown as simple shading. WebP textures and quantized geometry (`KHR_mesh_quantization`, used by Tripo AI and gltfpack) in GLB files are converted automatically. Draco/Meshopt/KTX2-compressed models are not supported |
+| glTF / GLB | `.gltf` `.glb` | VTK glTF importer | Base colour textures; PBR is shown as simple shading. WebP textures and quantized geometry (`KHR_mesh_quantization`, used by Tripo AI and gltfpack) in GLB files are converted automatically. Draco (`KHR_draco_mesh_compression`) and Meshopt (`EXT_meshopt_compression`) compressed geometry in GLB files is decoded when the optional packages are installed: `pip install DracoPy meshoptimizer`. KTX2-compressed textures are not supported, and compressed `.gltf` files with separate buffers are not converted |
 | OBJ | `.obj` | VTK OBJ reader / importer | Uses the `.mtl` file if present; reads `v x y z r g b` vertex colours |
 | STL | `.stl` | VTK | No colour data in the format, so it's shown grey |
 | PLY | `.ply` | VTK | Vertex and face colours |
@@ -425,6 +430,7 @@ The `.exe` is large (VTK and Qt are bundled). STEP support through CadQuery is n
 
 - **App won't start / install fails:** check `python --version`. Use Python 3.10–3.12 if a package can't be found for your version.
 - **FBX / DAE / LWO won't open:** make sure `assimp-py` installed (`pip install assimp-py` inside `.venv`). The error box shows the exact reason.
+- **A compressed GLB says to install a decoder:** run `pip install DracoPy meshoptimizer` inside `.venv` (use the one the message names).
 - **STEP files won't open:** run `pip install cadquery`.
 - **Black or blank 3D view:** update your graphics driver. VTK needs OpenGL 3.2 or newer.
 - **Thumbnails missing:** the generic icon stays if a file is too large, in an unsupported format, or can't be parsed. Thumbnail cache lives in your OS user cache folder under `Gleek3Deek/thumbs` and is safe to delete.
@@ -449,9 +455,20 @@ Gleek3Deek/
 ├── gleek3deek.spec           # PyInstaller recipe
 ├── requirements-build.txt    # build-only packages
 ├── .github/workflows/build-windows.yml   # automatic exe builds
+├── .github/workflows/tests.yml           # runs the tests on every push
+├── tests/                    # automated tests (no VTK or Qt needed)
+├── pytest.ini, requirements-dev.txt, .gitignore
 ├── LICENSE
 └── README.md
 ```
+
+## Running the tests
+
+```
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+The tests cover the mesh checks, measurements, UV maths, texture audit and the command-line mode (about 30 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
 
 ## Contributing
 
@@ -459,4 +476,4 @@ Issues and pull requests are welcome. When reporting a model that won't open, pl
 
 ## License
 
-Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://doc.qt.io/qtforpython/) (LGPL), [VTK](https://vtk.org/) (BSD), [NumPy](https://numpy.org/) (BSD) and, optionally, [assimp-py](https://pypi.org/project/assimp-py/) / [Assimp](https://github.com/assimp/assimp) (BSD) and [CadQuery](https://github.com/CadQuery/cadquery) (Apache-2.0), each under its own license.
+Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://doc.qt.io/qtforpython/) (LGPL), [VTK](https://vtk.org/) (BSD), [NumPy](https://numpy.org/) (BSD) and, optionally, [assimp-py](https://pypi.org/project/assimp-py/) / [Assimp](https://github.com/assimp/assimp) (BSD), [DracoPy](https://pypi.org/project/DracoPy/) / [Draco](https://github.com/google/draco) (Apache-2.0), [meshoptimizer](https://pypi.org/project/meshoptimizer/) / [meshoptimizer](https://github.com/zeux/meshoptimizer) (MIT) and [CadQuery](https://github.com/CadQuery/cadquery) (Apache-2.0), each under its own license.
