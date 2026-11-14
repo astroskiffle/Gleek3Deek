@@ -191,6 +191,8 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 
 ## Measurements and cross-section
 
+![Gleek3Deek](images/Cutaway.jpg)
+
 **Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
 
 - **Calculate size, volume and centre of mass** (on request, so models open quickly) measures the visible parts and shows: bounding-box size, the oriented bounding box (the smallest box, turned to fit), surface area, volume (also in litres), and centre of mass. Volume and centre of mass need closed parts: open parts are left out of the volume and reported, and with no closed part the centre is that of the surface.
