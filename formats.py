@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import struct
+import sys
 import tempfile
 import threading
 import traceback
@@ -24,6 +25,12 @@ from vtkmodules.vtkIOGeometry import vtkGLTFReader, vtkOBJReader, vtkSTLReader
 from vtkmodules.vtkIOPLY import vtkPLYReader
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper, vtkRenderer, vtkRenderWindow, vtkTexture
 from vtkmodules.vtkIOImage import vtkImageReader2Factory
+try:
+    # Registers VTK's OpenGL classes. The glTF importer needs them even though nothing is ever rendered (no GL
+    # context is created). The window imports this itself; the command line does not, and crashed without it.
+    import vtkmodules.vtkRenderingOpenGL2  # noqa: F401
+except Exception:  # pragma: no cover
+    pass
 try:
     from vtkmodules.vtkIOImport import vtkGLTFImporter, vtkOBJImporter
 except Exception:  # pragma: no cover
@@ -156,6 +163,243 @@ def _dequantize_gltf(doc: dict, binc: bytes) -> bytes:
     return bytes(binc) + b"\0" * pad + bytes(extra)
 
 
+# ---------------------------------------------------------------------------
+# Compressed geometry (GLB only): KHR_draco_mesh_compression and EXT_meshopt_compression.
+# The compressed data is decoded into ordinary float / integer buffers in the same temp copy, so VTK
+# only ever sees plain glTF. The decoders are optional packages (like Assimp):
+#     pip install DracoPy meshoptimizer
+# ---------------------------------------------------------------------------
+_DRACO, _MESHOPT = "KHR_draco_mesh_compression", "EXT_meshopt_compression"
+
+
+def _draco_decode(data: bytes):
+    """Decode one Draco blob with DracoPy. Returns the DracoPy mesh object."""
+    try:
+        import DracoPy
+    except ImportError as e:
+        raise LoadError("This model uses Draco compression. Install the decoder with:  pip install DracoPy"
+                        f"  (python: {sys.executable}; import error: {e})")
+    try:
+        return DracoPy.decode(bytes(data))
+    except Exception as e:
+        raise LoadError(f"Draco decoding failed: {e}")
+
+
+def _draco_attribute(mesh, name: str, uid):
+    """The data of one glTF attribute from a decoded Draco mesh, as a 2-D numpy array (or None)."""
+    arr = None
+    getter = getattr(mesh, "get_attribute_by_unique_id", None)
+    if getter is not None and uid is not None:
+        try:
+            att = getter(int(uid))
+            arr = att.get("data") if isinstance(att, dict) else getattr(att, "data", None)
+        except Exception:
+            arr = None
+    if arr is None:
+        prop = {"POSITION": "points", "NORMAL": "normals", "COLOR_0": "colors"}.get(name)
+        if prop is None and name.startswith("TEXCOORD_") and name.endswith("0"):
+            prop = "tex_coord"
+        arr = getattr(mesh, prop, None) if prop else None
+    if arr is None:
+        return None
+    arr = np.asarray(arr)
+    if arr.size == 0:
+        return None
+    return arr.reshape(arr.shape[0], -1) if arr.ndim > 1 else arr.reshape(-1, {"POSITION": 3, "NORMAL": 3}.get(name, 2))
+
+
+def _meshopt_decode(mode: str, count: int, stride: int, data: bytes) -> bytes:
+    """Raw meshopt decode (no filter) with the `meshoptimizer` package. Returns count * stride bytes."""
+    try:
+        import meshoptimizer as mo
+    except ImportError as e:
+        raise LoadError("This model uses Meshopt compression. Install the decoder with:  pip install meshoptimizer"
+                        f"  (python: {sys.executable}; import error: {e})")
+    fn = {"ATTRIBUTES": "decode_vertex_buffer", "TRIANGLES": "decode_index_buffer",
+          "INDICES": "decode_index_sequence"}.get(mode)
+    if fn is None or not hasattr(mo, fn):
+        raise LoadError(f"Meshopt mode {mode!r} is not supported.")
+    f = getattr(mo, fn)
+    src = bytes(data)
+    # Indices are always decoded at 32 bits and narrowed here: the package's 16-bit path returns a mis-sized buffer.
+    size = stride if mode == "ATTRIBUTES" else 4
+    try:
+        try:
+            res = f(count, size, src)
+        except TypeError:
+            res = f(np.zeros(count * size, np.uint8), count, size, src)
+            if res is None:
+                raise TypeError("decoder returned nothing")
+        arr = np.ascontiguousarray(res)
+    except LoadError:
+        raise
+    except Exception as e:
+        raise LoadError(f"Meshopt decoding failed: {e}")
+    if mode != "ATTRIBUTES":
+        if arr.dtype.kind not in "ui" or arr.size < count:
+            raise LoadError(f"Meshopt decoding gave unexpected index data (dtype {arr.dtype}, size {arr.size}, "
+                            f"expected {count})")
+        arr = arr.reshape(-1)[:count].astype("<u2" if stride == 2 else "<u4")
+    out = arr.tobytes()
+    if len(out) != count * stride:
+        raise LoadError(f"Meshopt decoding gave an unexpected amount of data (mode {mode}, count {count}, "
+                        f"stride {stride}; expected {count * stride} bytes, got {len(out)}; "
+                        f"array dtype {arr.dtype}, shape {arr.shape})")
+    return out
+
+
+def _meshopt_filter(kind: str, raw: bytes, count: int, stride: int) -> bytes:
+    """Undo a meshopt filter (OCTAHEDRAL normals, EXPONENTIAL floats)."""
+    if kind in ("", "NONE"):
+        return raw
+    if kind == "EXPONENTIAL":
+        v = np.frombuffer(raw, dtype="<i4").reshape(count, stride // 4)
+        exp = (v >> 24).astype(np.int32)                         # signed top byte
+        man = (v << 8) >> 8                                      # signed 24-bit mantissa
+        return np.ldexp(man.astype(np.float32), exp).astype("<f4").tobytes()
+    if kind == "OCTAHEDRAL" and stride in (4, 8):
+        dt, mx = (np.int8, 127.0) if stride == 4 else (np.int16, 32767.0)
+        v = np.frombuffer(raw, dtype=np.dtype(dt).newbyteorder("<")).reshape(count, 4)
+        one = np.maximum(np.abs(v[:, 2].astype(np.float64)), 1.0)
+        x, y = v[:, 0] / one, v[:, 1] / one
+        z = 1.0 - np.abs(x) - np.abs(y)
+        t = np.maximum(-z, 0.0)
+        x = x + np.where(x >= 0, -t, t)
+        y = y + np.where(y >= 0, -t, t)
+        n = np.sqrt(x * x + y * y + z * z)
+        n[n == 0] = 1.0
+        out = v.copy()
+        out[:, 0] = np.round(x / n * mx)
+        out[:, 1] = np.round(y / n * mx)
+        out[:, 2] = np.round(z / n * mx)
+        return out.astype(np.dtype(dt).newbyteorder("<")).tobytes()
+    raise LoadError(f"Meshopt filter {kind!r} is not supported.")
+
+
+def _append_view(doc: dict, extra: bytearray, base: int, data: bytes, stride=None) -> int:
+    """Add `data` to the binary buffer as a new bufferView; returns the view index."""
+    while len(extra) % 4:
+        extra.append(0)
+    view = {"buffer": 0, "byteOffset": base + len(extra), "byteLength": len(data)}
+    if stride:
+        view["byteStride"] = stride
+    extra += data
+    doc.setdefault("bufferViews", []).append(view)
+    return len(doc["bufferViews"]) - 1
+
+
+def _add_accessor(doc: dict, view: int, ctype: int, count: int, typ: str, arr=None) -> int:
+    acc = {"bufferView": view, "byteOffset": 0, "componentType": ctype, "count": count, "type": typ}
+    if arr is not None and arr.size and typ != "SCALAR":
+        acc["min"] = [float(x) for x in arr.min(0)]
+        acc["max"] = [float(x) for x in arr.max(0)]
+    doc.setdefault("accessors", []).append(acc)
+    return len(doc["accessors"]) - 1
+
+
+def _decompress_gltf(doc: dict, binc: bytes) -> bytes:
+    """Decode Draco primitives and Meshopt buffer views in place. Returns the (longer) binary buffer."""
+    views = doc.get("bufferViews", [])
+    extra = bytearray()
+    pad = (-len(binc)) % 4
+    base = len(binc) + pad
+    undecoded = False
+
+    # --- Meshopt: each compressed view becomes a plain view
+    for v in views:
+        ext = v.get("extensions", {}).get(_MESHOPT)
+        if ext is None:
+            continue
+        if ext.get("buffer", 0) != 0:
+            undecoded = True
+            continue
+        off, ln = int(ext.get("byteOffset", 0)), int(ext["byteLength"])
+        count, stride = int(ext["count"]), int(ext["byteStride"])
+        try:
+            raw = _meshopt_decode(ext.get("mode", "ATTRIBUTES"), count, stride, binc[off:off + ln])
+            raw = _meshopt_filter(ext.get("filter", "NONE"), raw, count, stride)
+        except LoadError as e:
+            if "filter" in str(e):                         # e.g. a QUATERNION filter (animation data): skip it
+                undecoded = True
+                continue
+            raise
+        while len(extra) % 4:
+            extra.append(0)
+        v["buffer"] = 0
+        v["byteOffset"] = base + len(extra)
+        v["byteLength"] = len(raw)
+        if ext.get("mode", "ATTRIBUTES") == "ATTRIBUTES":
+            v["byteStride"] = stride
+        else:
+            v.pop("byteStride", None)
+        extra += raw
+        ext_all = v.get("extensions", {})
+        ext_all.pop(_MESHOPT, None)
+        if not ext_all:
+            v.pop("extensions", None)
+
+    # --- Draco: each compressed primitive gets fresh accessors
+    for mesh in doc.get("meshes", []):
+        for prim in mesh.get("primitives", []):
+            d = prim.get("extensions", {}).get(_DRACO)
+            if d is None:
+                continue
+            v = views[int(d["bufferView"])]
+            off = int(v.get("byteOffset", 0))
+            blob = binc[off:off + int(v["byteLength"])]
+            dm = _draco_decode(blob)
+            attrs = {}
+            for name, uid in d.get("attributes", {}).items():
+                arr = _draco_attribute(dm, name, uid)
+                if arr is None:
+                    continue
+                if name.startswith("JOINTS"):
+                    arr, ct = arr.astype("<u2"), 5123
+                else:
+                    if arr.dtype.kind in "ui":
+                        arr = arr.astype(np.float32) / float(np.iinfo(arr.dtype).max) if name.startswith("COLOR") \
+                            else arr.astype(np.float32)
+                    arr, ct = arr.astype("<f4"), 5126
+                typ = {1: "SCALAR", 2: "VEC2", 3: "VEC3", 4: "VEC4"}.get(arr.shape[1])
+                if typ is None:
+                    continue
+                arr = np.ascontiguousarray(arr)
+                attrs[name] = _add_accessor(doc, _append_view(doc, extra, base, arr.tobytes()), ct,
+                                            arr.shape[0], typ, arr if ct == 5126 else None)
+            faces = getattr(dm, "faces", None)
+            faces = np.asarray(faces) if faces is not None else np.zeros(0)
+            if faces.size:
+                idx = np.ascontiguousarray(faces.reshape(-1), dtype="<u4")
+                prim["indices"] = _add_accessor(doc, _append_view(doc, extra, base, idx.tobytes()), 5125,
+                                                idx.size, "SCALAR")
+            else:
+                prim.pop("indices", None)
+            prim["attributes"] = attrs
+            prim.pop("targets", None)
+            ext_all = prim["extensions"]
+            ext_all.pop(_DRACO, None)
+            if not ext_all:
+                prim.pop("extensions", None)
+
+    if undecoded:
+        doc.pop("animations", None)                           # their data could not be decoded; the viewer does not play them
+        doc.pop("skins", None)
+    # buffers that only held the uncompressed fallback of a Meshopt view are no longer needed
+    bufs = doc.get("buffers", [])
+    used = {int(x.get("buffer", 0)) for x in views}
+    while len(bufs) > 1 and (len(bufs) - 1) not in used and \
+            bufs[-1].get("extensions", {}).get(_MESHOPT, {}).get("fallback"):
+        bufs.pop()
+    for key in ("extensionsUsed", "extensionsRequired"):
+        if key in doc:
+            doc[key] = [e for e in doc[key] if e not in (_DRACO, _MESHOPT)]
+            if not doc[key]:
+                del doc[key]
+    if not extra:
+        return binc
+    return bytes(binc) + b"\0" * pad + bytes(extra)
+
+
 def _fix_glb_webp(path: str):
     with open(path, "rb") as f:
         if f.read(4) != b"glTF":
@@ -163,7 +407,8 @@ def _fix_glb_webp(path: str):
         f.seek(12)
         ln, _typ = struct.unpack("<II", f.read(8))
         raw = f.read(ln)                           # first chunk is always the JSON
-        if b"EXT_texture_webp" not in raw and b"KHR_mesh_quantization" not in raw:
+        if not any(k in raw for k in (b"EXT_texture_webp", b"KHR_mesh_quantization",
+                                      b"KHR_draco_mesh_compression", b"EXT_meshopt_compression")):
             return path, None
         doc = json.loads(raw.decode("utf-8"))
         binc = None
@@ -178,7 +423,12 @@ def _fix_glb_webp(path: str):
             f.seek(ln, 1)
     tmp = tempfile.mkdtemp(prefix="gleek_glb_")
     try:
-        if binc is not None and "KHR_mesh_quantization" in (doc.get("extensionsUsed", []) + doc.get("extensionsRequired", [])):
+        used = doc.get("extensionsUsed", []) + doc.get("extensionsRequired", [])
+        if binc is not None and (_DRACO in used or _MESHOPT in used):
+            binc = _decompress_gltf(doc, binc)
+            if doc.get("buffers"):
+                doc["buffers"][0]["byteLength"] = len(binc)
+        if binc is not None and "KHR_mesh_quantization" in used:
             binc = _dequantize_gltf(doc, binc)
             if doc.get("buffers"):
                 doc["buffers"][0]["byteLength"] = len(binc)

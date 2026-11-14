@@ -192,17 +192,16 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.7.2",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle/Gleek3Deek",                  # optional extra line, e.g. a website or contact address
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": (""
-                     ""),
+    "legal_notice": "Provided as is, without warranty.",
     # --- licence and attributions
     "licence_heading": "Licence",
     "licence_intro": f"{APP_NAME} is open-source software released under the MIT Licence.",
@@ -229,6 +228,8 @@ ABOUT = {
         ("VTK (Visualization Toolkit)", "BSD-3-Clause", "https://vtk.org/"),
         ("NumPy", "BSD-3-Clause", "https://numpy.org/"),
         ("Assimp, via assimp-py (optional)", "BSD-3-Clause", "https://github.com/assimp/assimp"),
+        ("Draco, via DracoPy (optional)", "Apache-2.0", "https://github.com/google/draco"),
+        ("meshoptimizer, via the meshoptimizer package (optional)", "MIT", "https://github.com/zeux/meshoptimizer"),
         ("CadQuery (optional)", "Apache-2.0", "https://github.com/CadQuery/cadquery"),
     ],
     "third_party_note": "Each project remains under its own licence; see its website for the full terms.",

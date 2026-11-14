@@ -376,7 +376,7 @@ MESH_TESTS = [
      (150, 235, 40)),
     ("degen", "Zero-area triangles", "Triangles squashed to a line or point (they render nothing and upset normals and bakes)",
      (150, 100, 50)),
-    ("winding", "Inconsistent winding", "Triangles next to a neighbour that is wound the opposite way round (flipped normals and black patches). For a whole flipped region this marks its border",
+    ("winding", "Inconsistent winding", "Triangles wound the opposite way round to the surface they are joined to (flipped normals and black patches). Where two sides of a seam disagree, the smaller side is marked, so a flipped patch is marked whole",
      (0, 190, 150)),
     ("inverted", "Inside-out pieces", "Closed pieces whose volume comes out negative: the whole piece faces inwards",
      (255, 0, 110)),
@@ -386,6 +386,26 @@ MESH_TESTS = [
 
 
 FLAG_TESTS = None          # UV_TESTS + MESH_TESTS, assembled after UV_TESTS is defined
+
+
+def _flipped_regions(K: int, owner, einv, cnt, sign, border):
+    """Triangles that are wound the opposite way round to the surface they belong to. Triangles that meet along a
+    manifold edge must agree on winding; each seam where they do not is a 'parity' link. Every connected surface
+    then splits into two groups (agree / disagree with a chosen start), and the smaller group is the flipped one.
+    Done with a doubled graph (a triangle and its mirror image) so the existing vectorised union-find does it.
+    Where a surface cannot be oriented at all (a Moebius strip) the old border marking is kept."""
+    m2 = np.nonzero(cnt == 2)[0]
+    srt = m2[np.argsort(einv[m2], kind="stable")]
+    f, g = srt[0::2], srt[1::2]                              # the two edge uses of each manifold edge
+    t1, t2 = owner[f], owner[g]
+    bad = sign[f] == sign[g]                                 # both walk the edge the same way: inconsistent
+    ka, kb = np.where(bad, t2 + K, t2), np.where(bad, t2, t2 + K)
+    comp = connected_components(2 * K, np.concatenate([t1, t1 + K]), np.concatenate([ka, kb]))
+    c0, c1 = comp[:K], comp[K:]
+    size = np.bincount(c0, minlength=2 * K)
+    mine, twin = size[c0], size[c1]
+    out = (mine < twin) | ((mine == twin) & (c0 > c1))
+    return np.where(c0 == c1, border, out)
 
 
 def mesh_diagnose(points, tris) -> dict:
@@ -447,7 +467,7 @@ def mesh_diagnose(points, tris) -> dict:
     fw = np.zeros(len(ok), bool); fw[owner[wind]] = True
     flags["boundary"][ok] = fb
     flags["nonman"][ok] = fn
-    flags["winding"][ok] = fw
+    flags["winding"][ok] = _flipped_regions(len(ok), owner, einv, cnt, sign, fw) if wind.any() else fw
     st["boundary_edges"] = int((ecnt == 1).sum())
     st["nonman_edges"] = int((ecnt > 2).sum())
     st["winding_edges"] = int(((ecnt == 2) & (np.abs(sdir) == 2)).sum())

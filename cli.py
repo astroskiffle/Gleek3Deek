@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Gleek3Deek command-line mode: audit 3D assets from a console and print the results as text or JSON.
+Gleek3Deek command-line mode: audit 3D assets from a console and print the results as text, JSON or CSV, or write an HTML report.
 
     python cli.py model.glb --all
     python cli.py ./assets --recursive --mesh --textures --fail-on holes,flipped --json --report audit.json
     python main.py model.glb --info          (the same thing; any option starting with "-" selects this mode)
+    python cli.py ./assets -r --all --format csv --report audit.csv      (one row per file, for a spreadsheet)
+    python cli.py ./assets -r --all --report audit.html                  (one self-contained web page)
 
 This mode is READ-ONLY. It never modifies, moves, copies or deletes an asset. The only file it can write is
 the optional --report file, which will not overwrite an existing file (unless --force), will not follow
@@ -16,6 +18,9 @@ Exit codes:  0 = everything passed   1 = a --fail-on / --max-* check failed
 from __future__ import annotations
 
 import argparse
+import csv
+import html
+import io
 import json
 import os
 import subprocess
@@ -23,7 +28,7 @@ import sys
 import time
 
 from formats import ALL_EXTS, NO_MESH, UNSUPPORTED_PROPRIETARY, LoadError, asset_ext, human_size, load_scene
-from analysis import AUDIT_SECTIONS, MESH_TESTS, UNITS, UV_TESTS, audit_model, fmt_num
+from analysis import AUDIT_SECTIONS, LOD_LEVELS, MESH_TESTS, UNITS, UV_TESTS, audit_model, fmt_num
 
 FAIL_ON = {
     "holes": "open (boundary) edges",
@@ -227,10 +232,225 @@ def format_summary(results: list, skipped: list) -> str:
     return "\n".join(L)
 
 
+# ----- CSV and HTML reports ---------------------------------------------------------------------
+REPORT_FORMATS = ("text", "json", "csv", "html")
+EXT_FORMATS = {".csv": "csv", ".html": "html", ".htm": "html", ".json": "json", ".txt": "text"}
+
+
+def _get(d, *keys):
+    """d[k1][k2]... or None when anything on the way is missing."""
+    for k in keys:
+        if not isinstance(d, dict) or k not in d:
+            return None
+        d = d[k]
+    return d
+
+
+def csv_columns(want: set, checking: bool) -> list:
+    """(column name, function(result) -> value) in output order. The columns depend only on the sections asked
+    for, so every row of a run has the same columns."""
+    c = [("file", lambda r: os.path.basename(r["file"])), ("path", lambda r: r["file"]),
+         ("status", lambda r: r["status"]),
+         ("result", lambda r: "ERROR" if r["status"] != "ok" else ("FAILED" if r.get("failed_checks") else "ok")),
+         ("failed_checks", lambda r: "; ".join(r.get("failed_checks") or [])),
+         ("error", lambda r: (r.get("error") or "").replace("\r", " ").replace("\n", " ")),
+         ("seconds", lambda r: r.get("seconds")),
+         ("format", lambda r: _get(r, "info", "format")), ("size_bytes", lambda r: r.get("size_bytes")),
+         ("parts", lambda r: _get(r, "info", "parts")), ("triangles", lambda r: _get(r, "info", "tris")),
+         ("vertices", lambda r: _get(r, "info", "verts")), ("materials", lambda r: _get(r, "materials", "materials")),
+         ("textures", lambda r: _get(r, "info", "texs")), ("has_uvs", lambda r: _get(r, "info", "uvs")),
+         ("unit", lambda r: _get(r, "units", "report")),
+         ("width_x", lambda r: (_get(r, "info", "dims") or [None] * 3)[0]),
+         ("height_y", lambda r: (_get(r, "info", "dims") or [None] * 3)[1]),
+         ("depth_z", lambda r: (_get(r, "info", "dims") or [None] * 3)[2])]
+    if "textures" in want:
+        c += [("texture_unique_images", lambda r: _get(r, "textures", "unique_images")),
+              ("texture_gpu_bytes", lambda r: _get(r, "textures", "vram_bytes")),
+              ("texture_gpu_bytes_compressed", lambda r: _get(r, "textures", "vram_compressed_bytes")),
+              ("texture_largest_side_px", lambda r: _get(r, "textures", "largest_side")),
+              ("textures_not_power_of_two",
+               lambda r: None if _get(r, "textures") is None else sum(1 for e in r["textures"]["entries"] if e["non_power_of_two"]))]
+    if "mesh" in want:
+        c += [("watertight", lambda r: _get(r, "mesh", "watertight")), ("pieces", lambda r: _get(r, "mesh", "pieces")),
+              ("open_edges", lambda r: _get(r, "mesh", "boundary_edges")),
+              ("nonmanifold_edges", lambda r: _get(r, "mesh", "nonman_edges")),
+              ("loose_vertices", lambda r: _get(r, "mesh", "loose")),
+              ("shared_position_vertices", lambda r: _get(r, "mesh", "dup_verts")),
+              ("inside_out_pieces", lambda r: _get(r, "mesh", "inverted_pieces"))]
+        c += [("mesh_" + k, (lambda k: lambda r: _get(r, "mesh", "tests", k))(k)) for k, *_r in MESH_TESTS]
+    if "uv" in want:
+        c += [("uv_present", lambda r: _get(r, "uv", "has_uv")), ("uv_triangles", lambda r: _get(r, "uv", "tris")),
+              ("uv_islands", lambda r: _get(r, "uv", "islands")),
+              ("uv_island_tests_ran", lambda r: _get(r, "uv", "island_tests_ran"))]
+        c += [("uv_" + k, (lambda k: lambda r: _get(r, "uv", "tests", k))(k)) for k, *_r in UV_TESTS]
+        c += [("uv_density_low", lambda r: _get(r, "uv", "density_low")),
+              ("uv_density_high", lambda r: _get(r, "uv", "density_high")),
+              ("uv_stretched", lambda r: _get(r, "uv", "stretched"))]
+    if "measure" in want:
+        def vec(key, i):
+            return lambda r: (_get(r, "measure", key) or [None] * 3)[i]
+        c += [("box_x", vec("bounding_box_size", 0)), ("box_y", vec("bounding_box_size", 1)),
+              ("box_z", vec("bounding_box_size", 2)), ("oriented_box_x", vec("oriented_box_size", 0)),
+              ("oriented_box_y", vec("oriented_box_size", 1)), ("oriented_box_z", vec("oriented_box_size", 2)),
+              ("surface_area", lambda r: _get(r, "measure", "surface_area")),
+              ("volume", lambda r: _get(r, "measure", "volume")),
+              ("volume_litres", lambda r: _get(r, "measure", "volume_litres")),
+              ("centre_of_mass_x", vec("centre_of_mass", 0)), ("centre_of_mass_y", vec("centre_of_mass", 1)),
+              ("centre_of_mass_z", vec("centre_of_mass", 2)),
+              ("open_parts", lambda r: _get(r, "measure", "open_parts"))]
+    if "lod" in want:
+        c += [("lod_original_triangles", lambda r: _get(r, "lod", "original_triangles"))]
+        c += [(f"lod_{lvl}pct_triangles", (lambda lvl: lambda r: _get(r, "lod", "levels", str(lvl)))(lvl))
+              for lvl, _red in LOD_LEVELS]
+    return c
+
+
+def _csv_cell(v):
+    """One cell. Text that a spreadsheet would run as a formula (it starts with = + - @) gets a leading quote."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "yes" if v else "no"
+    if isinstance(v, float):
+        return f"{v:.6g}"
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
+def format_csv(results: list, want: set, checking: bool) -> str:
+    """One row per file, one column per figure. Failed loads get a row too (status ERROR, the rest blank)."""
+    cols = csv_columns(want, checking)
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow([n for n, _f in cols])
+    for r in results:
+        w.writerow([_csv_cell(f(r)) for _n, f in cols])
+    return buf.getvalue()
+
+
+_HTML_CSS = """
+:root{--bg:#f6f7f9;--card:#fff;--text:#1d2530;--mute:#667385;--line:#dde2e8;--accent:#2f6fd0;--ok:#1d8a4a;--bad:#c23b3b;--warn:#b7791f}
+@media (prefers-color-scheme:dark){:root{--bg:#161a20;--card:#1e242c;--text:#e4e9ef;--mute:#8b97a6;--line:#2e3744;--accent:#6aa8e8;--ok:#52c27e;--bad:#ef7676;--warn:#e0b050}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 48px}h1{font-size:22px;margin:0 0 4px}.sub{color:var(--mute);margin:0 0 20px;word-break:break-word}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 16px;min-width:110px}
+.card b{display:block;font-size:22px}.card span{color:var(--mute);font-size:12px}
+.tools{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}input,button{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 10px}
+button{cursor:pointer}button.on{border-color:var(--accent);color:var(--accent)}input{flex:1;min-width:160px}
+.wrap{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:8px}table{border-collapse:collapse;width:100%}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap;vertical-align:top}td.n,th.n{text-align:right}
+th{cursor:pointer;user-select:none;color:var(--mute);font-weight:600;font-size:12px}th:hover{color:var(--accent)}tr:last-child td{border-bottom:0}
+td.name{white-space:normal;overflow-wrap:break-word;min-width:200px;max-width:300px}td.issue{white-space:normal;overflow-wrap:break-word;min-width:200px;max-width:300px}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.mute{color:var(--mute)}
+h2{font-size:16px;margin:26px 0 8px}details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin-bottom:8px}
+summary{cursor:pointer;padding:9px 14px;font-weight:600;word-break:break-all}pre{margin:0;padding:4px 14px 14px;overflow-x:auto;font:12.5px/1.5 ui-monospace,Consolas,Menlo,monospace;white-space:pre-wrap}
+.skipped{color:var(--mute);margin:6px 0 0;padding-left:18px}
+"""
+
+_HTML_JS = """
+(function(){
+var t=document.getElementById('t'),b=t.tBodies[0],q=document.getElementById('q'),mode='all';
+function show(){var s=q.value.toLowerCase();[].forEach.call(b.rows,function(r){
+var ok=(mode==='all'||r.dataset.s===mode)&&(!s||r.textContent.toLowerCase().indexOf(s)>-1);r.style.display=ok?'':'none';});}
+[].forEach.call(t.tHead.rows[0].cells,function(th,i){th.addEventListener('click',function(){
+var asc=th.dataset.asc!=='1';th.dataset.asc=asc?'1':'0';
+var rows=[].slice.call(b.rows);rows.sort(function(x,y){var a=x.cells[i].dataset.v,c=y.cells[i].dataset.v,
+na=parseFloat(a),nc=parseFloat(c),r=(!isNaN(na)&&!isNaN(nc))?na-nc:String(a).localeCompare(String(c));return asc?r:-r;});
+rows.forEach(function(r){b.appendChild(r);});});});
+[].forEach.call(document.querySelectorAll('button[data-m]'),function(bt){bt.addEventListener('click',function(){
+mode=bt.dataset.m;[].forEach.call(document.querySelectorAll('button[data-m]'),function(x){x.classList.toggle('on',x===bt);});show();});});
+q.addEventListener('input',show);
+})();
+"""
+
+
+def format_html(results: list, skipped: list, want: set, checking: bool, ctx: dict) -> str:
+    """A single self-contained page (inline style and script, nothing loaded from anywhere). Everything that comes
+    from a file name or an error message is escaped."""
+    e = html.escape
+    n_ok = sum(1 for r in results if r["status"] == "ok" and not r.get("failed_checks"))
+    n_fail = sum(1 for r in results if r["status"] == "ok" and r.get("failed_checks"))
+    n_err = sum(1 for r in results if r["status"] != "ok")
+    tris = sum(r["info"]["tris"] for r in results if r["status"] == "ok")
+    cards = [(len(results), "files"), (n_ok, "passed" if checking else "loaded"), (n_fail, "failed checks"),
+             (n_err, "could not load"), (f"{tris:,}", "triangles in total")]
+    if skipped:
+        cards.append((len(skipped), "skipped"))
+    head = "".join(f'<div class="card"><b>{e(str(v))}</b><span>{e(lab)}</span></div>' for v, lab in cards)
+
+    rows, details = [], []
+    for i, r in enumerate(results):
+        name = os.path.basename(r["file"])
+        if r["status"] != "ok":
+            status, label, cls = "error", "ERROR", "bad"
+            fmt = size = tri = mats = gpu = ""
+            issue = (r.get("error") or "").splitlines()[0] if r.get("error") else ""
+            issue = issue if len(issue) <= 160 else issue[:157] + "..."          # the details block has the whole message
+            block = f"{name}\n  ERROR: {r.get('error', '')}"
+            vals = ("", "", "", "", "")
+        else:
+            f = r.get("failed_checks")
+            status = "failed" if f else "ok"
+            label, cls = ("FAILED", "bad") if f else (("passed", "ok") if checking else ("loaded", "ok"))
+            info = r["info"]
+            fmt, size, tri, mats = info["format"], info["size"], f"{info['tris']:,}", str(r["materials"]["materials"])
+            gpu = human_size(r["textures"]["vram_bytes"]) if r.get("textures") is not None else "–"
+            issue = "; ".join(x.split(":")[0] for x in f) if f else ""
+            block = format_text(r, want | ({"checks"} if checking else set()))
+            vals = (fmt, r.get("size_bytes") or 0, info["tris"], r["materials"]["materials"],
+                    r["textures"]["vram_bytes"] if r.get("textures") is not None else -1)
+        cells = [(name, name, "name"), (fmt, fmt, ""), (size, vals[1], "n"), (tri, vals[2], "n"), (mats, vals[3], "n"),
+                 (gpu, vals[4], "n"), (label, label, cls), (issue, issue, "mute issue")]
+        tds = "".join(f'<td class="{c}" data-v="{e(str(v))}">' + (f'<a href="#f{i}">{e(str(t))}</a>' if k == 0 else e(str(t)))
+                      + "</td>" for k, (t, v, c) in enumerate(cells))
+        rows.append(f'<tr data-s="{status}">{tds}</tr>')
+        details.append(f'<details id="f{i}"{" open" if status != "ok" else ""}><summary>{e(name)} '
+                       f'<span class="{cls}">{e(label)}</span></summary><pre>{e(block)}</pre></details>')
+
+    heads = "".join(f'<th class="{c}">{e(t)}</th>' for t, c in
+                    (("File", ""), ("Format", ""), ("Size", "n"), ("Triangles", "n"), ("Materials", "n"),
+                     ("GPU memory (est.)", "n"), ("Result", ""), ("Issues", "")))
+    skip = ""
+    if skipped:
+        skip = "<h2>Skipped</h2><ul class=\"skipped\">" + "".join(
+            f"<li>{e(os.path.basename(p))}: {e(why)}</li>" for p, why in skipped) + "</ul>"
+    opts = " · ".join(x for x in (ctx.get("sections"), "units " + ctx.get("units", ""), ctx.get("checks")) if x)
+    return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; "
+            "script-src 'unsafe-inline'\">"
+            f"<title>Gleek3Deek audit report</title><style>{_HTML_CSS}</style></head><body><main>"
+            f"<h1>Gleek3Deek audit report</h1><p class=\"sub\">{e(ctx.get('scanned', ''))}<br>"
+            f"{e(ctx.get('when', ''))} · {e(opts)}</p><div class=\"cards\">{head}</div>"
+            "<div class=\"tools\"><input id=\"q\" type=\"search\" placeholder=\"Filter files…\">"
+            "<button data-m=\"all\" class=\"on\">All</button><button data-m=\"failed\">Failed</button>"
+            "<button data-m=\"error\">Errors</button></div>"
+            f"<div class=\"wrap\"><table id=\"t\"><thead><tr>{heads}</tr></thead><tbody>{''.join(rows)}</tbody></table></div>"
+            f"{skip}<h2>Details</h2>{''.join(details)}"
+            f"<script>{_HTML_JS}</script></main></body></html>\n")
+
+
+def render(fmt: str, results: list, skipped: list, want: set, checking: bool, ctx: dict, batch: bool) -> str:
+    if fmt == "json":
+        return json.dumps({"files": results, "skipped": [{"file": p, "reason": w} for p, w in skipped]}, indent=2)
+    if fmt == "csv":
+        return format_csv(results, want, checking)
+    if fmt == "html":
+        return format_html(results, skipped, want | ({"checks"} if checking else set()), checking, ctx)
+    texts = [format_text(r, want | ({"checks"} if checking else set())) if r["status"] == "ok"
+             else f"{os.path.basename(r['file'])}\n  ERROR: {r['error']}" for r in results]
+    return "\n\n".join(texts) + ("\n" + format_summary(results, skipped) if batch else "")
+
+
 # ----- running ----------------------------------------------------------------------------------
 def audit_file(path: str, want: set, units: tuple) -> dict:
     """Load one file and audit it. Never raises: problems come back as status 'error'."""
     t0 = time.time()
+    try:
+        size_bytes = os.path.getsize(path)
+    except OSError:
+        size_bytes = None
     try:
         actors = load_scene(path)
         res = audit_model(actors, path, want, units)
@@ -242,6 +462,7 @@ def audit_file(path: str, want: set, units: tuple) -> dict:
     except Exception as e:
         res = {"file": path, "status": "error", "error": f"{type(e).__name__}: {e}"}
     res["seconds"] = round(time.time() - t0, 2)
+    res["size_bytes"] = size_bytes
     return res
 
 
@@ -284,6 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Sections (default: --info only):\n"
                "  --info --textures --mesh --uv --measure --lod, or --all (everything except --lod)\n\n"
                "--fail-on takes a comma-separated list of: " + ", ".join(FAIL_ON) + "\n\n"
+               "Reports: --format csv (rows for a spreadsheet) or --report audit.html (a page you can open or share).\n"
                "Exit codes: 0 passed, 1 a check failed, 2 bad usage, 3 a file could not be loaded.\n"
                "This mode never changes, moves, copies or deletes assets.")
     p.add_argument("path", help="a model file, or a folder of models")
@@ -297,7 +519,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--units", default="m", metavar="SRC[:SHOWN]",
                    help="what one model unit means, and the unit to report in, e.g. m, mm or mm:cm (default m). "
                         "Choices: " + ", ".join(k for k, _l, _f in UNITS))
-    p.add_argument("--json", action="store_true", help="print JSON instead of text")
+    p.add_argument("--json", action="store_true", help="print JSON instead of text (same as --format json)")
+    p.add_argument("--format", choices=REPORT_FORMATS, metavar="FORMAT",
+                   help="text, json, csv or html. csv is one row per file; html is a single-file report for --report "
+                        "(the console shows text). The report file's format otherwise follows its extension "
+                        "(.csv, .html, .json, .txt), else the console format")
     p.add_argument("--report", metavar="FILE", help="also write the output to this new file (never overwrites unless --force)")
     p.add_argument("--force", action="store_true", help="allow --report to replace an existing file")
     p.add_argument("--fail-on", default="", metavar="LIST", help="checks that make the exit code 1 (see the list below)")
@@ -388,6 +614,18 @@ def run(argv: list) -> int:
            "texture_px": args.max_texture_px, "materials": args.max_materials}
     checking = bool(fail_on) or any(v is not None for v in lim.values())
 
+    # output formats: --format / --json choose the console format (html is for files, so the console shows text);
+    # the report file follows an explicit choice, else its extension, else the console format
+    if args.json and args.format not in (None, "json"):
+        print("error: --json cannot be combined with --format " + args.format, file=sys.stderr)
+        return 2
+    explicit = args.format or ("json" if args.json else None)
+    if explicit == "html" and not args.report:
+        print("error: --format html makes a web page: add --report FILE (for example --report audit.html)", file=sys.stderr)
+        return 2
+    console_fmt = "text" if explicit in (None, "html") else explicit
+    report_fmt = explicit or (EXT_FORMATS.get(os.path.splitext(args.report)[1].lower()) if args.report else None) or console_fmt
+
     if args.worker:                                   # child process: one file, one JSON line
         res = audit_file(args.path, want, units)
         sys.stdout.write(json.dumps(res) + "\n")
@@ -410,7 +648,7 @@ def run(argv: list) -> int:
               file=sys.stderr)
         return 2
     batch = os.path.isdir(args.path)
-    results, texts = [], []
+    results = []
     # options handed to child processes: only the ones that change the audit itself
     child = ["--units", args.units] + [f"--{s}" for s in sorted(want) if s != "info"]
     for i, f in enumerate(files):
@@ -427,25 +665,29 @@ def run(argv: list) -> int:
         if res["status"] == "ok" and checking:
             res["failed_checks"] = run_checks(res, fail_on, lim)
         results.append(res)
-        if not args.json:
+        if console_fmt == "text" and not args.quiet:         # text appears file by file; the others at the end
             block = format_text(res, want | ({"checks"} if checking else set())) if res["status"] == "ok" \
                 else f"{os.path.basename(f)}\n  ERROR: {res['error']}"
-            texts.append(block)
-            if not args.quiet:
-                print(block + ("\n" if batch else ""), flush=True)
+            print(block + ("\n" if batch else ""), flush=True)
 
-    if args.json:
-        out = json.dumps({"files": results, "skipped": [{"file": p, "reason": w} for p, w in skipped]}, indent=2)
-        if not args.quiet:
-            print(out)
-    else:
-        out = "\n\n".join(texts) + ("\n" + format_summary(results, skipped) if batch else "")
-        if batch and not args.quiet:
-            print(format_summary(results, skipped))
+    limits = [f"{k} {v:g}" for k, v in (("max triangles", args.max_triangles), ("max texture MB", args.max_texture_mb),
+                                         ("max texture px", args.max_texture_px), ("max materials", args.max_materials))
+              if v is not None]
+    ctx = {"scanned": os.path.abspath(args.path), "when": time.strftime("%Y-%m-%d %H:%M"),
+           "sections": "sections: " + ", ".join(s for s in AUDIT_SECTIONS if s in want), "units": args.units,
+           "checks": ("checks: " + ", ".join(sorted(fail_on) + limits)) if checking else ""}
+    if not args.quiet:
+        if console_fmt == "text":
+            if batch:
+                print(format_summary(results, skipped))
+        else:
+            print(render(console_fmt, results, skipped, want, checking, ctx, batch).rstrip("\n"))
     if args.report:
+        out = render(report_fmt, results, skipped, want, checking, ctx, batch)
         try:
-            with open(args.report, "w" if args.force else "x", encoding="utf-8") as fh:
-                fh.write(out + "\n")
+            # a BOM lets Excel on Windows read a UTF-8 CSV correctly
+            with open(args.report, "w" if args.force else "x", encoding="utf-8-sig" if report_fmt == "csv" else "utf-8") as fh:
+                fh.write(out.rstrip("\n") + "\n")
         except OSError as e:
             print(f"error: could not write the report: {e}", file=sys.stderr)
             return 2
