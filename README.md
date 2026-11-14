@@ -1,11 +1,12 @@
 # Gleek3Deek
 
-The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists.
-Spend less time digging through folders and more time creating.
+The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists. Spend less time digging through folders and more time creating.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
+
 ![Gleek3Deek](images/SplitCow_Matcap.jpg)
+
 
 ## Features
 
@@ -98,6 +99,7 @@ python main.py
 | Cycle material view: shaded, albedo, normals | `V` |
 | Reference sheet for AI 3D tools (Meshy, Tripo, Rodin, Luma) | `Shift+F12` (or **Main ▾ → Reference sheet…**) |
 | UV layout beside the model | `Shift+U` (or **Main ▾ → UV layout beside the model**) |
+| Measure between points (Measure tab) | `Shift+R` |
 | Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
 | Split style: vertical, horizontal, diagonal | `Shift+D` |
 | Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
@@ -117,7 +119,7 @@ python main.py
 
 ## MatCap editor and presets
 
-![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
+![Gleek3Deek Matcap](images/matcap_laliqueGlassGirl.jpg)
 
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
@@ -160,9 +162,7 @@ Press **D** with a model open. The viewport is split by a line: the MatCap on on
 
 ## UV inspection
 
-![Gleek3Deek](images/UV_HeatMap.jpg)
-
-Open **Materials** and go to the **UV** tab, or press **Shift+U**. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
+Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The analysis only runs when you ask, so models open quickly; until then the tests and heatmaps are greyed out. Opening another model clears the results, and you run it again. **Shift+U** shows or hides the layout pane. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
 
 - **The layout:** every triangle edge in 0 to 1 UV space, over the part's texture if it has one. Mouse wheel zooms, drag pans, double-click fits the view. Pick one **Part** or **All parts**.
 - **Tests**, each shown on the model and in the layout (ticking one opens the layout and switches the model to the shaded view):
@@ -181,6 +181,32 @@ Open **Materials** and go to the **UV** tab, or press **Shift+U**. The UV layout
   - Density compares triangles on the model as stored, so a part scaled differently by its node transform in the file can read differently from how it looks.
 - The texture on the model is replaced by the heatmap while a test or heatmap is on, and comes back when you switch them all off.
 - Models with no UV coordinates (STL, PLY, most CAD files) show "no UV data".
+
+## Texture audit and mesh diagnostics
+
+**Materials & parts → Textures** lists every texture with its size, bit depth, channel count, colour space, and how many parts use it. It also shows an estimate of the graphics-card memory it needs, uncompressed and with typical block compression, and flags textures that are not a power of two or are 4096 px or larger. A total sits above the list. Memory figures are estimates (3-channel images are stored as 4, and mipmaps add a third). Colour space is inferred from the texture's role (base colour and emissive are sRGB, normal and occlusion/roughness/metallic are linear), because the pixels don't say.
+
+**Materials & parts → Mesh** analyses the geometry only when you press **Run integrity tests**, so models open quickly. Until then it shows just the polygon, part and material counts. After the run:
+- Counts: triangles, vertices (and how many are at unique positions), parts (draw calls in the viewer), distinct materials (the minimum draw calls an engine needs), loose vertices, vertices sharing a position, separate pieces, open edges, non-manifold edges.
+- Integrity tests that colour the failing triangles on the model, each with a count: **open (boundary) edges**, **non-manifold edges**, **zero-area triangles**, **inconsistent winding**, **inside-out pieces** (closed pieces with a negative volume) and **duplicate faces**.
+- Vertices at the same position count as joined, so UV and hard-edge seams are not reported as holes. A colour test replaces the texture while it is on, like the UV tests, and can be combined with them.
+
+## Measurements and cross-section
+
+**Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
+
+- **Calculate size, volume and centre of mass** (on request, so models open quickly) measures the visible parts and shows: bounding-box size, the oriented bounding box (the smallest box, turned to fit), surface area, volume (also in litres), and centre of mass. Volume and centre of mass need closed parts: open parts are left out of the volume and reported, and with no closed part the centre is that of the surface.
+- **Measure between points** (`Shift+R`): click 2 or 3 points on the model. You get the distance, the x/y/z differences, the second distance and the angle at the middle point. Markers and distance labels are drawn on the model. A click that doesn't move picks a point, while dragging still orbits, so the model can be turned between picks. Switching the mode off clears the points.
+- **Cross-section**: cut the model with a plane along X, Y or Z using the slider; the cut is outlined in yellow. **Keep the other side** flips which half is hidden. Measurement marks and the section outline are left out of reference sheets.
+
+## LOD preview (simplification)
+
+**Materials & parts → LOD** shows how the model looks with fewer triangles. Press **Generate LOD previews**; the 50%, 25% and 10% levels are built from the original in the background (quadric decimation, one part at a time), so the app stays usable while a large model is processed. A table lists the triangle and vertex counts of each level. Pick a level in the **Show** list to see it on the model, and go back to **Original** at any time.
+
+- Texture seams are borders of the mesh, and the decimator protects borders, so UVs hold up well. Very low levels can still stretch textures; look at the UV tab results on the original for a reference.
+- A level is a preview only: your file is not changed and **exports always use the original geometry**.
+- Switching level clears the UV, mesh and measurement results, because they describe the geometry that was showing. Run them again on the level you want to inspect.
+- Nothing is calculated until you press the button, so loading stays fast.
 
 ## Reference sheets for AI 3D tools
 
@@ -222,6 +248,12 @@ Open a model, then press **Ctrl+E** (or use **File → Export / convert…** or 
 - The export runs in the background, so the viewer stays responsive. Large models can take a while to simplify.
 
 Very strong simplification (under about 10%) can visibly change the shape, and open edges aren't specially protected, so thin or open surfaces may shrink at their edges.
+
+## About dialog
+
+Press **F1**, or choose **Help → About** (also in **Main ▾** while a model is open). It shows the app name, who made it, the legal notice, the MIT licence text and the open-source attributions. Close it with the ✕ button, the **Close** button, the window's own close button or **Esc**.
+
+All of its wording lives in one dictionary named `ABOUT`, just under `APP_NAME` near the top of `main.py`: your name and alias, copyright line, legal notice, licence text, the list of third-party projects, and an optional version string (blank means it is hidden). Edit those values and nothing else needs to change.
 
 ## Model info panel
 

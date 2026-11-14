@@ -59,15 +59,15 @@ from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 from vtkmodules.util import numpy_support
 from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
-from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
-from vtkmodules.vtkFiltersCore import (vtkAppendPolyData, vtkCleanPolyData, vtkPolyDataNormals,
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPlane, vtkPolyData
+from vtkmodules.vtkFiltersCore import (vtkAppendPolyData, vtkCleanPolyData, vtkCutter, vtkPolyDataNormals,
                                        vtkQuadricDecimation, vtkTriangleFilter)
 from vtkmodules.vtkFiltersGeometry import vtkCompositeDataGeometryFilter
 from vtkmodules.vtkInteractionStyle import vtkInteractorStyleTrackballCamera
 from vtkmodules.vtkIOGeometry import (vtkGLTFReader, vtkOBJReader,
                                       vtkSTLReader)
 from vtkmodules.vtkIOPLY import vtkPLYReader
-from vtkmodules.vtkRenderingCore import (vtkActor, vtkPolyDataMapper,
+from vtkmodules.vtkRenderingCore import (vtkActor, vtkCellPicker, vtkPolyDataMapper,
                                          vtkRenderer, vtkRenderWindow,
                                          vtkLight, vtkSkybox, vtkTexture, vtkWindowToImageFilter)
 from vtkmodules.vtkIOImage import vtkImageReader2Factory
@@ -75,7 +75,11 @@ try:                                          # 2D overlay props for the split-c
     from vtkmodules.vtkRenderingCore import vtkActor2D, vtkPolyDataMapper2D
 except Exception:  # pragma: no cover
     vtkActor2D = vtkPolyDataMapper2D = None
-from vtkmodules.vtkFiltersSources import vtkOutlineSource, vtkPlaneSource
+from vtkmodules.vtkFiltersSources import vtkLineSource, vtkOutlineSource, vtkPlaneSource, vtkSphereSource
+try:                                          # 3D text for measurement labels
+    from vtkmodules.vtkRenderingCore import vtkBillboardTextActor3D
+except Exception:  # pragma: no cover
+    vtkBillboardTextActor3D = None
 try:                                          # exporters: optional so the viewer never depends on them
     from vtkmodules.vtkIOGeometry import vtkOBJWriter, vtkSTLWriter
 except Exception:  # pragma: no cover
@@ -112,16 +116,16 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.7.0",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.7.1",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "",                  # optional extra line, e.g. a website or contact address
+    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
-    "legal_notice": ("https://github.com/astroskiffle"
+    "legal_notice": (""
                      ""),
     # --- licence and attributions
     "licence_heading": "Licence",
@@ -2778,7 +2782,7 @@ def snapshot_export_parts(actors: list) -> list:
     for a in actors:
         if not a.GetVisibility():
             continue                                   # hidden parts are left out of exports
-        ds = _mapper_data(a.GetMapper())
+        ds = getattr(a, "_lod_orig", None) or _mapper_data(a.GetMapper())    # never export a LOD preview
         if ds is None or not isinstance(ds, vtkPolyData):
             continue
         pd = vtkPolyData()
@@ -2863,6 +2867,86 @@ def write_mesh(pd, path: str, kind: str, binary: bool):
     w.Write()
     if not os.path.isfile(path) or os.path.getsize(path) == 0:
         raise ValueError("The file could not be written (check the folder is writable).")
+
+
+LOD_LEVELS = [(50, 0.5), (25, 0.75), (10, 0.9)]       # (label: % of triangles kept, reduction asked of the decimator)
+
+
+def lod_decimate(pd, reduction: float):
+    """Quadric-decimated copy of one part, keeping UVs and normals where the filter allows. Texture seams
+    are borders of the mesh (their vertices are split), and the decimator protects borders. None on failure."""
+    if pd is None:
+        return None
+    tf = vtkTriangleFilter()
+    tf.SetInputData(pd)
+    tf.PassLinesOff()
+    tf.PassVertsOff()
+    tf.Update()
+    tri = tf.GetOutput()
+    if tri.GetNumberOfPolys() < 100:
+        out = vtkPolyData()
+        out.ShallowCopy(tri)
+        return out
+    had_normals = tri.GetPointData().GetNormals() is not None
+    dec = vtkQuadricDecimation()
+    dec.SetInputData(tri)
+    dec.SetTargetReduction(float(reduction))
+    for name in ("AttributeErrorMetricOn", "TCoordsAttributeOn", "NormalsAttributeOn"):
+        try:
+            getattr(dec, name)()
+        except Exception:
+            pass
+    dec.Update()
+    out = dec.GetOutput()
+    if out.GetNumberOfPolys() == 0:
+        return None
+    if had_normals and out.GetPointData().GetNormals() is None:
+        nf = vtkPolyDataNormals()
+        nf.SetInputData(out)
+        nf.SplittingOff()
+        nf.ConsistencyOff()
+        nf.AutoOrientNormalsOff()
+        nf.Update()
+        out = nf.GetOutput()
+    res = vtkPolyData()
+    res.ShallowCopy(out)
+    return res
+
+
+class _LodSignals(QObject):
+    progress = Signal(str)
+    done = Signal(int, object)
+    failed = Signal(int, str)
+
+
+class LodTask(QRunnable):
+    """Builds the LOD levels for every part in the background."""
+
+    def __init__(self, token: int, inputs: list):
+        super().__init__()
+        self.token, self.inputs = token, inputs
+        self.cancelled = False
+        self.signals = _LodSignals()
+
+    def run(self):
+        try:
+            res = {}
+            n = len(self.inputs)
+            for lvl, red in LOD_LEVELS:
+                outs = []
+                for i, pd in enumerate(self.inputs):
+                    if self.cancelled:
+                        self.signals.failed.emit(self.token, "cancelled")
+                        return
+                    self.signals.progress.emit(f"Simplifying to {lvl}%: part {i + 1} of {n} …")
+                    try:
+                        outs.append(lod_decimate(pd, red))
+                    except Exception:
+                        outs.append(None)
+                res[lvl] = outs
+            self.signals.done.emit(self.token, res)
+        except Exception as e:
+            self.signals.failed.emit(self.token, str(e) or type(e).__name__)
 
 
 class _ExportSignals(QObject):
@@ -3305,6 +3389,19 @@ def texture_to_array(tex, max_side: int = 1024):
         return None
 
 
+def texture_facts(tex, role: str):
+    """texture_audit() for a VTK texture (bit depth and channel count read from the stored pixels)."""
+    try:
+        img = tex.GetInput()
+        w, h, _ = img.GetDimensions()
+        sc = img.GetPointData().GetScalars()
+        nc = sc.GetNumberOfComponents()
+        bits = numpy_support.vtk_to_numpy(sc).dtype.itemsize * 8
+        return texture_audit(w, h, nc, bits, role)
+    except Exception:
+        return None
+
+
 def texture_channel_rgb(arr: np.ndarray, channel: str = "rgb") -> np.ndarray:
     """RGB view of a texture: full colour, or a single channel shown as grey."""
     arr = np.asarray(arr)
@@ -3404,7 +3501,13 @@ class MaterialsPanel(QWidget):
         self.tex_list.setIconSize(QSize(64, 64))
         self.tex_list.itemDoubleClicked.connect(self._open_texture)
         tl.addWidget(self.tex_list, 1)
-        thint = QLabel("Double-click a texture to preview it and look at its channels.")
+        self.tex_total = QLabel("")
+        self.tex_total.setWordWrap(True)
+        tl.addWidget(self.tex_total)
+        thint = QLabel("Double-click a texture to preview it and look at its channels. Memory figures are "
+                       "estimates for a graphics card: 3-channel images are stored as 4, and mipmaps add a "
+                       "third. “Compressed” assumes a typical block format (BC7). Colour space is inferred "
+                       "from the texture's role, because image pixels do not say which they are.")
         thint.setObjectName("barLabel")
         thint.setWordWrap(True)
         tl.addWidget(thint)
@@ -3415,6 +3518,11 @@ class MaterialsPanel(QWidget):
         self.uv_show = QCheckBox("Show the UV layout beside the model  (Shift+U)")
         self.uv_show.toggled.connect(viewer.set_uv_view)
         ul.addWidget(self.uv_show)
+        self.uv_run = QPushButton("Run UV tests")
+        self.uv_run.setToolTip("Analyse the UVs (tests, islands, texel density and stretch). This is not done "
+                               "automatically, so models open quickly.")
+        self.uv_run.clicked.connect(lambda: viewer.uv_ensure())
+        ul.addWidget(self.uv_run)
         prow = QHBoxLayout()
         prow.addWidget(QLabel("Part"))
         self.uv_part_box = QComboBox()
@@ -3491,8 +3599,165 @@ class MaterialsPanel(QWidget):
         ul.addWidget(uhint)
         ul.addStretch(1)
         self.tabs.addTab(uw, "UV")
+
+        mw = QWidget()
+        ml = QVBoxLayout(mw)
+        self.mesh_stats = QLabel("")
+        self.mesh_stats.setWordWrap(True)
+        self.mesh_stats.setTextFormat(Qt.RichText)
+        self.mesh_stats.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        ml.addWidget(self.mesh_stats)
+        self.mesh_run = QPushButton("Run integrity tests")
+        self.mesh_run.setToolTip("Analyse the geometry for holes, bad edges, flipped faces and more. "
+                                 "This is not done automatically, so models open quickly.")
+        self.mesh_run.clicked.connect(lambda: viewer.mesh_ensure())
+        ml.addWidget(self.mesh_run)
+        ml.addWidget(QLabel("Integrity tests (they colour the model)"))
+        self.mesh_checks, self.mesh_count_labels = {}, {}
+        for key, label, tip, col in MESH_TESTS:
+            row = QHBoxLayout()
+            sw = QLabel()
+            pix = QPixmap(14, 14)
+            pix.fill(QColor(*col))
+            sw.setPixmap(pix)
+            cb = QCheckBox(label)
+            cb.setToolTip(tip)
+            cb.toggled.connect(lambda on, k=key: viewer.set_mesh_test(k, on))
+            cnt = QLabel("")
+            cnt.setObjectName("barLabel")
+            row.addWidget(sw)
+            row.addWidget(cb, 1)
+            row.addWidget(cnt)
+            ml.addLayout(row)
+            self.mesh_checks[key], self.mesh_count_labels[key] = cb, cnt
+        self.mesh_note = QLabel("")
+        self.mesh_note.setObjectName("barLabel")
+        self.mesh_note.setWordWrap(True)
+        ml.addWidget(self.mesh_note)
+        mhint = QLabel("Counts are triangles. Vertices at the same position count as joined, so seams made for "
+                       "UVs or hard edges are not reported as holes. Failing triangles are coloured, grey is fine, "
+                       "white fails more than one test. A colour test replaces the texture on the model while it is on.")
+        mhint.setObjectName("barLabel")
+        mhint.setWordWrap(True)
+        ml.addWidget(mhint)
+        ml.addStretch(1)
+        self._mesh_tab = self.tabs.addTab(mw, "Mesh")
+
+        # ---- Measure tab: size and volume, point-to-point tool, cross-section
+        ms_inner = QWidget()
+        sl = QVBoxLayout(ms_inner)
+        urow = QHBoxLayout()
+        urow.addWidget(QLabel("Model units"))
+        self.ms_src = QComboBox()
+        self.ms_disp = QComboBox()
+        for k, label, _f in UNITS:
+            self.ms_src.addItem(f"{label} ({k})", k)
+            self.ms_disp.addItem(f"{label} ({k})", k)
+        self.ms_src.setToolTip("What one unit in the file means. Most formats do not say: glTF/GLB is metres by "
+                               "convention, STL and OBJ files are often millimetres.")
+        self.ms_disp.setToolTip("The unit the results are shown in")
+        urow.addWidget(self.ms_src, 1)
+        urow.addWidget(QLabel("show in"))
+        urow.addWidget(self.ms_disp, 1)
+        sl.addLayout(urow)
+        self.ms_src.currentIndexChanged.connect(lambda _i: viewer.set_units(self.ms_src.currentData(), self.ms_disp.currentData()))
+        self.ms_disp.currentIndexChanged.connect(lambda _i: viewer.set_units(self.ms_src.currentData(), self.ms_disp.currentData()))
+        self.ms_calc = QPushButton("Calculate size, volume and centre of mass")
+        self.ms_calc.setToolTip("Measures the visible parts. Not done automatically, so models open quickly.")
+        self.ms_calc.clicked.connect(lambda: viewer.measure_calculate())
+        sl.addWidget(self.ms_calc)
+        self.ms_result = QLabel("")
+        self.ms_result.setWordWrap(True)
+        self.ms_result.setTextFormat(Qt.RichText)
+        self.ms_result.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sl.addWidget(self.ms_result)
+
+        sl.addWidget(QLabel("Measure between points"))
+        self.ms_mode = QCheckBox("Measure mode  (Shift+R): click 2 or 3 points on the model")
+        self.ms_mode.toggled.connect(viewer.set_measure_mode)
+        sl.addWidget(self.ms_mode)
+        self.ms_clear = QPushButton("Clear points")
+        self.ms_clear.clicked.connect(lambda: viewer.measure_clear_points())
+        sl.addWidget(self.ms_clear)
+        self.ms_readout = QLabel("")
+        self.ms_readout.setWordWrap(True)
+        self.ms_readout.setTextFormat(Qt.RichText)
+        sl.addWidget(self.ms_readout)
+
+        sl.addWidget(QLabel("Cross-section"))
+        self.sec_on = QCheckBox("Cut the model with a plane")
+        self.sec_on.toggled.connect(viewer.set_section)
+        sl.addWidget(self.sec_on)
+        srow = QHBoxLayout()
+        self.sec_axis = QComboBox()
+        self.sec_axis.addItems(["X", "Y", "Z"])
+        self.sec_axis.setCurrentIndex(viewer.section_axis)
+        self.sec_axis.currentIndexChanged.connect(viewer.set_section_axis)
+        srow.addWidget(QLabel("Axis"))
+        srow.addWidget(self.sec_axis)
+        self.sec_slider = QSlider(Qt.Horizontal)
+        self.sec_slider.setRange(0, 1000)
+        self.sec_slider.setValue(int(viewer.section_pos * 1000))
+        self.sec_slider.valueChanged.connect(lambda v: viewer.set_section_pos(v / 1000.0))
+        srow.addWidget(self.sec_slider, 1)
+        sl.addLayout(srow)
+        self.sec_flip = QCheckBox("Keep the other side")
+        self.sec_flip.toggled.connect(viewer.set_section_flip)
+        sl.addWidget(self.sec_flip)
+        mshint = QLabel("Size and volume use the parts that are visible. Volume and the centre of mass need closed "
+                        "parts; open parts are left out of the volume (the Mesh tab shows which are open). The "
+                        "oriented box is the smallest box, turned to fit, that holds the model. Measure mode: a click "
+                        "that does not move picks a point; dragging still orbits. The cross-section hides one side "
+                        "of the plane and outlines the cut in yellow; it is left out of reference sheets.")
+        mshint.setObjectName("barLabel")
+        mshint.setWordWrap(True)
+        sl.addWidget(mshint)
+        sl.addStretch(1)
+        msa = QScrollArea()
+        msa.setWidgetResizable(True)
+        msa.setFrameShape(QFrame.NoFrame)
+        msa.setWidget(ms_inner)
+        self.tabs.addTab(msa, "Measure")
+
+        lw = QWidget()
+        ll = QVBoxLayout(lw)
+        intro = QLabel("Preview how the model looks with fewer triangles. Levels are made from the original, one "
+                       "part at a time, in the background.")
+        intro.setWordWrap(True)
+        ll.addWidget(intro)
+        self.lod_btn = QPushButton("Generate LOD previews (50%, 25%, 10%)")
+        self.lod_btn.setToolTip("Not done automatically: simplifying a large model takes a while")
+        self.lod_btn.clicked.connect(lambda: viewer.lod_generate())
+        ll.addWidget(self.lod_btn)
+        self.lod_state = QLabel("")
+        self.lod_state.setWordWrap(True)
+        self.lod_state.setObjectName("barLabel")
+        ll.addWidget(self.lod_state)
+        lrow = QHBoxLayout()
+        lrow.addWidget(QLabel("Show"))
+        self.lod_box = QComboBox()
+        self.lod_box.currentIndexChanged.connect(lambda _i: viewer.set_lod(self.lod_box.currentData() or 0))
+        lrow.addWidget(self.lod_box, 1)
+        ll.addLayout(lrow)
+        self.lod_table = QLabel("")
+        self.lod_table.setWordWrap(True)
+        self.lod_table.setTextFormat(Qt.RichText)
+        ll.addWidget(self.lod_table)
+        lhint = QLabel("A level shows the model as it would look after simplifying; it does not change your file. "
+                       "Texture seams are kept as borders, so UVs hold up, but very low levels can still stretch "
+                       "textures. Exports always use the original geometry. Switching level clears the UV, mesh and "
+                       "measurement results, because they describe the geometry that was showing.")
+        lhint.setObjectName("barLabel")
+        lhint.setWordWrap(True)
+        ll.addWidget(lhint)
+        ll.addStretch(1)
+        self.tabs.addTab(lw, "LOD")
         viewer.uv_changed.connect(self._uv_sync)
+        viewer.mesh_changed.connect(self._mesh_sync)
+        viewer.measure_changed.connect(self._measure_sync)
+        viewer.lod_changed.connect(self._lod_sync)
         self.tabs.currentChanged.connect(lambda _i: viewer.highlight_part(None))
+        self.tabs.currentChanged.connect(lambda _i: self._mesh_sync())
 
         self.parts.setMinimumHeight(180)
         self.tex_list.setMinimumHeight(180)
@@ -3529,16 +3794,35 @@ class MaterialsPanel(QWidget):
 
         self.tex_list.clear()
         self._textures = collect_textures(v.actors)
+        tot_raw = tot_comp = 0
         for e in self._textures:
             arr = texture_to_array(e["tex"], 128)
             icon = QIcon(QPixmap.fromImage(_rgb_to_qimage(texture_channel_rgb(arr)))) if arr is not None else QIcon()
-            size = f"{e['size'][0]}×{e['size'][1]}" if e["size"] else "size unknown"
             n = len(e["parts"])
-            self.tex_list.addItem(QListWidgetItem(
-                icon, f"{e['role']}\n{size}  ·  used by {n} part{'s' if n != 1 else ''}"))
+            f = texture_facts(e["tex"], e["role"])
+            if f is None:
+                text = f"{e['role']}\nsize unknown  ·  used by {n} part{'s' if n != 1 else ''}"
+            else:
+                tot_raw += f["vram"]
+                tot_comp += f["vram_comp"]
+                ch = f"{f['channels']} channel{'s' if f['channels'] != 1 else ''}"
+                notes = (["not a power of two"] if f["npot"] else []) + (["very large"] if f["large"] else [])
+                text = (f"{e['role']}\n{f['w']}×{f['h']}  ·  {f['bits']}-bit, {ch}  ·  {f['space']} (inferred)  ·  "
+                        f"used by {n} part{'s' if n != 1 else ''}\n"
+                        f"≈ {human_size(f['vram'])} in GPU memory  ·  ≈ {human_size(f['vram_comp'])} compressed"
+                        + ("".join("  ·  " + t for t in notes)))
+            self.tex_list.addItem(QListWidgetItem(icon, text))
         if not self._textures:
             self.tex_list.addItem(QListWidgetItem("This model has no textures (colours only)."))
+        if self._textures:
+            self.tex_total.setText(f"{len(self._textures)} texture{'s' if len(self._textures) != 1 else ''}  ·  "
+                                   f"≈ {human_size(tot_raw)} in GPU memory  ·  ≈ {human_size(tot_comp)} compressed")
+        else:
+            self.tex_total.setText("")
         self._uv_sync()
+        self._mesh_sync()
+        self._measure_sync()
+        self._lod_sync()
 
     def _uv_sync(self):
         v = self.viewer
@@ -3555,6 +3839,11 @@ class MaterialsPanel(QWidget):
             w.blockSignals(True)
             w.setChecked(bool(state))
             w.blockSignals(False)
+        ready = v._uv_ready
+        self.uv_run.setEnabled(bool(v.actors) and not ready)
+        self.uv_run.setText("UV tests done" if ready else "Run UV tests")
+        for w in (self.uv_heat_box, *self.uv_checks.values()):
+            w.setEnabled(ready)
         c = v.uv_counts()
         for k, lab in self.uv_count_labels.items():
             if not c["has_uv"]:
@@ -3570,7 +3859,7 @@ class MaterialsPanel(QWidget):
             sp.blockSignals(True)
             sp.setValue(v.uv_th[k])
             sp.blockSignals(False)
-            sp.setEnabled(v.uv_heat == ("stretch" if k == "stretch" else "density"))
+            sp.setEnabled(ready and v.uv_heat == ("stretch" if k == "stretch" else "density"))
         st = v.uv_heat_stats()
         if v.uv_heat == "density" and st["n"]:
             self.uv_heat_stats.setText(f"{100.0 * st['low'] / st['n']:.1f}% of triangles are too low (blue), "
@@ -3582,6 +3871,9 @@ class MaterialsPanel(QWidget):
             self.uv_heat_stats.setText("")
         if not v.actors:
             self.uv_note.setText("Open a model to analyse its UVs.")
+        elif not ready:
+            self.uv_note.setText("Press “Run UV tests” to analyse the UVs. Nothing is calculated until you do, "
+                                 "so models open quickly.")
         elif not c["has_uv"]:
             self.uv_note.setText("This model (or part) has no UV coordinates, so there is nothing to test. "
                                  "STL, PLY and most CAD files carry no UVs.")
@@ -3589,6 +3881,150 @@ class MaterialsPanel(QWidget):
             extra = f", {c['islands']:,} islands" if c["isl_ok"] else (
                 ". Island tests were skipped because the model is very large")
             self.uv_note.setText(f"{c['tris']:,} triangles analysed{extra}.")
+
+    def _mesh_sync(self):
+        if not hasattr(self, "mesh_stats"):
+            return
+        v = self.viewer
+        analysed = v._mesh_data is not None
+        for k, cb in self.mesh_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(k in v.mesh_tests)
+            cb.blockSignals(False)
+            cb.setEnabled(analysed)
+        self.mesh_run.setEnabled(bool(v.actors) and not analysed)
+        self.mesh_run.setText("Integrity tests done" if analysed else "Run integrity tests")
+        if not v.actors:
+            self.mesh_stats.setText("Open a model to analyse its mesh.")
+            self.mesh_note.setText("")
+            for lab in self.mesh_count_labels.values():
+                lab.setText("")
+            return
+        if not analysed:
+            ms = material_summary(v.actors)
+            tris = sum(_cells(a) for a in v.actors)
+            self.mesh_stats.setText(
+                f"<table><tr><td style='padding-right:10px'>Polygons</td><td><b>{tris:,}</b></td></tr>"
+                f"<tr><td>Parts (draw calls here)</td><td><b>{ms['parts']:,}</b></td></tr>"
+                f"<tr><td>Distinct materials</td><td><b>{ms['materials']:,}</b></td></tr></table>")
+            self.mesh_note.setText("Press “Run integrity tests” for the full mesh statistics and the colour tests. "
+                                   "Nothing is calculated until you do, so models open quickly.")
+            for lab in self.mesh_count_labels.values():
+                lab.setText("")
+            return
+        t = v.mesh_summary()
+        ms = material_summary(v.actors)
+        if not t or not t["parts"]:
+            self.mesh_stats.setText("This model has no polygon surfaces to analyse (points or lines only).")
+            return
+        rows = [("Triangles", f"{t['tris']:,}"),
+                ("Vertices", f"{t['verts']:,}  ({t['unique_pos']:,} at unique positions)"),
+                ("Parts (draw calls here)", f"{ms['parts']:,}"
+                 + (f"  ({ms['visible']:,} visible)" if ms["visible"] != ms["parts"] else "")),
+                ("Distinct materials", f"{ms['materials']:,}  (an engine needs at least this many draw calls)"),
+                ("Loose vertices", f"{t['loose']:,}  (used by no triangle)"),
+                ("Vertices sharing a position", f"{t['dup_verts']:,}  (normal and UV seams count)"),
+                ("Separate pieces", f"{t['pieces']:,}"),
+                ("Open edges", f"{t['boundary_edges']:,}"),
+                ("Non-manifold edges", f"{t['nonman_edges']:,}")]
+        html_rows = "".join(f"<tr><td style='padding-right:10px'>{a}</td><td><b>{b}</b></td></tr>" for a, b in rows)
+        verdict = ("Closed and consistent (watertight)." if t["watertight"] else
+                   "Not watertight: it has open or non-manifold edges, or inconsistent winding.")
+        self.mesh_stats.setText(f"<table>{html_rows}</table>")
+        for k, lab in self.mesh_count_labels.items():
+            lab.setText(f"{t['n_' + k]:,}")
+        self.mesh_note.setText(verdict + (f" {t['inverted_pieces']} closed piece(s) face inwards." if t["inverted_pieces"] else ""))
+
+    def _measure_sync(self):
+        if not hasattr(self, "ms_result"):
+            return
+        v = self.viewer
+        for w, val in ((self.ms_src, v.unit_src), (self.ms_disp, v.unit_disp)):
+            w.blockSignals(True)
+            w.setCurrentIndex(max(0, w.findData(val)))
+            w.blockSignals(False)
+        for w, val in ((self.ms_mode, v.measure_on), (self.sec_on, v.section_on)):
+            w.blockSignals(True)
+            w.setChecked(bool(val))
+            w.blockSignals(False)
+        has = bool(v.actors)
+        self.ms_calc.setEnabled(has)
+        self.ms_clear.setEnabled(has and bool(v._meas_pts))
+        k = unit_scale(v.unit_src, v.unit_disp)
+        u = v.unit_disp
+        r = v._measure_result
+        if not has:
+            self.ms_result.setText("Open a model to measure it.")
+        elif r is None:
+            self.ms_result.setText("Press the button above to measure the visible parts.")
+        else:
+            d = (np.asarray(r["aabb_max"]) - np.asarray(r["aabb_min"])) * k
+            o = np.asarray(r["obb"]) * k
+            f = {kk: ff for kk, _l, ff in UNITS}
+            if r["volume"] is not None:
+                m3 = r["volume"] * f.get(v.unit_src, 1.0) ** 3
+                vol = f"{fmt_num(r['volume'] * k ** 3)} {u}³  (≈ {fmt_num(m3 * 1000.0)} litres)"
+                if r["open_parts"]:
+                    vol += f"<br><i>{r['open_parts']} open part(s) are not counted</i>"
+            else:
+                vol = "not available: no part is closed (watertight)"
+            c = np.asarray(r["com"]) * k
+            rows = [("Size (x × y × z)", f"{fmt_num(d[0])} × {fmt_num(d[1])} × {fmt_num(d[2])} {u}"),
+                    ("Oriented box", f"{fmt_num(o[0])} × {fmt_num(o[1])} × {fmt_num(o[2])} {u}"),
+                    ("Surface area", f"{fmt_num(r['area'] * k * k)} {u}²"),
+                    ("Volume", vol),
+                    ("Centre of mass" + ("" if r["com_kind"] == "volume" else " (of the surface)"),
+                     f"{fmt_num(c[0])}, {fmt_num(c[1])}, {fmt_num(c[2])} {u}")]
+            self.ms_result.setText("<table>" + "".join(
+                f"<tr><td style='padding-right:10px'>{a}</td><td><b>{b}</b></td></tr>" for a, b in rows) + "</table>")
+        ro = v.measure_readout()
+        if not ro:
+            self.ms_readout.setText("Turn on measure mode, then click points on the model." if not v.measure_on
+                                    else "Click a point on the model.")
+        elif ro["n"] == 1:
+            self.ms_readout.setText("Point A set. Click a second point.")
+        else:
+            dl = np.abs(ro["delta"]) * k
+            t = (f"A → B: <b>{fmt_num(ro['ab'] * k)} {u}</b><br>"
+                 f"Δx {fmt_num(dl[0])}  ·  Δy {fmt_num(dl[1])}  ·  Δz {fmt_num(dl[2])} {u}")
+            if "angle" in ro:
+                t += (f"<br>B → C: <b>{fmt_num(ro['bc'] * k)} {u}</b>"
+                      f"<br>Angle at B (A–B–C): <b>{ro['angle']:.1f}°</b>")
+            self.ms_readout.setText(t)
+
+    def _lod_sync(self):
+        if not hasattr(self, "lod_box"):
+            return
+        v = self.viewer
+        busy = v._lod_task is not None
+        self.lod_btn.setEnabled(bool(v.actors) and not busy and v._lod_sets is None)
+        self.lod_state.setText(v.lod_status if v.actors else "Open a model to preview its levels of detail.")
+        self.lod_box.blockSignals(True)
+        self.lod_box.clear()
+        self.lod_box.addItem("Original", 0)
+        if v._lod_sets:
+            for lvl, _r in LOD_LEVELS:
+                if lvl in v._lod_sets:
+                    self.lod_box.addItem(f"{lvl}% of the triangles", lvl)
+        self.lod_box.setCurrentIndex(max(0, self.lod_box.findData(v._lod_level)))
+        self.lod_box.blockSignals(False)
+        self.lod_box.setEnabled(bool(v._lod_sets) and not busy)
+        if v._lod_sets and v._lod_orig_counts[0]:
+            t0, v0 = v._lod_orig_counts
+            rows = [("Original", f"{t0:,}", f"{v0:,}", "100%")]
+            note = ""
+            for lvl, _r in LOD_LEVELS:
+                inf = v._lod_info.get(lvl)
+                if inf:
+                    rows.append((f"{lvl}% level", f"{inf['tris']:,}", f"{inf['verts']:,}", f"{100.0 * inf['tris'] / t0:.0f}%"))
+                    if not inf["tcoords"]:
+                        note = "<br><i>Some parts lost their UVs in simplification.</i>"
+            self.lod_table.setText("<table><tr><td style='padding-right:12px'></td><td style='padding-right:12px'><b>Triangles</b></td>"
+                                   "<td style='padding-right:12px'><b>Vertices</b></td><td><b>Kept</b></td></tr>"
+                                   + "".join(f"<tr><td style='padding-right:12px'>{a}</td><td>{b}</td><td>{c}</td><td>{d}</td></tr>"
+                                             for a, b, c, d in rows) + "</table>" + note)
+        else:
+            self.lod_table.setText("")
 
     def _part_toggled(self, item):
         self.viewer.set_part_visible(self.parts.row(item), item.checkState() == Qt.Checked)
@@ -3624,6 +4060,301 @@ class MaterialsPanel(QWidget):
 
 
 # ---------------------------------------------------------------------------
+# Texture audit and mesh diagnostics (pure numpy, so they are easy to test)
+# ---------------------------------------------------------------------------
+def texture_audit(width: int, height: int, channels: int, bits: int, role: str) -> dict:
+    """Memory and format facts about one texture. VRAM is an estimate: GPUs store 3-channel images as 4,
+    and a full mipmap chain adds a third. 'Compressed' assumes a typical block format (BC7 / BC5, BC4 for
+    one channel). Colour space cannot be read from pixels, so it is inferred from the texture's role
+    (glTF convention: colour and emissive are sRGB; normal and occlusion/roughness/metallic are linear)."""
+    w, h = max(int(width), 0), max(int(height), 0)
+    ch = max(int(channels), 1)
+    stored = 4 if ch == 3 else ch
+    raw = w * h * stored * (max(int(bits), 8) // 8)
+    comp = w * h * (0.5 if ch == 1 else 1.0)
+    npot = bool(w and h and ((w & (w - 1)) or (h & (h - 1))))
+    return {"w": w, "h": h, "channels": ch, "bits": int(bits),
+            "space": "sRGB" if role in ("Base colour", "Emissive") else "Linear",
+            "vram": int(raw * 4 / 3), "vram_comp": int(comp * 4 / 3), "npot": npot,
+            "large": max(w, h) >= 4096}
+
+
+MESH_TESTS = [
+    ("boundary", "Open (boundary) edges", "Triangles with an edge that only one triangle uses: a hole, a gap or an open border. Vertices at the same position count as joined, so UV and normal seams are not reported",
+     (40, 120, 255)),
+    ("nonman", "Non-manifold edges", "Triangles with an edge shared by three or more triangles (fins, internal faces, T-junction geometry)",
+     (150, 235, 40)),
+    ("degen", "Zero-area triangles", "Triangles squashed to a line or point (they render nothing and upset normals and bakes)",
+     (150, 100, 50)),
+    ("winding", "Inconsistent winding", "Triangles next to a neighbour that is wound the opposite way round (flipped normals and black patches). For a whole flipped region this marks its border",
+     (0, 190, 150)),
+    ("inverted", "Inside-out pieces", "Closed pieces whose volume comes out negative: the whole piece faces inwards",
+     (255, 0, 110)),
+    ("dupface", "Duplicate faces", "Triangles that sit exactly on top of another triangle (z-fighting, double cost)",
+     (255, 110, 0)),
+]
+FLAG_TESTS = None          # UV_TESTS + MESH_TESTS, assembled after UV_TESTS is defined
+
+
+def mesh_diagnose(points, tris) -> dict:
+    """Topology checks on a triangle mesh. Vertices at the same position (to a tolerance of one millionth of
+    the model size) are treated as one, because exporters split vertices for UV and normal seams.
+    Returns per-triangle bool flags (keys of MESH_TESTS) plus counts."""
+    P = np.asarray(points, np.float64)[:, :3]
+    T = np.asarray(tris, np.int64).reshape(-1, 3)
+    M = len(T)
+    nv = len(P)
+    flags = {k: np.zeros(M, bool) for k, *_r in MESH_TESTS}
+    st = {"verts": nv, "tris": M, "used": 0, "loose": nv, "unique_pos": 0, "dup_verts": 0, "pieces": 0,
+          "boundary_edges": 0, "nonman_edges": 0, "winding_edges": 0, "watertight": False, "volume": 0.0}
+    if M == 0 or nv == 0:
+        return {"flags": flags, "stats": st}
+    lo, hi = P.min(0), P.max(0)
+    diag = float(np.linalg.norm(hi - lo)) or 1.0
+    tol = max(diag * 1e-6, 1e-12)
+    q = np.round((P - lo) / tol).astype(np.int64)
+    _u, weld = np.unique(_hash_rows([q[:, 0], q[:, 1], q[:, 2]]), return_inverse=True)
+    weld = weld.astype(np.int64)
+    nw = int(weld.max()) + 1
+    used = np.unique(T)
+    st["used"], st["loose"] = int(len(used)), int(nv - len(used))
+    st["unique_pos"] = int(len(np.unique(weld[used])))
+    st["dup_verts"] = st["used"] - st["unique_pos"]
+
+    W = weld[T]
+    a, b, c = P[T[:, 0]], P[T[:, 1]], P[T[:, 2]]
+    cross = np.cross(b - a, c - a)
+    area2 = np.linalg.norm(cross, axis=1)
+    degen = (W[:, 0] == W[:, 1]) | (W[:, 1] == W[:, 2]) | (W[:, 0] == W[:, 2]) | (area2 < 1e-12 * diag * diag)
+    flags["degen"] = degen
+    ok = np.nonzero(~degen)[0]
+    if len(ok) == 0:
+        return {"flags": flags, "stats": st}
+    Wo = W[ok]
+
+    # duplicate faces: same three joined vertices, any order
+    srt = np.sort(Wo, axis=1)
+    keys = _hash_rows([srt[:, 0], srt[:, 1], srt[:, 2]])
+    _k, kinv, kcnt = np.unique(keys, return_inverse=True, return_counts=True)
+    flags["dupface"][ok] = kcnt[kinv] > 1
+
+    # edges: undirected key, direction sign, owner triangle
+    ea = np.concatenate([Wo[:, 0], Wo[:, 1], Wo[:, 2]])
+    eb = np.concatenate([Wo[:, 1], Wo[:, 2], Wo[:, 0]])
+    owner = np.tile(np.arange(len(ok)), 3)
+    ekey = np.minimum(ea, eb) * nw + np.maximum(ea, eb)
+    sign = np.where(ea < eb, 1.0, -1.0)
+    _e, einv, ecnt = np.unique(ekey, return_inverse=True, return_counts=True)
+    cnt = ecnt[einv]
+    sdir = np.bincount(einv, weights=sign, minlength=len(ecnt))
+    bnd = cnt == 1
+    non = cnt > 2
+    wind = (cnt == 2) & (np.abs(sdir[einv]) == 2)
+    fb = np.zeros(len(ok), bool); fb[owner[bnd]] = True
+    fn = np.zeros(len(ok), bool); fn[owner[non]] = True
+    fw = np.zeros(len(ok), bool); fw[owner[wind]] = True
+    flags["boundary"][ok] = fb
+    flags["nonman"][ok] = fn
+    flags["winding"][ok] = fw
+    st["boundary_edges"] = int((ecnt == 1).sum())
+    st["nonman_edges"] = int((ecnt > 2).sum())
+    st["winding_edges"] = int(((ecnt == 2) & (np.abs(sdir) == 2)).sum())
+
+    # pieces (connected through joined vertices) and inside-out detection
+    comp = connected_components(nw, np.concatenate([Wo[:, 0], Wo[:, 1]]), np.concatenate([Wo[:, 1], Wo[:, 2]]))
+    piece_of = comp[Wo[:, 0]]
+    _p, pidx = np.unique(piece_of, return_inverse=True)
+    npieces = len(_p)
+    st["pieces"] = int(npieces)
+    bad = (fb | fn | fw).astype(np.float64)
+    piece_bad = np.bincount(pidx, weights=bad, minlength=npieces) > 0
+    cen = P.mean(0)
+    vol = np.einsum("ij,ij->i", a[ok] - cen, np.cross(b[ok] - cen, c[ok] - cen)) / 6.0
+    pvol = np.bincount(pidx, weights=vol, minlength=npieces)
+    inv_piece = (~piece_bad) & (pvol < -1e-12 * diag ** 3)
+    flags["inverted"][ok] = inv_piece[pidx]
+    st["inverted_pieces"] = int(inv_piece.sum())
+    st["watertight"] = bool(not piece_bad.any())
+    st["volume"] = float(abs(pvol[~piece_bad].sum())) if (~piece_bad).any() else 0.0
+    return {"flags": flags, "stats": st}
+
+
+def material_summary(actors: list) -> dict:
+    """Parts versus distinct materials. Each part is one draw call in this viewer; a game engine needs at
+    least one draw call per distinct material, and parts that share one can be merged."""
+    keys = set()
+    for a in actors:
+        try:
+            prop = a.GetProperty()
+            tex = [id(a.GetTexture())] if a.GetTexture() is not None else []
+            for name, _l in OTHER_TEXTURE_SLOTS:
+                try:
+                    t = prop.GetTexture(name)
+                except Exception:
+                    t = None
+                if t is not None:
+                    tex.append(id(t))
+            col = tuple(round(float(x), 3) for x in prop.GetColor())
+            keys.add((tuple(tex), col if not tex else (), round(float(prop.GetOpacity()), 2)))
+        except Exception:
+            keys.add((id(a),))
+    vis = [a for a in actors if a.GetVisibility()]
+    return {"parts": len(actors), "visible": len(vis), "materials": len(keys)}
+
+
+# ----- measurements (Phase B)
+UNITS = [("mm", "Millimetres", 0.001), ("cm", "Centimetres", 0.01), ("m", "Metres", 1.0),
+         ("in", "Inches", 0.0254), ("ft", "Feet", 0.3048)]
+
+
+def unit_scale(src: str, dst: str) -> float:
+    """Factor that turns a length in `src` units into `dst` units."""
+    f = {k: v for k, _l, v in UNITS}
+    return f.get(src, 1.0) / f.get(dst, 1.0)
+
+
+def fmt_num(v: float) -> str:
+    v = float(v)
+    a = abs(v)
+    if a >= 1000:
+        return f"{v:,.1f}"
+    if a >= 100:
+        return f"{v:.2f}"
+    if a >= 1:
+        return f"{v:.3f}"
+    return f"{v:.4f}"
+
+
+def angle_at(a, b, c) -> float:
+    """Angle in degrees at b between the lines b-a and b-c (0 when a point repeats)."""
+    u, w = np.asarray(a, float) - np.asarray(b, float), np.asarray(c, float) - np.asarray(b, float)
+    nu, nw = np.linalg.norm(u), np.linalg.norm(w)
+    if nu < 1e-15 or nw < 1e-15:
+        return 0.0
+    return float(np.degrees(np.arccos(np.clip(np.dot(u, w) / (nu * nw), -1.0, 1.0))))
+
+
+def _rot_about(axis, deg):
+    k = np.asarray(axis, float)
+    k = k / np.linalg.norm(k)
+    t = np.radians(deg)
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    return np.eye(3) + np.sin(t) * K + (1 - np.cos(t)) * (K @ K)
+
+
+def obb_fit(points, ndir: int = 96):
+    """Oriented bounding box: (axes as columns, extents along them), largest extent first. Starts from the
+    principal axes of the extreme points, then turns the box about each axis to make its volume smallest."""
+    V = np.asarray(points, np.float64)[:, :3]
+    rng = np.random.default_rng(0)
+    D = rng.normal(size=(ndir, 3))
+    D /= np.linalg.norm(D, axis=1, keepdims=True)
+    D32 = D.astype(np.float32)
+    best = np.full(ndir, -np.inf)
+    worst = np.full(ndir, np.inf)
+    ib = np.zeros(ndir, np.int64)
+    iw = np.zeros(ndir, np.int64)
+    for s0 in range(0, len(V), 40000):                 # chunked so a huge mesh needs no giant matrix
+        pr = V[s0:s0 + 40000].astype(np.float32) @ D32.T
+        j = pr.argmax(0)
+        v = pr[j, np.arange(ndir)]
+        m = v > best
+        best[m], ib[m] = v[m], j[m] + s0
+        j = pr.argmin(0)
+        v = pr[j, np.arange(ndir)]
+        m = v < worst
+        worst[m], iw[m] = v[m], j[m] + s0
+    C = V[np.unique(np.concatenate([ib, iw]))]
+    if len(C) < 4:
+        C = V
+    X = C - C.mean(0)
+    _ev, R = np.linalg.eigh(X.T @ X / len(C))
+    R = R[:, ::-1].copy()
+
+    def vol(M):
+        q = C @ M
+        return float(np.prod(q.max(0) - q.min(0)))
+
+    cur = vol(R)
+    for step, span in ((5.0, 45.0), (1.0, 5.0), (0.2, 1.0), (0.04, 0.2), (0.008, 0.04)):
+        for _pass in range(2):
+            for i in range(3):
+                for ang in np.arange(-span, span + step * 0.5, step):
+                    if ang == 0:
+                        continue
+                    M = _rot_about(R[:, i], ang) @ R
+                    v = vol(M)
+                    if v < cur * (1 - 1e-12):
+                        R, cur = M, v
+    q = V @ R
+    ext = q.max(0) - q.min(0)
+    order = np.argsort(-ext)
+    return R[:, order], ext[order]
+
+
+def mesh_measure(points, tris) -> dict:
+    """Surface area, signed volume and centroids of one triangle mesh (points already in world space).
+    The signed volume is only a real volume for a closed, consistently wound mesh."""
+    P = np.asarray(points, np.float64)[:, :3]
+    T = np.asarray(tris, np.int64).reshape(-1, 3)
+    if len(T) == 0:
+        z = np.zeros(3)
+        return {"area": 0.0, "vol": 0.0, "com_vol": z, "com_surf": z, "tri_c": np.zeros((0, 3)), "tri_a": np.zeros(0)}
+    o = P[np.unique(T)].mean(0)                        # work near the model: keeps the sums accurate
+    a, b, c = P[T[:, 0]] - o, P[T[:, 1]] - o, P[T[:, 2]] - o
+    cr = np.cross(b - a, c - a)
+    ta = 0.5 * np.linalg.norm(cr, axis=1)
+    sv = np.einsum("ij,ij->i", a, np.cross(b, c)) / 6.0
+    cen = (a + b + c) / 3.0
+    vol = float(sv.sum())
+    area = float(ta.sum())
+    com_vol = (sv[:, None] * (a + b + c) / 4.0).sum(0) / vol if abs(vol) > 1e-300 else cen.mean(0)
+    com_surf = (ta[:, None] * cen).sum(0) / area if area > 0 else cen.mean(0)
+    return {"area": area, "vol": vol, "com_vol": com_vol + o, "com_surf": com_surf + o,
+            "tri_c": cen + o, "tri_a": ta}
+
+
+def measure_model(parts: list) -> dict:
+    """Size and volume of a model from [(world points, triangles), ...].
+    Volume and the volume-based centre of mass count closed parts only; open parts are reported."""
+    used = []
+    area = vol = 0.0
+    com_w = np.zeros(3)
+    surf_w = np.zeros(3)
+    closed_parts = open_parts = 0
+    for pts, tris in parts:
+        T = np.asarray(tris, np.int64).reshape(-1, 3)
+        if len(T) == 0:
+            continue
+        P = np.asarray(pts, np.float64)[:, :3]
+        m = mesh_measure(P, T)
+        d = mesh_diagnose(P, T)
+        area += m["area"]
+        surf_w += m["com_surf"] * m["area"]
+        u = P[np.unique(T)]
+        used.append(u)
+        if d["stats"]["watertight"]:
+            v = abs(m["vol"])
+            vol += v
+            com_w += m["com_vol"] * v
+            closed_parts += 1
+        else:
+            open_parts += 1
+    if not used:
+        return {}
+    allv = np.vstack(used)
+    lo, hi = allv.min(0), allv.max(0)
+    axes, ext = obb_fit(allv)
+    if closed_parts and vol > 0:
+        com, kind = com_w / vol, "volume"
+    else:
+        com, kind = surf_w / max(area, 1e-300), "surface"
+    return {"aabb_min": lo, "aabb_max": hi, "obb": ext, "obb_axes": axes, "area": area,
+            "volume": vol if closed_parts else None, "com": com, "com_kind": kind,
+            "closed_parts": closed_parts, "open_parts": open_parts}
+
+
+# ---------------------------------------------------------------------------
 # UV diagnostics (pure numpy, so they are easy to test)
 # ---------------------------------------------------------------------------
 UV_TESTS = [
@@ -3641,6 +4372,7 @@ UV_TESTS = [
      (235, 115, 175)),
 ]
 UV_ISLAND_TESTS = ("overlap", "stack", "mirror")      # need island detection, which is computed on demand
+FLAG_TESTS = UV_TESTS + MESH_TESTS                  # everything that can colour triangles in the 3D view
 UV_COLOR_OK = (176, 184, 194)
 UV_COLOR_MIX = (250, 250, 250)                     # more than one problem on the same triangle
 
@@ -3915,14 +4647,14 @@ def uv_poly_colors(npoly: int, parent, flags: dict, active: list, base=None):
         colors[np.asarray(parent)] = base
     hits = np.zeros(npoly, np.int32)
     last = np.zeros(npoly, np.int32)
-    for n, (key, _l, _t, col) in enumerate(UV_TESTS):
+    for n, (key, _l, _t, col) in enumerate(FLAG_TESTS):
         if key not in active or key not in flags:
             continue
         poly = np.zeros(npoly, bool)
         poly[np.asarray(parent)[flags[key]]] = True
         hits += poly
         last[poly] = n
-    for n, (_k, _l, _t, col) in enumerate(UV_TESTS):
+    for n, (_k, _l, _t, col) in enumerate(FLAG_TESTS):
         colors[(hits == 1) & (last == n)] = col
     colors[hits > 1] = UV_COLOR_MIX
     return colors, hits > 0
@@ -4281,6 +5013,9 @@ class Viewer(QWidget):
     about_requested = Signal()            # open the About dialog
     panel_requested = Signal(str)         # show/raise a docked panel: environment, matcap, scene, materials
     uv_changed = Signal()                 # UV analysis or UV view settings changed
+    mesh_changed = Signal()               # mesh analysis or mesh test selection changed
+    measure_changed = Signal()            # measurement results, units, points or section changed
+    lod_changed = Signal()                # LOD generation progress, results or shown level changed
 
     def __init__(self):
         super().__init__()
@@ -4333,14 +5068,40 @@ class Viewer(QWidget):
         self._split_resize_timer.setSingleShot(True)
         self._split_resize_timer.timeout.connect(self._split_after_resize)
         self._materials_panel = None
+        keys = [k for k, _l, _f in UNITS]
+        u = str(self.settings.value("measure_src", "m"))
+        self.unit_src = u if u in keys else "m"
+        u = str(self.settings.value("measure_disp", self.unit_src))
+        self.unit_disp = u if u in keys else self.unit_src
+        self._measure_result = None                # last "Calculate" result, in model units
+        self._lod_sets = None                      # {level %: [polydata or None per part]} once generated
+        self._lod_orig_counts = (0, 0)
+        self._lod_info: dict = {}
+        self._lod_level = 0                        # 0 = original geometry
+        self._lod_task = None
+        self._lod_token = 0
+        self.lod_status = ""
+        self.measure_on = False                    # click-to-measure mode
+        self._meas_pts: list = []                  # picked world points (A, B, C)
+        self._meas_props: list = []
+        self._meas_press = None
+        self.section_on = False
+        self.section_axis = 2
+        self.section_pos = 0.5
+        self.section_flip = False
+        self._sec_plane = None
+        self._sec_items: list = []                 # (actor, transform, cut actor)
         self.uv_on = False                         # UV layout shown beside the 3D view
         self.uv_tests: set = set()                 # active UV diagnostics (keys of UV_TESTS)
+        self.mesh_tests: set = set()               # active mesh diagnostics (keys of MESH_TESTS)
+        self._mesh_data = None                     # per-part mesh analysis; None until asked for
         self.uv_part = -1                          # -1 = all parts
         self.uv_backdrop_on = True
         self.uv_heat = "off"                       # off | density | stretch
         self.uv_th = dict(UV_HEAT_DEFAULTS)
         self._uv_ref = 0.0                         # reference texel density (area-weighted median)
         self._uv_data: list = []
+        self._uv_ready = False                     # UV analysis runs only on request
         self._uv_saved: dict = {}
         self._uv_tex_cache: dict = {}
         self._outline = self._outline_src = None
@@ -4552,7 +5313,15 @@ class Viewer(QWidget):
 
     # ----- scene state ------------------------------------------------------
     def clear_scene(self):
+        self._lod_reset()
+        self._measure_clear(render=False)
+        self._section_clear()
+        self._measure_result = None
         self._uv_saved, self._uv_data = {}, []
+        self._uv_ready = False
+        self.uv_tests, self.uv_heat = set(), "off"   # settings belong to the previous model
+        self._mesh_data = None
+        self.mesh_tests = set()                    # tests belong to the previous model; run them again
         self._uv_tex_cache = {}
         for a in self.actors:
             self.renderer.RemoveActor(a)
@@ -4600,6 +5369,9 @@ class Viewer(QWidget):
         self._update_info()
         self.uv_part = -1
         self.uv_refresh()
+        if self.section_on:
+            self._section_apply()
+        self.measure_changed.emit()
         if self._materials_panel is not None and self._materials_panel.isVisible():
             self._materials_panel.refresh()
 
@@ -5239,6 +6011,15 @@ class Viewer(QWidget):
             # W = wireframe, P = pick, E/Q = exit, ...) must never reach the scene: they changed the
             # ground grid and could alter other props.
             return True
+        if self.measure_on and self.actors:
+            # a click without a drag picks a point; drags still orbit, pan and zoom as normal
+            if t == QEvent.MouseButtonPress and ev.button() == Qt.LeftButton:
+                self._meas_press = (ev.position().x(), ev.position().y())
+            elif t == QEvent.MouseButtonRelease and ev.button() == Qt.LeftButton and self._meas_press is not None:
+                x0, y0 = self._meas_press
+                self._meas_press = None
+                if math.hypot(ev.position().x() - x0, ev.position().y() - y0) < 5.0:
+                    self._measure_pick(ev.position().x(), ev.position().y())
         if self.split_on and t in (QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.MouseButtonRelease,
                                    QEvent.MouseButtonDblClick) and self._split_visible():
             if self._split_event(ev, t):
@@ -5808,6 +6589,7 @@ class Viewer(QWidget):
         self._after_visibility()
 
     def _after_visibility(self):
+        self._section_sync_vis()
         self._sync_ground()
         self._sync_shadow()
         self._update_info()
@@ -6054,25 +6836,37 @@ class Viewer(QWidget):
         return out
 
     def uv_refresh(self):
-        """Re-analyse the open model, then bring the heatmap and the layout up to date."""
+        """A model opened: forget the old analysis. Nothing is calculated until the user asks (uv_ensure)."""
         self._uv_restore_heatmap()
-        self._uv_data = self._uv_collect()
-        dens, w = [], []
-        for d in self._uv_data:
-            if d is not None:
-                ok = d["m"]["valid"]
-                dens.append(d["m"]["dens"][ok])
-                w.append(d["m"]["area3"][ok])
-        self._uv_ref = weighted_median(np.concatenate(dens), np.concatenate(w)) if dens else 0.0
-        if self._uv_heat_active():
-            self._uv_apply_heatmap()
+        self._uv_data = []
+        self._uv_ready = False
         self._uv_update_layout()
         if self.actors:
             self.rw.Render()
         self.uv_changed.emit()
 
+    def uv_ensure(self):
+        """Run the UV analysis for the open model (once): tests, islands, density and stretch."""
+        if self._uv_ready or not self.actors:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._uv_restore_heatmap()
+            self._uv_data = self._uv_collect()
+            dens, w = [], []
+            for d in self._uv_data:
+                if d is not None:
+                    ok = d["m"]["valid"]
+                    dens.append(d["m"]["dens"][ok])
+                    w.append(d["m"]["area3"][ok])
+            self._uv_ref = weighted_median(np.concatenate(dens), np.concatenate(w)) if dens else 0.0
+            self._uv_ready = True
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._uv_recolor()
+
     def _uv_heat_active(self) -> bool:
-        return bool(self.uv_tests) or self.uv_heat != "off"
+        return bool(self.uv_tests) or bool(self.mesh_tests) or self.uv_heat != "off"
 
     def _uv_heat_colors(self, i: int):
         """Per-triangle colours of the chosen heatmap for part i (None when the heatmap is off)."""
@@ -6113,6 +6907,8 @@ class Viewer(QWidget):
         c = self.uv_counts()
         if not self.actors:
             summary = "Open a model to see its UV layout."
+        elif not self._uv_ready:
+            summary = "Press “Run UV tests” in the UV tab of the Materials panel to analyse the UVs."
         elif not c["has_uv"]:
             summary = ("This part has no UV coordinates." if self.uv_part >= 0
                        else "This model has no UV coordinates.")
@@ -6156,15 +6952,23 @@ class Viewer(QWidget):
     def _uv_apply_heatmap(self):
         for i, a in enumerate(self.actors):
             d = self._uv_data[i] if i < len(self._uv_data) else None
-            if d is None or id(a) in self._uv_saved:
+            md = None
+            if self.mesh_tests and self._mesh_data and i < len(self._mesh_data):
+                md = self._mesh_data[i]
+            src = d if d is not None else md
+            if src is None or id(a) in self._uv_saved:
                 continue
             try:
                 m = a.GetMapper()
                 pd = _mapper_data(m)
-                colors, _bad = uv_poly_colors(d["npoly"], d["parent"], d["flags"], list(self.uv_tests),
+                flags = dict(d["flags"]) if d is not None else {}
+                if md is not None:
+                    flags.update(md["flags"])
+                active = (list(self.uv_tests) if d is not None else []) + (list(self.mesh_tests) if md is not None else [])
+                colors, _bad = uv_poly_colors(src["npoly"], src["parent"], flags, active,
                                               base=self._uv_heat_colors(i))
                 full = np.tile(np.array(UV_COLOR_OK, np.uint8), (pd.GetNumberOfCells(), 1))
-                full[d["first"]:d["first"] + d["npoly"]] = colors
+                full[src["first"]:src["first"] + src["npoly"]] = colors
                 arr = numpy_support.numpy_to_vtk(np.ascontiguousarray(full), deep=True)
                 arr.SetName("gk_uvdiag")
                 cd = pd.GetCellData()
@@ -6221,6 +7025,7 @@ class Viewer(QWidget):
         if self.actors:
             self.rw.Render()
         self.uv_changed.emit()
+        self.mesh_changed.emit()
 
     def _uv_need_view(self):
         if self.mode != "surface":
@@ -6234,6 +7039,464 @@ class Viewer(QWidget):
             self._uv_need_view()
         else:
             self.uv_tests.discard(key)
+        self._uv_recolor()
+
+    # ----- measurements: size / volume, point-to-point tool, cross-section ------------------
+    def _world_parts(self) -> list:
+        """[(world-space points, triangles)] for the visible parts."""
+        out = []
+        for a in self.actors:
+            if not a.GetVisibility():
+                continue
+            try:
+                pd = _mapper_data(a.GetMapper())
+                if pd is None or pd.GetNumberOfPolys() == 0:
+                    continue
+                polys = pd.GetPolys()
+                tris, _par = fan_triangulate(numpy_support.vtk_to_numpy(polys.GetOffsetsArray()),
+                                             numpy_support.vtk_to_numpy(polys.GetConnectivityArray()))
+                if not len(tris):
+                    continue
+                pts = numpy_support.vtk_to_numpy(pd.GetPoints().GetData()).astype(np.float64)[:, :3]
+                try:
+                    a.ComputeMatrix()
+                except Exception:
+                    pass
+                m = a.GetMatrix()
+                M = np.array([[m.GetElement(i, j) for j in range(4)] for i in range(4)])
+                out.append((pts @ M[:3, :3].T + M[:3, 3], tris))
+            except Exception:
+                continue
+        return out
+
+    def measure_calculate(self):
+        if not self.actors:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self._measure_result = measure_model(self._world_parts()) or None
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.measure_changed.emit()
+
+    def set_units(self, src: str, disp: str):
+        keys = [k for k, _l, _f in UNITS]
+        if src in keys:
+            self.unit_src = src
+            self.settings.setValue("measure_src", src)
+        if disp in keys:
+            self.unit_disp = disp
+            self.settings.setValue("measure_disp", disp)
+        self._measure_rebuild()
+        self.measure_changed.emit()
+
+    def _annot_visible(self, on: bool):
+        for pr in self._meas_props:
+            pr.SetVisibility(bool(on))
+        for _a, _tr, cut in self._sec_items:
+            cut.SetVisibility(bool(on) and bool(_a.GetVisibility()))
+
+    # point-to-point tool
+    def set_measure_mode(self, on: bool):
+        self.measure_on = bool(on)
+        if not self.measure_on:
+            self._measure_clear()
+        else:
+            self.message.emit("Measure: click 2 or 3 points on the model (distance, then the angle at the middle point). "
+                              "Drag still orbits. Shift+R to stop.")
+        self.measure_changed.emit()
+
+    def toggle_measure_mode(self):
+        if not self.actors:
+            self.message.emit("Open a model first")
+            return
+        self.set_measure_mode(not self.measure_on)
+
+    def _measure_pick(self, x: float, y: float):
+        vis = [a for a in self.actors if a.GetVisibility()]
+        if not vis:
+            return
+        try:
+            pk = vtkCellPicker()
+            pk.SetTolerance(0.0005)
+            pk.PickFromListOn()
+            for a in vis:
+                pk.AddPickList(a)
+            dpr = self.vtk_widget.devicePixelRatioF()
+            _w, h = self._view_px()
+            ok = pk.Pick(x * dpr, h - y * dpr, 0, self.renderer)
+            if not ok or pk.GetCellId() < 0:
+                self.message.emit("No surface there: click on the model")
+                return
+            pos = np.array(pk.GetPickPosition(), float)
+        except Exception:
+            self.message.emit("That point could not be picked")
+            return
+        if len(self._meas_pts) >= 3:
+            self._measure_clear(render=False)
+        self._meas_pts.append(pos)
+        self._measure_rebuild()
+        self.measure_changed.emit()
+
+    def measure_readout(self):
+        """Raw numbers (model units) for the picked points, or None."""
+        pts = self._meas_pts
+        if not pts:
+            return None
+        out = {"n": len(pts)}
+        if len(pts) >= 2:
+            d = pts[1] - pts[0]
+            out.update(ab=float(np.linalg.norm(d)), delta=d)
+        if len(pts) == 3:
+            out.update(bc=float(np.linalg.norm(pts[2] - pts[1])), angle=angle_at(pts[0], pts[1], pts[2]))
+        return out
+
+    def _measure_clear(self, render: bool = True):
+        for pr in self._meas_props:
+            self.renderer.RemoveViewProp(pr)
+        self._meas_props = []
+        self._meas_pts = []
+        if render and self.actors:
+            self.rw.Render()
+            self.measure_changed.emit()
+
+    def measure_clear_points(self):
+        self._measure_clear()
+
+    def _measure_rebuild(self):
+        for pr in self._meas_props:
+            self.renderer.RemoveViewProp(pr)
+        self._meas_props = []
+        pts = self._meas_pts
+        if not pts or not self.actors:
+            if self.actors:
+                self.rw.Render()
+            return
+        lo, hi = self._model_bounds()
+        rad = max(float(np.linalg.norm(np.asarray(hi) - np.asarray(lo))) * 0.007, 1e-9)
+        cols = [(1.0, 0.55, 0.1), (0.1, 0.85, 0.95), (0.95, 0.3, 0.8)]
+        for i, q in enumerate(pts):
+            sp = vtkSphereSource()
+            sp.SetCenter(*q)
+            sp.SetRadius(rad)
+            sp.SetThetaResolution(18)
+            sp.SetPhiResolution(18)
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(sp.GetOutputPort())
+            a = vtkActor()
+            a.SetMapper(m)
+            a.GetProperty().SetColor(*cols[i])
+            a.GetProperty().LightingOff()
+            a.PickableOff()
+            self.renderer.AddActor(a)
+            self._meas_props.append(a)
+        k = unit_scale(self.unit_src, self.unit_disp)
+        for i in range(len(pts) - 1):
+            ls = vtkLineSource()
+            ls.SetPoint1(*pts[i])
+            ls.SetPoint2(*pts[i + 1])
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(ls.GetOutputPort())
+            a = vtkActor()
+            a.SetMapper(m)
+            a.GetProperty().SetColor(1.0, 0.85, 0.1)
+            a.GetProperty().SetLineWidth(2.5)
+            a.GetProperty().LightingOff()
+            a.PickableOff()
+            self.renderer.AddActor(a)
+            self._meas_props.append(a)
+            if vtkBillboardTextActor3D is not None:
+                try:
+                    t = vtkBillboardTextActor3D()
+                    t.SetInput(f"{fmt_num(float(np.linalg.norm(pts[i + 1] - pts[i])) * k)} {self.unit_disp}")
+                    t.SetPosition(*((pts[i] + pts[i + 1]) / 2.0))
+                    tp = t.GetTextProperty()
+                    tp.SetFontSize(18)
+                    tp.SetBold(True)
+                    tp.SetColor(1.0, 0.95, 0.4)
+                    tp.SetBackgroundColor(0.0, 0.0, 0.0)
+                    tp.SetBackgroundOpacity(0.55)
+                    t.PickableOff()
+                    self.renderer.AddActor(t)
+                    self._meas_props.append(t)
+                except Exception:
+                    pass
+        r = self.measure_readout()
+        if r and "ab" in r:
+            txt = f"Distance {fmt_num(r['ab'] * k)} {self.unit_disp}"
+            if "angle" in r:
+                txt += f"  ·  angle {r['angle']:.1f}°"
+            self.message.emit(txt)
+        self.rw.Render()
+
+    # cross-section: a clipping plane on every part plus a bright outline where the plane cuts
+    def _section_clear(self):
+        for a, _tr, cut in self._sec_items:
+            self.renderer.RemoveActor(cut)
+            try:
+                a.GetMapper().RemoveAllClippingPlanes()
+            except Exception:
+                pass
+        self._sec_items = []
+        self._sec_plane = None
+
+    def _section_apply(self):
+        """Build (or tear down) the clipping and outline for the current settings."""
+        self._section_clear()
+        if not (self.section_on and self.actors):
+            if self.actors:
+                self.rw.Render()
+            return
+        self._sec_plane = vtkPlane()
+        for a in self.actors:
+            try:
+                pd = _mapper_data(a.GetMapper())
+                a.GetMapper().AddClippingPlane(self._sec_plane)
+                tr = vtkTransform()
+                tf = vtkTransformPolyDataFilter()
+                tf.SetInputData(pd)
+                tf.SetTransform(tr)
+                cu = vtkCutter()
+                cu.SetCutFunction(self._sec_plane)
+                cu.SetInputConnection(tf.GetOutputPort())
+                m = vtkPolyDataMapper()
+                m.SetInputConnection(cu.GetOutputPort())
+                m.ScalarVisibilityOff()
+                cut = vtkActor()
+                cut.SetMapper(m)
+                cut.GetProperty().SetColor(1.0, 0.8, 0.1)
+                cut.GetProperty().SetLineWidth(3.0)
+                cut.GetProperty().LightingOff()
+                cut.PickableOff()
+                self.renderer.AddActor(cut)
+                self._sec_items.append((a, tr, cut))
+            except Exception:
+                continue
+        self._section_update()
+
+    def _section_update(self):
+        if self._sec_plane is None or not self.actors:
+            return
+        lo, hi = self._model_bounds()
+        ax = self.section_axis
+        o = (np.asarray(lo, float) + np.asarray(hi, float)) / 2.0
+        o[ax] = lo[ax] + (hi[ax] - lo[ax]) * self.section_pos
+        n = np.zeros(3)
+        n[ax] = -1.0 if self.section_flip else 1.0
+        self._sec_plane.SetOrigin(*o)
+        self._sec_plane.SetNormal(*n)
+        for a, tr, _cut in self._sec_items:
+            try:
+                a.ComputeMatrix()
+                tr.SetMatrix(a.GetMatrix())
+            except Exception:
+                pass
+        self._section_sync_vis()
+        self.rw.Render()
+
+    def _section_sync_vis(self):
+        for a, _tr, cut in self._sec_items:
+            cut.SetVisibility(bool(a.GetVisibility()))
+
+    def set_section(self, on: bool):
+        self.section_on = bool(on)
+        self._section_apply()
+        self.measure_changed.emit()
+
+    def set_section_axis(self, ax: int):
+        self.section_axis = max(0, min(2, int(ax)))
+        self._section_update()
+
+    def set_section_pos(self, frac: float):
+        self.section_pos = min(1.0, max(0.0, float(frac)))
+        self._section_update()
+
+    def set_section_flip(self, on: bool):
+        self.section_flip = bool(on)
+        self._section_update()
+
+    # ----- LOD / decimation preview ------------------------------------------------------------
+    def _lod_reset(self):
+        if self._lod_task is not None:
+            self._lod_task.cancelled = True
+        self._lod_task = None
+        self._lod_token += 1
+        self._lod_sets, self._lod_info, self._lod_level, self.lod_status = None, {}, 0, ""
+
+    def lod_generate(self):
+        if not self.actors or self._lod_task is not None:
+            return
+        inputs = []
+        for a in self.actors:
+            ds = getattr(a, "_lod_orig", None) or _mapper_data(a.GetMapper())
+            if ds is not None and isinstance(ds, vtkPolyData):
+                c = vtkPolyData()
+                c.ShallowCopy(ds)                   # shared arrays, read-only: the worker never touches the live one
+                inputs.append(c)
+            else:
+                inputs.append(None)
+        if not any(i is not None for i in inputs):
+            self.message.emit("There is no mesh data to simplify")
+            return
+        self._lod_token += 1
+        task = LodTask(self._lod_token, inputs)
+        task.signals.progress.connect(self._lod_progress)
+        task.signals.done.connect(self._lod_done)
+        task.signals.failed.connect(self._lod_failed)
+        self._lod_task = task
+        self.lod_status = "Simplifying …"
+        self.lod_changed.emit()
+        QThreadPool.globalInstance().start(task)
+
+    def _lod_progress(self, text: str):
+        if self._lod_task is not None:
+            self.lod_status = text
+            self.lod_changed.emit()
+
+    def _lod_failed(self, token: int, msg: str):
+        if token != self._lod_token:
+            return
+        self._lod_task = None
+        self.lod_status = "Simplification failed: " + msg if msg != "cancelled" else ""
+        self.lod_changed.emit()
+
+    def _lod_done(self, token: int, results: dict):
+        if token != self._lod_token:
+            return                                   # a different model was opened meanwhile
+        self._lod_task = None
+        orig_t = orig_v = 0
+        for a in self.actors:
+            ds = getattr(a, "_lod_orig", None) or _mapper_data(a.GetMapper())
+            if ds is not None:
+                orig_t += _face_count(ds)
+                orig_v += ds.GetNumberOfPoints()
+        self._lod_orig_counts = (orig_t, orig_v)
+        info = {}
+        for lvl, outs in results.items():
+            t = v = 0
+            for a, o in zip(self.actors, outs):
+                src = o if o is not None else (getattr(a, "_lod_orig", None) or _mapper_data(a.GetMapper()))
+                if src is not None:
+                    t += _face_count(src)
+                    v += src.GetNumberOfPoints()
+            info[lvl] = {"tris": t, "verts": v, "tcoords": all(
+                o is None or o.GetPointData().GetTCoords() is not None or
+                (getattr(a, "_lod_orig", None) or _mapper_data(a.GetMapper())).GetPointData().GetTCoords() is None
+                for a, o in zip(self.actors, outs))}
+        self._lod_sets, self._lod_info = results, info
+        self.lod_status = "Done. Pick a level to preview."
+        self.lod_changed.emit()
+
+    def set_lod(self, level: int):
+        """Show the original geometry (0) or a generated level (50, 25, 10)."""
+        level = int(level)
+        if not self.actors or (level != 0 and not (self._lod_sets and level in self._lod_sets)):
+            return
+        if level == self._lod_level:
+            return
+        self._uv_restore_heatmap()                  # colours live on the geometry that is about to change
+        for i, a in enumerate(self.actors):
+            m = a.GetMapper()
+            if not hasattr(a, "_lod_orig"):
+                ds = _mapper_data(m)
+                if ds is None or not isinstance(ds, vtkPolyData):
+                    continue
+                a._lod_orig = ds
+                a._lod_orig_faces = getattr(a, "_faces", None)
+                a._lod_orig_verts = getattr(a, "_verts", None)
+            new = None
+            if level != 0:
+                outs = self._lod_sets[level]
+                new = outs[i] if i < len(outs) else None
+            if new is None:
+                m.SetInputData(a._lod_orig)
+                a._faces, a._verts = a._lod_orig_faces, a._lod_orig_verts
+            else:
+                m.SetInputData(new)
+                a._faces, a._verts = _face_count(new), new.GetNumberOfPoints()
+        self._lod_level = level
+        # everything measured on the old geometry no longer applies
+        self.uv_tests, self.uv_heat = set(), "off"
+        self.mesh_tests = set()
+        self._mesh_data = None
+        self._measure_result = None
+        self.uv_refresh()
+        if self.section_on:
+            self._section_apply()
+        self._update_info()
+        self.rw.Render()
+        t = self._lod_info.get(level, {}).get("tris") if level else self._lod_orig_counts[0]
+        self.message.emit(f"Showing {'the original' if level == 0 else f'the {level}% LOD'}"
+                          + (f": {t:,} triangles" if t else ""))
+        self.lod_changed.emit()
+        self.mesh_changed.emit()
+        self.measure_changed.emit()
+
+    # ----- mesh integrity diagnostics ------------------------------------------------------
+    def mesh_ensure(self):
+        """Analyse every part once (on first use after a model opens). Cheap for normal assets, a few
+        seconds for multi-million-triangle scans."""
+        if self._mesh_data is not None:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        data = []
+        try:
+            for a in self.actors:
+                info = None
+                try:
+                    pd = _mapper_data(a.GetMapper())
+                    if pd is not None and pd.GetNumberOfPolys() > 0:
+                        polys = pd.GetPolys()
+                        tris, parent = fan_triangulate(numpy_support.vtk_to_numpy(polys.GetOffsetsArray()),
+                                                       numpy_support.vtk_to_numpy(polys.GetConnectivityArray()))
+                        if len(tris):
+                            pts = numpy_support.vtk_to_numpy(pd.GetPoints().GetData())
+                            r = mesh_diagnose(pts, tris)
+                            info = {"flags": r["flags"], "stats": r["stats"], "parent": parent,
+                                    "npoly": polys.GetNumberOfCells(),
+                                    "first": pd.GetNumberOfVerts() + pd.GetNumberOfLines()}
+                except Exception:
+                    info = None
+                data.append(info)
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._mesh_data = data
+        self.mesh_changed.emit()
+
+    def mesh_summary(self) -> dict:
+        """Totals over all parts for the Mesh tab (empty dict when nothing is analysed yet)."""
+        if not self._mesh_data:
+            return {}
+        out = {"parts": 0, "watertight": True, "volume": 0.0,
+               **{k: 0 for k in ("verts", "tris", "used", "loose", "unique_pos", "dup_verts", "pieces",
+                                 "boundary_edges", "nonman_edges", "winding_edges", "inverted_pieces")},
+               **{"n_" + k: 0 for k, *_r in MESH_TESTS}}
+        for d in self._mesh_data:
+            if d is None:
+                continue
+            out["parts"] += 1
+            st = d["stats"]
+            for k in ("verts", "tris", "used", "loose", "unique_pos", "dup_verts", "pieces",
+                      "boundary_edges", "nonman_edges", "winding_edges"):
+                out[k] += st[k]
+            out["inverted_pieces"] += st.get("inverted_pieces", 0)
+            out["watertight"] = out["watertight"] and st["watertight"]
+            out["volume"] += st["volume"]
+            for k, *_r in MESH_TESTS:
+                out["n_" + k] += int(d["flags"][k].sum())
+        return out
+
+    def _mesh_need_view(self):
+        if self.mode != "surface":
+            self.set_mode("surface")                # the colours show in the shaded view
+
+    def set_mesh_test(self, key: str, on: bool):
+        if on:
+            self.mesh_ensure()
+            self.mesh_tests.add(key)
+            self._mesh_need_view()
+        else:
+            self.mesh_tests.discard(key)
         self._uv_recolor()
 
     def set_uv_heat(self, mode: str):
@@ -6321,6 +7584,7 @@ class Viewer(QWidget):
         self._orbit_timer.stop()
         if saved["axes"]:
             self._axes_widget.SetEnabled(0)
+        self._annot_visible(False)                         # measurement marks and section outline stay out of the sheet
         cells = []
         try:
             # --- temporary scene: flat light, no sky/grid/edges/shadow, solid background, orthographic
@@ -6379,6 +7643,7 @@ class Viewer(QWidget):
                 self.set_background(self.bg_idx, announce=False)
             if saved["axes"]:
                 self._axes_widget.SetEnabled(1)
+            self._annot_visible(True)
             self.renderer.ResetCameraClippingRange()
             if saved["orbit"]:
                 self._orbit_timer.start(20)
@@ -6811,7 +8076,7 @@ class MainWindow(QMainWindow):
             ("Ctrl+L", v.cycle_lighting_preset),
             ("I", v.toggle_info),
             ("G", v.toggle_grid), ("F", v.fit_view), ("H", v.toggle_turntable),
-            ("V", v.cycle_view_channel), ("D", v.toggle_split), ("Shift+D", v.cycle_split_style), ("Shift+U", v.toggle_uv_view), ("Shift+M", v.open_materials_panel),
+            ("V", v.cycle_view_channel), ("D", v.toggle_split), ("Shift+D", v.cycle_split_style), ("Shift+U", v.toggle_uv_view), ("Shift+M", v.open_materials_panel), ("Shift+R", v.toggle_measure_mode),
             ("Shift+W", v.toggle_edges), ("Shift+G", v.open_scene_panel),
             ("Esc", self.close_viewer),
         ]
