@@ -193,7 +193,7 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 
 ## Measurements and cross-section
 
-![Cutaway](images/Cutaway.jpg)
+![Cutaway](images/Cutaway2.jpg)
 
 **Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
 
