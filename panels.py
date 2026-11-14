@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QListWid
 from formats import _cells, human_size
 from analysis import (
     EXPORT_FORMATS, LOD_LEVELS, MESH_TESTS, UNITS, UV_HEAT_DEFAULTS, UV_HEAT_MODES, UV_ISLAND_TESTS,
-    UV_TESTS, _fmt_len, collect_textures, fmt_num, material_summary, texture_channel_rgb, texture_facts,
+    UV_ISLAND_MAX_TRIS, UV_TESTS, _fmt_len, collect_textures, fmt_num, material_summary, texture_channel_rgb, texture_facts,
     texture_fingerprint, texture_to_array, unit_scale)
 
 
@@ -740,7 +740,7 @@ class MaterialsPanel(QWidget):
                                  "STL, PLY and most CAD files carry no UVs.")
         else:
             extra = f", {c['islands']:,} islands" if c["isl_ok"] else (
-                ". Island tests were skipped because the model is very large")
+                f". Island tests were skipped because the model has more than {UV_ISLAND_MAX_TRIS:,} triangles")
             self.uv_note.setText(f"{c['tris']:,} triangles analysed{extra}.")
 
     def _mesh_sync(self):

@@ -862,6 +862,9 @@ def uv_raster_overlaps(uv, tris, island, n_islands: int, res: int = 512, max_can
     return area, pairs
 
 
+UV_ISLAND_MAX_TRIS = 4_000_000      # about 1 s and 0.35 GB per million triangles; larger parts skip the island tests
+
+
 def uv_island_tests(points, uv, tris, flip, stack_ratio: float = 0.8, min_ratio: float = 0.05):
     """Overlapping / stacked / mirrored islands. Returns per-triangle bool flags, the island count, the
     number of islands involved in each test, and the 'flip' flags with whole mirrored islands taken out
@@ -1118,7 +1121,7 @@ def uv_collect_part(pd):
     flags = {"oob": diag["oob"], "flip": diag["flip"], "zero": diag["zero"],
              **{k: np.zeros(len(tris), bool) for k in UV_ISLAND_TESTS}}
     isl = None
-    if len(tris) <= 2_000_000:                          # island tests need real work: skip huge meshes
+    if len(tris) <= UV_ISLAND_MAX_TRIS:                 # island tests need real work: skip huge meshes
         try:
             isl = uv_island_tests(pts, uv, tris, diag["flip"])
             for k in UV_ISLAND_TESTS + ("flip",):

@@ -28,7 +28,7 @@ import sys
 import time
 
 from formats import ALL_EXTS, NO_MESH, UNSUPPORTED_PROPRIETARY, LoadError, asset_ext, human_size, load_scene
-from analysis import AUDIT_SECTIONS, LOD_LEVELS, MESH_TESTS, UNITS, UV_TESTS, audit_model, fmt_num
+from analysis import AUDIT_SECTIONS, LOD_LEVELS, MESH_TESTS, UNITS, UV_ISLAND_MAX_TRIS, UV_TESTS, audit_model, fmt_num
 
 FAIL_ON = {
     "holes": "open (boundary) edges",
@@ -171,7 +171,7 @@ def format_text(res: dict, want: set) -> str:
             row("UV", "no UV coordinates")
         else:
             row("UV", f"{_n(uv['tris'])} triangles · {_n(uv['islands'])} islands"
-                      + ("" if uv["island_tests_ran"] else " · island tests skipped (mesh too large)"))
+                      + ("" if uv["island_tests_ran"] else f" · island tests skipped (more than {UV_ISLAND_MAX_TRIS:,} triangles)"))
             found = [(lab, uv["tests"][k]) for k, lab, *_r in UV_TESTS if uv["tests"].get(k)]
             L.append("    triangles failing: " + (" · ".join(f"{lab.lower()} {_n(n)}" for lab, n in found) if found else "none"))
             th = uv["thresholds"]

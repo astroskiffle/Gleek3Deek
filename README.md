@@ -1,11 +1,12 @@
 # Gleek3Deek
 
-The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists. Spend less time digging through folders and more time creating.
-
+A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![Gleek3Deek](images/SplitCow_Matcap.jpg)
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -119,8 +120,6 @@ python main.py
 
 ## MatCap editor and presets
 
-![Matcap](images/matcap_laliqueGlassGirl.jpg)
-
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
@@ -173,7 +172,7 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
   - **Stacked islands** (purple): islands that sit (almost) exactly on top of each other, for example repeated parts sharing one texture area. This is often deliberate, but check it is what you meant.
   - **Mirrored islands** (pink): whole islands whose layout is the opposite way round to the model, so their texture reads mirrored (text and logos show it first).
   - A triangle that fails more than one active test is white; fine triangles are grey. The counts sit next to each test (islands for the last three).
-  - **How islands are found:** triangles that share vertices form an island, where vertices with the same 3D position and the same UV count as one (so a vertex split only for normals does not cut an island). Overlap is measured on a pixel grid (512 px per UV unit): more than about 80% shared with the smaller island counts as stacked, between about 5% and 80% as overlapping. Islands that only touch along their borders are not flagged. Meshes over 2 million triangles skip the island tests.
+  - **How islands are found:** triangles that share vertices form an island, where vertices with the same 3D position and the same UV count as one (so a vertex split only for normals does not cut an island). Overlap is measured on a pixel grid (512 px per UV unit): more than about 80% shared with the smaller island counts as stacked, between about 5% and 80% as overlapping. Islands that only touch along their borders are not flagged. Parts over 4 million triangles skip the island tests (they take about a second per million triangles, and memory grows with them), and the UV tab and reports say so.
 - **Heatmap** (the drop-down above the tests). The tests are drawn on top of the heatmap colours.
   - **Texel density:** how much texture resolution each triangle gets (UV area against 3D area), compared with the model's median (weighted by surface area, across all parts, so parts can be compared). Green is the median, blue is below the *too low* threshold, red is above the *too high* threshold. Defaults are ×0.5 and ×2; both are adjustable in the tab.
   - **Stretch (distortion):** how much the UVs distort the surface. 1 means no distortion; scale, rotation and mirroring do not count, only squashing and shearing. Green is 1, yellow half way and red at the warning value (default 2, adjustable).
@@ -192,8 +191,6 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 - Vertices at the same position count as joined, so UV and hard-edge seams are not reported as holes. A colour test replaces the texture while it is on, like the UV tests, and can be combined with them.
 
 ## Measurements and cross-section
-
-![Cutaway](images/Cutaway2.jpg)
 
 **Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
 
@@ -257,8 +254,6 @@ python cli.py ./assets -r --all --report audit.html     # one self-contained web
 **Notes.** The text output uses × and ≈, so it is written as UTF-8. The windowed Windows `.exe` prints to the terminal it was started from; for scripting, use `python cli.py` or a console build. Texel density and stretch figures use the default thresholds (×0.5 and ×2 of the median density, stretch 2).
 
 ## Reference sheets for AI 3D tools
-
-![RefSheet](images/dragon_reference_sheet.jpg)
 
 Press **Shift+F12** (or **Main ▾ → Reference sheet for AI 3D tools…**) to render the model from several angles onto one image, ready to upload to Meshy, Tripo, Rodin, Luma and similar 2D-to-3D tools.
 
