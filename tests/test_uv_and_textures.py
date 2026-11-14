@@ -42,3 +42,21 @@ def test_texture_audit_memory_and_flags():
     b = texture_audit(1000, 512, 4, 8, "Normal map")
     assert b["npot"] and b["space"] == "Linear"
     assert texture_audit(4096, 4096, 4, 8, "Base colour")["large"]
+
+
+def test_island_tests_are_skipped_only_above_the_triangle_limit(monkeypatch):
+    import types
+    import analysis
+    import fakes
+    monkeypatch.setattr(analysis, "numpy_support", types.SimpleNamespace(
+        vtk_to_numpy=lambda x: x.arr if hasattr(x, "arr") else x))
+    assert analysis.UV_ISLAND_MAX_TRIS == 4_000_000
+    ran = analysis.audit_model(fakes.actors("good"), "m.glb", {"uv"}, ("m", "m"))["uv"]["island_tests_ran"]
+    assert ran is True
+    import cli
+    monkeypatch.setattr(analysis, "UV_ISLAND_MAX_TRIS", 5)
+    monkeypatch.setattr(cli, "UV_ISLAND_MAX_TRIS", 5)         # cli keeps its own copy of the limit for the message
+    skipped = analysis.audit_model(fakes.actors("good"), "m.glb", {"uv"}, ("m", "m"))["uv"]["island_tests_ran"]
+    assert skipped is False
+    text = cli.format_text(analysis.audit_model(fakes.actors("good"), "m.glb", {"uv"}, ("m", "m")), {"uv"})
+    assert "island tests skipped (more than 5 triangles)" in text
