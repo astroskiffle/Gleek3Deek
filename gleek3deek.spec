@@ -9,6 +9,7 @@ onedir = os.environ.get("GLEEK_ONEDIR") == "1"
 
 datas, binaries, hiddenimports = [], [], []
 hiddenimports += collect_submodules("vtkmodules")        # VTK loads its modules lazily
+hiddenimports += ["cli", "formats", "analysis", "matcap", "gallery", "environment", "panels"]          # cli is only imported when a command-line option is used
 for pkg in ("assimp_py",):                               # optional; skipped if not installed
     try:
         d, b, h = collect_all(pkg)

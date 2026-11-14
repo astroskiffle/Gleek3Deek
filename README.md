@@ -1,12 +1,10 @@
 # Gleek3Deek
 
-The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists. Spend less time digging through folders and more time creating.
+A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-
 ![Gleek3Deek](images/SplitCow_Matcap.jpg)
-
 
 ## Features
 
@@ -119,7 +117,7 @@ python main.py
 
 ## MatCap editor and presets
 
-![Gleek3Deek Matcap](images/matcap_laliqueGlassGirl.jpg)
+![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
 
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
@@ -184,7 +182,7 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 
 ## Texture audit and mesh diagnostics
 
-**Materials & parts → Textures** lists every texture with its size, bit depth, channel count, colour space, and how many parts use it. It also shows an estimate of the graphics-card memory it needs, uncompressed and with typical block compression, and flags textures that are not a power of two or are 4096 px or larger. A total sits above the list. Memory figures are estimates (3-channel images are stored as 4, and mipmaps add a third). Colour space is inferred from the texture's role (base colour and emissive are sRGB, normal and occlusion/roughness/metallic are linear), because the pixels don't say.
+**Materials & parts → Textures** lists every texture with its size, bit depth, channel count, colour space, and how many parts use it. It also shows an estimate of the graphics-card memory it needs, uncompressed and with typical block compression, and flags textures that are not a power of two or are 4096 px or larger. A total sits above the list; an image that appears more than once (shared by several materials, or loaded twice by the importer) is counted once, and the repeat entries say so. Memory figures are estimates (3-channel images are stored as 4, and mipmaps add a third). Colour space is inferred from the texture's role (base colour and emissive are sRGB, normal and occlusion/roughness/metallic are linear), because the pixels don't say.
 
 **Materials & parts → Mesh** analyses the geometry only when you press **Run integrity tests**, so models open quickly. Until then it shows just the polygon, part and material counts. After the run:
 - Counts: triangles, vertices (and how many are at unique positions), parts (draw calls in the viewer), distinct materials (the minimum draw calls an engine needs), loose vertices, vertices sharing a position, separate pieces, open edges, non-manifold edges.
@@ -207,6 +205,46 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 - A level is a preview only: your file is not changed and **exports always use the original geometry**.
 - Switching level clears the UV, mesh and measurement results, because they describe the geometry that was showing. Run them again on the level you want to inspect.
 - Nothing is calculated until you press the button, so loading stays fast.
+
+## Command-line mode
+
+Run an audit from a console, without opening the window. Give a model file or a folder; any option starting with `-` selects this mode (`python main.py ...` and `python cli.py ...` do the same thing).
+
+```
+python cli.py model.glb --all
+python cli.py ./assets --recursive --mesh --textures --fail-on holes,flipped
+python cli.py ./assets -r --all --units mm:cm --json --report audit.json
+```
+
+| Option | What it adds |
+|---|---|
+| *(none)* | triangles, vertices, parts, materials, textures, UVs present, size |
+| `--textures` | each texture's size, bit depth, inferred colour space and estimated GPU memory (an image used twice counts once) |
+| `--mesh` | holes, non-manifold edges, zero-area and duplicate faces, inconsistent winding, inside-out pieces, loose vertices, pieces |
+| `--uv` | the UV tests, island counts, texel-density and stretch outliers |
+| `--measure` | bounding box, oriented box, surface area, volume, centre of mass |
+| `--lod` | triangle counts at the 50%, 25% and 10% levels (slow) |
+| `--all` | info, textures, mesh, uv and measure |
+| `--units m` / `--units mm:cm` | what one model unit means, and the unit to report in (mm, cm, m, in, ft) |
+| `--json` | JSON instead of text |
+| `--report FILE` | also write the output to a new file |
+| `-r`, `--recursive` | include sub-folders |
+| `-q`, `--quiet` | print nothing except errors |
+
+**Checks for scripts and CI.** `--fail-on` takes a comma-separated list of `holes`, `nonmanifold`, `degenerate`, `flipped`, `duplicates`, `open`, `uv-missing`, `uv-overlap`, `uv-bounds`, `uv-flipped`, `npot`. Limits: `--max-triangles N`, `--max-texture-mb MB`, `--max-texture-px PX`, `--max-materials N`. The data a check needs is switched on automatically.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | everything passed |
+| 1 | a `--fail-on` or `--max-*` check failed |
+| 2 | bad usage: wrong path, unknown option, or an unsafe `--report` |
+| 3 | some files could not be loaded |
+
+**Folders.** Supported files are audited one at a time and a summary table follows. By default each file is loaded in its own child process, so a corrupt file that crashes the loader or hangs (`--timeout`, default 300 s) is reported as an error and the run carries on; `--no-isolate` is faster but loses that protection. Files larger than `--max-size-mb` (default 1024) and anything past `--max-files` (default 2000) are skipped and listed.
+
+**Read-only by design.** This mode never changes, moves, copies or deletes a model, and has no commands that could. Symbolic links are skipped and never followed. The only file it can write is the `--report` file, which refuses to replace an existing file (unless `--force`), refuses a symbolic link, and refuses a place inside the folder being scanned.
+
+**Notes.** The text output uses × and ≈, so it is written as UTF-8. The windowed Windows `.exe` prints to the terminal it was started from; for scripting, use `python cli.py` or a console build. Texel density and stretch figures use the default thresholds (×0.5 and ×2 of the median density, stretch 2).
 
 ## Reference sheets for AI 3D tools
 
@@ -393,7 +431,14 @@ The `.exe` is large (VTK and Qt are bundled). STEP support through CadQuery is n
 
 ```
 Gleek3Deek/
-├── main.py                   # the whole application
+├── main.py                   # the window, the 3D viewer and the About dialog (start here: python main.py)
+├── formats.py                # file loading: format list, importers, GLB fixes (no windows)
+├── analysis.py               # texture audit, mesh checks, measurements, UV maths, LOD, export (no windows)
+├── cli.py                    # command-line mode (read-only audit of a file or folder)
+├── matcap.py                 # MatCap shaders, custom MatCap parameters, editor and preview
+├── gallery.py                # thumbnail grid, thumbnails, file icons, background loading
+├── environment.py            # sky, lighting and tone mapping, panorama handling, Environment panel
+├── panels.py                 # Materials, Info and Scene panels, export dialog
 ├── requirements.txt          # required packages
 ├── requirements-optional.txt # optional format support
 ├── run.bat                   # Windows launcher

@@ -2,11 +2,11 @@
 setlocal
 cd /d "%~dp0"
 
-for %%F in (main.py requirements.txt requirements-build.txt gleek3deek.spec) do (
+for %%F in (main.py formats.py analysis.py cli.py matcap.py gallery.py environment.py panels.py requirements.txt requirements-build.txt gleek3deek.spec) do (
     if not exist "%%F" (
         echo.
         echo Missing file: %%F
-        echo Keep build_exe.bat in the SAME folder as: main.py, requirements.txt, requirements-build.txt, gleek3deek.spec
+        echo Keep build_exe.bat in the SAME folder as: main.py, formats.py, analysis.py, cli.py, matcap.py, gallery.py, environment.py, panels.py, requirements.txt, requirements-build.txt, gleek3deek.spec
         echo ^(download or clone the whole project, not just this script^)
         pause
         exit /b 1

@@ -2,11 +2,11 @@
 setlocal
 cd /d "%~dp0"
 
-for %%F in (main.py requirements.txt) do (
+for %%F in (main.py formats.py analysis.py cli.py matcap.py gallery.py environment.py panels.py requirements.txt) do (
     if not exist "%%F" (
         echo.
         echo Missing file: %%F
-        echo Keep run.bat in the SAME folder as: main.py, requirements.txt
+        echo Keep run.bat in the SAME folder as: main.py, formats.py, analysis.py, cli.py, matcap.py, gallery.py, environment.py, panels.py, requirements.txt
         echo ^(download or clone the whole project, not just this script^)
         pause
         exit /b 1
