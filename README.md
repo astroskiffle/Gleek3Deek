@@ -258,6 +258,8 @@ python cli.py ./assets -r --all --report audit.html     # one self-contained web
 
 ## Reference sheets for AI 3D tools
 
+![RefSheet](images/dragon_reference_sheet.jpg)
+
 Press **Shift+F12** (or **Main ▾ → Reference sheet for AI 3D tools…**) to render the model from several angles onto one image, ready to upload to Meshy, Tripo, Rodin, Luma and similar 2D-to-3D tools.
 
 - **Layouts:** *4-view orthographic* (Front, Back, Left, Right; the best default) or *4-view 3/4 hybrid* (Front, 3/4 Front, Side, Back; helps with layered or overlapping geometry).
