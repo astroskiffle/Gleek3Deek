@@ -149,6 +149,9 @@ Notes:
 
 ## Split compare (MatCap vs normal shading)
 
+![splitcompare](images/france.jpg)
+
+
 Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's normal shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
 
 - **Drag the line or its round handle** to move the split. Dragging anywhere else orbits, pans and zooms as usual.
