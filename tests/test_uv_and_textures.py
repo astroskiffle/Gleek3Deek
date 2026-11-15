@@ -60,3 +60,50 @@ def test_island_tests_are_skipped_only_above_the_triangle_limit(monkeypatch):
     assert skipped is False
     text = cli.format_text(analysis.audit_model(fakes.actors("good"), "m.glb", {"uv"}, ("m", "m")), {"uv"})
     assert "island tests skipped (more than 5 triangles)" in text
+
+
+# ----- background analysis: cancel and per-part running ---------------------------------------
+def test_run_parts_order_failures_progress_and_cancel():
+    import pytest
+    from analysis import Cancelled, run_parts
+    seen, texts = [], []
+
+    def func(data, cancel):
+        seen.append(data)
+        if data == "bad":
+            raise ValueError("boom")
+        return data.upper()
+
+    out = run_parts(func, ["a", "bad", "c"], "Working", cancel=lambda: False, progress=texts.append)
+    assert out == ["A", None, "C"] and seen == ["a", "bad", "c"]          # a failing part gives None, the rest go on
+    assert texts == ["Working: part 1 of 3 …", "Working: part 2 of 3 …", "Working: part 3 of 3 …"]
+    assert run_parts(func, ["a"], "Working", progress=texts.append) == ["A"] and texts[-1] == "Working …"
+
+    calls = []
+    with pytest.raises(Cancelled):                                         # cancel pressed after the first part
+        run_parts(lambda d, c: calls.append(d), ["a", "b", "c"], "x", cancel=lambda: len(calls) >= 1)
+    assert calls == ["a"]
+
+
+def test_cancel_stops_a_part_between_its_stages():
+    import pytest
+    import types
+    import analysis
+    import fakes
+    from analysis import Cancelled, mesh_part_analysis, uv_collect_part
+    pytest.importorskip("numpy")
+    analysis.numpy_support = types.SimpleNamespace(vtk_to_numpy=lambda x: x.arr if hasattr(x, "arr") else x)
+    pd = fakes.actors("good")[0].GetMapper().GetInput()
+    assert uv_collect_part(pd)["m"] is not None and uv_collect_part(pd, cancel=lambda: False)["tris"] is not None
+    assert mesh_part_analysis(pd, cancel=lambda: False)["stats"]["tris"] == 12
+    for fn in (uv_collect_part, mesh_part_analysis):
+        with pytest.raises(Cancelled):
+            fn(pd, cancel=lambda: True)                                    # already cancelled: stops at the first check
+    n = {"i": 0}
+
+    def after_two():
+        n["i"] += 1
+        return n["i"] > 2                                                  # let two stages run, then cancel
+    with pytest.raises(Cancelled):
+        uv_collect_part(pd, cancel=after_two)
+    assert n["i"] == 3                                                     # it stopped at the first check after the flip
