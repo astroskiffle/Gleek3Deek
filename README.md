@@ -1,486 +1,293 @@
-# Gleek3Deek
+# RetroGleek
 
-A fast, minimalist, native 3D asset browser and viewer. Browse a folder of models as a thumbnail gallery, double-click to open any of them in an interactive 3D viewer. No Electron, no web view, just Python, Qt and VTK.
+A small, fast, **fully offline** image browser and viewer for Windows 10/11, with built-in support for
+**retro-computer picture formats** (Amiga, Atari, Commodore 64, ZX Spectrum, MSX, Amstrad CPC and hundreds more)
+through [RECOIL](https://github.com/pfusik/recoil).
 
-> **Status:** early release. Expect rough edges, and please report them in the Issues tab.
-
-![Gleek3Deek](images/SplitCow_Matcap.jpg)
+It builds into **one small `.exe`** using the C# compiler that already ships with Windows: no SDK, no installer,
+no NuGet packages and no internet connection.
 
 ## Features
 
-- **Folder tree + visual gallery:** nested folder navigation on the left, a grid of cards on the right. Only 3D formats are shown. The last opened folder is remembered.
-- **Real thumbnails:** rendered in the background and cached on disk, so revisiting a folder is instant.
-- **MatCap editor:** tweak a material's colours, light and gloss live, save/load presets as small JSON files, or load a sphere image (including ZBrush MatCap exports).
-- **Export / convert:** save the model as STL, OBJ or PLY, optionally simplified to a percentage of its faces.
-- **Model info:** a card with the model's vertex and face counts, dimensions, materials, textures and file size.
-- **Menus:** a File menu (open folder, export, quit) and a Help menu (About), alongside the keyboard shortcuts.
-- **Side panels:** Materials, MatCap, Environment and Scene panels in a right-hand drawer that you can tab, stack and collapse, with the layout remembered between sessions.
-- **Material views:** an albedo view (colours and textures with no lighting), a normals view, a texture inspector with channel previews, and a parts list to hide or isolate pieces of a model.
-- **Scene tools:** ground grid, field of view, saved camera views, edges over shaded, move to ground or origin, and screenshots with 1×/2×/4× size and a transparent background.
-- **Environment:** an infinite panorama sky, cheap hemispheric ambient light, one sun and a soft blob shadow, all fitted automatically from a panorama image. Built to stay fast on low-end machines.
-- **Gallery tools:** search, sort, a card-size slider, and a right-click menu to rename, copy, paste and delete files.
-- **Viewer tools:** auto-orbit, backgrounds, axes gizmo, standard views, orthographic mode, Z-up fix, screenshots, and previous/next browsing with the arrow keys.
-- **Instant viewer:** double-click a card (or a file in the tree). Auto-fits the camera to the model.
-- **MatCap shading:** press `M` to cycle five ZBrush-style MatCap materials (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal). They are original procedural shaders, not copies of ZBrush's images.
-- **Textures and colours:** glTF/GLB, OBJ+MTL and FBX/DAE/LWO materials, vertex colours and face colours.
-- **Never freezes:** all file parsing runs on background threads.
-- **Friendly errors:** a file that fails to load shows an error box inside the viewer instead of crashing the app.
+- **Folder tree + thumbnail grid.** The tree is lazy-loaded; folders are scanned and thumbnails are decoded on
+  background threads, so large folders stay responsive.
+- **Filter, sort and thumbnail size in one bar** above the thumbnails: filter the folder as you type (part of a name,
+  or `*` / `?` wildcards), pick a sort order (name, date modified, size, type) with a reverse arrow, and drag the size
+  slider to grow or shrink the thumbnails. Optional dimensions / platform line under every thumbnail, and a details
+  tooltip when you rest the pointer on a tile.
+- **Address bar** with back / forward / up buttons for navigating local folders.
+- **Full-canvas viewer.** Zoom, pan, a Fit-to-Screen toggle that stays on or off as you move between pictures, rotate,
+  flip, a checkerboard for transparent pictures, copy to the clipboard, delete, fullscreen, keyboard / mouse-wheel navigation through the
+  folder, and a **slideshow**.
+- **Pixel-art tools** in the viewer: whole-number zoom, a pixel grid, crisp, sharp or smooth enlargement, and a readout of
+  the x, y position and colour under the pointer.
+- **Formats.** JPEG, PNG, GIF, BMP and TIFF (Windows GDI+); WebP, AVIF, HEIC, JPEG XL, JPEG XR and camera RAW through
+  the decoders installed in Windows (see [Modern formats](#modern-formats-webp-avif-heic-jpeg-xl-camera-raw)); plus 567
+  retro file extensions (RECOIL).
+- **Save as PNG (lossless).** One picture or a whole selection; every PNG is read back and compared pixel by pixel
+  before it is kept.
+- **File management.** Rename, cut / copy / paste, drag-and-drop to move or copy, delete to the Recycle Bin, new folder.
+  Nothing is ever overwritten: a name that is already taken gets a number added.
+- **Menu bar** with every command and its shortcut.
+- Dark interface, high-DPI aware.
 
-## Download (Windows, no Python needed)
+## Privacy and security
 
-Go to the **[Releases](../../releases)** page, download `Gleek3Deek.exe` and double-click it. Nothing to install.
+- **No network code at all.** No sockets, HTTP, telemetry, update checks, licensing or cloud APIs. The program uses
+  only the .NET Framework that ships with Windows (`System`, `System.Drawing`, `System.Windows.Forms`,
+  `Microsoft.VisualBasic` for Recycle Bin deletes, `System.Xml`, and WPF's imaging classes, which reach the picture
+  decoders installed in Windows) plus the bundled `RECOIL.cs`, which is pure C# with no `unsafe` or native code. You can check this yourself: the whole program is a handful of readable C# files plus `RECOIL.cs`.
+- **Writes files only when you ask** (save, copy / cut / paste, drag-and-drop, rename, delete, new folder, audit report, retro-format conversion (new files only), a
+  lossless JPEG turn or a star rating written into a JPEG or PNG file after you confirm it, and
+  **marks.tsv** when you rate, label or tag a picture), plus one small plain-text **settings.ini** next to `RetroGleek.exe`, written when you close RetroGleek. It remembers the window
+  size and position, the folder-tree width, sort order, thumbnail size, details on tiles, retro formats on / off, the
+  viewer options (Fit to screen, checkerboard, enlarged pixels, True TV aspect, scanlines, phosphor mask, video signal, glow, curvature, automatic effects, presets, recent copy / move folders, favourite and recent folders, filmstrip, preview pane, info bar, EXIF panel, slideshow interval) and the last
+  folder. If that folder can't be written (for example Program Files), it goes to `%LOCALAPPDATA%\RetroGleek\` instead.
+  Never on a network location, and never in the registry. Delete it, or use Settings > Reset to default settings, to
+  start again with the defaults.
+- **Cloud placeholder files are never opened.** Files that OneDrive and similar services keep online-only are shown
+  as "cloud-only" tiles, so browsing cannot trigger a download. Network drives are not listed in the tree. Copying a
+  folder leaves the cloud-only files and folders inside it out, and says how many. Moving a folder that holds some to
+  another drive (which Windows does by copying, downloading them first) asks before it starts: move anyway, leave
+  that folder where it is, or cancel. Moves on the same drive download nothing.
+- **The address bar opens local drives only.** Network paths (`\\server\share`) are refused.
+- **Retro decoders are managed, bounds-checked code** with hard limits (32 MB per file, 16 million pixels per
+  picture). Any decoding error is caught and shown as a message instead of crashing the viewer.
+- The five standard formats are decoded by Windows' own GDI+, which Windows Update keeps patched.
 
-- The first launch takes a few seconds longer, because the single-file exe unpacks itself to a temporary folder each time it starts.
-- The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC". Choose **More info → Run anyway**. Some antivirus tools also flag PyInstaller programs by mistake; you can always run from source instead (below).
+## Build
 
-## Quick start (from source)
+Requirements: Windows 10 or 11 (which includes .NET Framework 4.x and its C# compiler).
 
-You need **Python 3.10 – 3.12** (3.9 and 3.13 may work depending on the VTK wheel available for your platform).
+1. Keep all the `.cs` files, `RetroGleek.manifest` and `build.bat` together in one folder.
+2. Double-click **`build.bat`**. It produces `RetroGleek.exe` next to them, and `RetroGleekCli.exe`, the optional
+   console companion for command-line audits (you only need it if you use the command line).
 
-**Windows:** double-click `run.bat`
+The source is written in C# 5 so that the compiler built into Windows can build it.
 
-**macOS / Linux:**
-```bash
-./run.sh
-```
+Run it with `RetroGleek.exe`, optionally followed by a folder or an image path, e.g. `RetroGleek.exe C:\Pictures`.
+You can also drag a file or folder onto the window, or use **Ctrl+O**.
 
-On first launch the script creates a private `.venv` folder, installs the dependencies, then starts the app. Later launches start immediately.
+## Using it
 
-You can also pass a folder or a model file:
-```bash
-./run.sh path/to/models
-run.bat C:\Models\chair.glb
-```
+Everything is in the **menu bar** (File, Edit, View, Effects, Go, Tools, Settings, Help; press **Alt** to use it from the
+keyboard), and every menu entry shows its keyboard shortcut. Entries that don't apply right now (for example viewer
+commands while you are browsing) are greyed out. **F1** lists every key on one page. The menu bar is hidden in
+fullscreen.
 
-### Manual install
+**Browser (folder tree and thumbnails)**
 
-```bash
-pip install -r requirements.txt
-pip install assimp-py      # optional: FBX / DAE / LWO / 3DS
-pip install DracoPy meshoptimizer   # optional: Draco / Meshopt compressed GLB
-python main.py
-```
-
-## Controls
-
-**Gallery**
-
-| Action | Input |
+| Action | Keys / mouse |
 |---|---|
-| Open an asset | Double-click a card or a file in the tree |
-| Go to a folder | Type or paste a path in the address bar at the left of the toolbar and press Enter (`Alt+D` jumps there). A file path opens that file. The bar turns red if the path does not exist. The **↑** button goes to the parent folder (`Alt+Up`) |
-| Search | Type in the search box (matches name and extension) |
-| Sort | Drop-down: name, date, size or type |
-| Card size | Slider at the right of the toolbar (remembered) |
+| Open a picture in the viewer | Double-click or Enter |
+| Move / select | Arrows, Home / End, PgUp / PgDn; Shift / Ctrl for multi-select; Ctrl+A; Ctrl+I inverts the selection (or right-click) |
+| Rubber-band select | Drag with the mouse, starting anywhere except on a selected picture; hold Ctrl to add to the selection. Dragging past the top or bottom edge scrolls |
+| Move or copy by dragging | Drag a **selected** picture (it carries the whole selection) onto a folder in the tree, or into Explorer. As in Explorer: same drive moves, another drive copies; hold **Ctrl** to copy or **Shift** to move. Files dropped onto the tree from Explorer work the same way |
+| Move or copy a folder | Drag the folder in the folder tree onto another folder (same rules), or right-click it > Cut, then Paste. Drives and Windows' own folders (Desktop, Documents, Pictures, your user folder, Windows, Program Files ...) can't be moved |
+| Copy to / Move to a folder | Ctrl+Shift+Y (copy) or Ctrl+Shift+M (move), or Edit > Copy to / Move to. Choose a folder, or one of the last 8 you used (remembered next time). Works on the selected pictures, on the folder chosen in the tree, and on the picture in the viewer (after a move the viewer shows the next picture). Same rules as every copy and move: local drives only, nothing is overwritten (a name that is taken gets a number), and Ctrl+Z undoes a move. Handy after culling: Edit > Select tagged, then Ctrl+Shift+M |
+| Cut and paste (move) | Ctrl+X, then Ctrl+V in another folder (or in Explorer). Works the other way round too |
+| Scroll / change thumbnail size | Mouse wheel / the **Size** slider (or Ctrl + wheel) |
+| Filter the folder by name | The **Filter** box is always visible: type in it (`*` and `?` are wildcards, spaces mean "and"); Ctrl+F jumps to it, Esc clears it |
+| Undo | Ctrl+Z (or Edit > Undo, which names what it will undo) puts back the last rename, batch rename or move, up to 20 steps while RetroGleek runs. Nothing is overwritten: an item whose old name has been taken since, or that is gone, is skipped and listed. Copies and deletes are not undone (deleted files are in the Recycle Bin) |
+| Folder audit report | Ctrl+Shift+A (or Tools > Folder audit report). Checks every picture file in the open folder (not subfolders), including retro files that can't be opened, and saves one self-contained HTML page where you choose. For each file: name, your rating, colour label and tag, type, platform (Amiga, ZX Spectrum, C64, Atari ST ...), whether it opened (and why not), size, dimensions, frames, number of colours, date, a thumbnail and a SHA-256 fingerprint (exact duplicates are marked). The page can be searched, filtered by platform, type, status and marks (tagged, rated, stars, colour label, no marks), sorted by any column, and exported as CSV. It works offline and loads nothing from the internet. For a much smaller file, use Tools > Folder audit report, no thumbnails. Files with very generic extensions (`.raw`, `.img` ...) are listed only if they really are pictures |
+| Compare side by side | Select exactly two pictures, then Ctrl+Shift+C (or View > Compare side by side, or right-click). Each picture gets half the window with its own info bar. Zooming (Ctrl + wheel, + / -, 1..9) or dragging in either one moves the other to the same zoom and position, so pictures of the same size line up pixel for pixel; fit (0, double-click) fits each picture to its half. Rotate, flip, pixel grid, crisp / sharp / smooth, info bar, checkerboard and EXIF apply to both. Esc (or Ctrl+Shift+C) goes back to the browser |
+| Contact sheet | Select pictures, then Tools > Contact sheet (lossless PNG). Choose small, medium or large thumbnails (12, 10 or 8 per row), a dark or light background (light is better for printing), and whether to show ratings, colour labels and tags. Each thumbnail gets its name and its original resolution and platform (retro pictures) or size and type (photos) underneath; retro pictures are enlarged with hard edges, photos are never enlarged. At most 100 pictures per sheet: a bigger selection becomes numbered pages (`name_001.png`, `name_002.png` ...), and one export takes at most 2,000 pictures (for a whole collection, use the audit report). Before anything is written you see how many pages it will be and roughly how big, and RetroGleek checks there is enough free space. Built one page and one picture at a time in the background, so memory use stays bounded however many pictures there are (well under 100 MB while a page is saved and checked). Every page is a verified lossless PNG; nothing is overwritten without asking. Pictures that can't be opened keep their place, marked |
+| Convert to a retro format | Select pictures (or open one in the viewer), then Ctrl+Shift+E (or Tools > Convert to a retro format). Makes a new file for each picture in a retro-computer format: **ZX Spectrum screen** (`.scr`: 256 x 192, ink and paper per 8 x 8 block), **C64 Koala Painter** (`.koa`: 160 x 200 multicolour, a shared background plus 3 colours per 4 x 8 cell), **C64 Doodle** (`.dd`: 320 x 200 hires, 2 colours per 8 x 8 cell), **Amstrad CPC screen** (`.scr`: mode 0, 160 x 200 with 16 of the CPC's 27 colours, or mode 1, 320 x 200 with 4 of them; the mode and colours are stored in the screen's unused bytes, and the file has an AMSDOS header so a real CPC can load it at &C000; a name with a `.pal` file beside it is skipped, as RECOIL would use that file's colours), **Atari ST Degas** (`.pi1`: 320 x 200, the 16 colours that suit the picture best, from the ST's 512), **Amiga IFF** (`.iff`: 320 x 256, 32 colours from the Amiga's 4096), **MSX Screen 2** (`.sc2`: 256 x 192, foreground and background colour per 8 x 1 strip) or **MSX2 Screen 8** (`.sc8`: 256 x 212, 256 fixed colours). Choose whole picture (black borders) or fill the screen (edges cropped), and dithering: none, an ordered pattern (the typical look of the time) or error diffusion; a preview shows the first picture exactly as the new file will look. The originals are never changed and nothing is overwritten (a name that is taken gets a number). Converting is lossy by nature: each picture is reduced to the machine's colours and colour rules. Every new file is checked before it is kept: RECOIL decodes it and every pixel must match what the converter meant; the machine's colours are taken from RECOIL too, so the viewer shows exactly the same picture. The last format and options chosen are kept while RetroGleek runs |
+| Batch rename | Select pictures, then Ctrl+F2 (or Tools > Batch rename, or right-click). Type a pattern: `#` is the number (`###` gives 001, 002 ...), `[name]` is the current name, so `holiday_###` or `C64_[name]` both work; choose the first number. A preview lists every old and new name; names that would clash with an existing file, appear twice or are not allowed are shown in orange and stop the rename. Extensions are kept, pictures are numbered in grid order, and nothing is overwritten |
+| Details list | Ctrl+Shift+D, the **Details** button next to the filter box, or View > Details list: one row per picture with a small thumbnail, Name, Rating, Label, Type, Platform, Dimensions, Size, Modified and Status (cloud-only, or why a picture could not be opened). Click a column title to sort by it, click again to reverse. The Size slider sets the row height; the list and the thumbnails each keep their own size. Platform and dimensions fill in as pictures are read; when you sort by them, RetroGleek reads the rest of the folder in the background and sorts once more when it has them all. Remembered next time |
+| Analyse folder | Tools > Analyse folder reads every listed picture in the background (with the Subfolders switch, those below too) and fills in the Details list's **Frames** and **Colours** columns and duplicate marking ("Duplicate of ..." in Status, from a SHA-256 fingerprint), with the same full checks as the audit. Progress shows in the status bar; the menu entry becomes Stop analysing; opening another folder stops it. Sorting by Frames or Colours starts it by itself. Results are kept for each file while RetroGleek runs, so coming back or refreshing doesn't repeat the work |
+| Search subfolders | The **Subfolders** switch next to the filter box (or Ctrl+Shift+F, Edit > Include subfolders): lists the pictures in this folder and every folder below it, so the filter searches them all. Hidden and system folders are skipped, and a search stops at 20,000 pictures. The switch turns itself off when you open another folder or drive (refreshing the same folder keeps it on); resting the pointer on a tile shows which subfolder it is in |
+| Address bar | Ctrl+L, type or paste a local path, Enter |
+| Preview pane | Alt+P (or View > Preview pane) shows a large preview of the focused picture to the right of the thumbnails or the Details list, with its name, dimensions, platform, size, date, marks (and its subfolder when Subfolders is on). Retro pictures are enlarged with hard edges. Drag its left edge to make it wider or narrower. Off by default; on / off and its width are remembered next time |
+| Favourite folders | Ctrl+D (or Go > Favourites > Add this folder, or right-click a folder in the tree) adds the open folder; it appears with a star in the folder tree after Desktop, Documents, Downloads and Pictures, and in Go > Favourites. Ctrl+D again, or right-click > Remove from favourites, takes it off the list (the folder itself is never touched). Up to 20, remembered next time. A favourite in the tree is a shortcut: it can't be dragged, renamed or deleted from there |
+| Recent folders | Go > Recent folders lists the last 10 folders you opened, remembered next time |
+| Back / forward / up one folder | Alt+Left / Alt+Right / Alt+Up (or Backspace), or the buttons |
+| Sort | The **Sort** pull-down (name, date modified, size, type, platform, dimensions, frames, colours, status, rating, label) and its arrow button to reverse; or right-click > Sort by |
+| Details on tiles | Right-click > Show details on tiles; rest the pointer on a tile for a tooltip |
+| Rate, colour-label and tag pictures | `Alt+1` .. `Alt+5` give 1 to 5 stars (`Alt+0` removes the rating); `Shift+1` .. `Shift+5` give a red, yellow, green, blue or purple colour label (`Shift+0` removes it); `X` tags or untags. They work on the selected pictures here, and on the picture shown in the viewer (also during a slideshow); Edit > Rating / Colour label / Tag do the same. Marks show on the thumbnails (stars at the bottom left, a colour strip along the top, a tick for the tag), in the Details list's Rating and Label columns, and in the viewer's info bar. Settings > Move to the next picture after marking makes culling quicker. Marks are kept in `marks.tsv` next to `settings.ini`, not inside the pictures, so they work for every format (Edit > Rating > Write my ratings into the files copies your stars into JPEG and PNG files, see below). They follow pictures you rename or move in RetroGleek (and undo), and pictures moved in Explorer (or whose folder was moved or renamed there): a picture with no mark gets the mark of a file with the same name, size and date that is no longer where it was (on a drive that is still connected, so an unplugged USB stick keeps its marks; a copy never takes a mark). A picture renamed in Explorer keeps its mark too, when that is certain: exactly one marked picture has gone from the same folder, and the renamed picture is the only file there with its size and date. A mark stops applying if its file is changed or replaced |
+| Ratings stored in photos | Star ratings that Windows Explorer, Lightroom and other programs store inside JPEG, TIFF and PNG files (the EXIF Rating tag or XMP `xmp:Rating`) are shown too, in silver instead of gold: on the thumbnails, in the Details list, the viewer's info bar ("(in the file)"), the preview pane, the audit report (with a Rating source column in the CSV) and contact sheets. They count for the Show pull-down and for sorting by rating; while you filter or sort by rating, RetroGleek reads them in the background for the rest of the folder. RetroGleek reads them, and changes them (in JPEG and PNG files) only when you ask (next row). Your own rating (Alt+1..5) takes their place; Alt+0 removes yours, and the file's rating shows again |
+| Write ratings into JPEG and PNG files | Edit > Rating > Write my ratings into the files (JPEG, PNG), on the selected pictures or the picture in the viewer. Copies your RetroGleek star rating into each file's XMP (`xmp:Rating`, and the Windows EXIF rating tags if the file already has them), so Windows Explorer, Lightroom and other programs that read XMP see it. In a PNG the XMP goes into the standard `iTXt` chunk (`XML:com.adobe.xmp`) just before the picture data. Always asks first, because it changes the files. Only the information block changes; the picture data (and in a PNG every other chunk) is copied byte for byte, so no quality is lost and every other XMP property is kept. Each new file is checked (same picture data, the rating reads back) before it replaces the old one. Pictures with no RetroGleek rating, other formats (TIFF included), and files whose XMP can't be changed safely (extended or compressed XMP, unreadable XML, a damaged PNG chunk) are left alone, with the reason. Colour labels and tags stay in RetroGleek only |
+| Show only marked pictures | The **Show** pull-down next to the filter box (or View > Show): all pictures, tagged / not tagged, 1 to 5 stars or more, no rating, one colour label, or no label. Works together with the name filter. Edit > Select tagged selects the tagged pictures, ready to copy, move, rename, export or delete; Edit > Clear tags in this view removes the tags. Sort by Rating or Label with the Sort pull-down or the column titles. The status bar shows how many pictures are tagged |
+| Rename, Cut, Copy, Paste, Delete (Recycle Bin), Refresh | F2, Ctrl+X, Ctrl+C, Ctrl+V, Del, F5 (or right-click). The open folder also refreshes by itself when files in it are added, changed, renamed or deleted, and keeps your selection. The folder tree updates itself too when folders are created, deleted or renamed (also in Explorer), without closing the folders you have open, and USB sticks / memory cards appear and disappear as you plug them in or out |
+| Turn JPEG photos on disk, without loss | Ctrl+Shift+R (clockwise) / Ctrl+Shift+L (counter-clockwise), or Edit > Turn the file (also 180 degrees), on the selected JPEG photos or the photo in the viewer; in the viewer, File > Save the turn into the JPEG saves the turn you made with R / L. Always asks first, because it changes the files. Nothing is re-compressed, so no quality is lost: a photo with an EXIF orientation tag just gets a new tag value (Windows, browsers and RetroGleek all honour it); one without a tag is turned block by block with Windows' lossless JPEG transform, only when its width and height are whole multiples of the JPEG block size (otherwise it is left alone, with the reason). Each new file is written under a temporary name and checked (the orientation read back, or the picture compared with the original turned) before it replaces the old one. Ratings, labels and tags stay with the photo. Other formats are never changed (Save as PNG keeps a turned copy) |
+| Save selection as lossless PNG | Ctrl+S (or right-click) |
+| Save every frame / page as PNG | Ctrl+Shift+S (or File > Export all frames as PNG, or right-click): each frame of an animated GIF or WebP, or each page of a multi-page TIFF, becomes its own verified lossless PNG (`name_frame001.png` ...) in a folder you choose. Frames are saved as they are shown. Pictures with only one frame are skipped and listed |
+| Show / hide retro-computer formats | F8 (or right-click) |
+
+While you are typing in the filter or address box, editing keys (Del, Backspace, Ctrl+C / V ...) act on the text,
+never on your files.
 
 **Viewer**
 
-| Action | Input |
+| Action | Keys / mouse |
 |---|---|
-| Orbit / Zoom / Pan | Left / Right / Middle mouse drag (scroll also zooms). Orbit is a turntable by default; press `H` for free rotation |
-| Previous / next model in the folder | `←` / `→` (or the ‹ › buttons) |
-| Auto-orbit turntable | `O` (pauses while you drag; speed is in the **View** menu) |
-| Cycle background | `B` (more options, including a custom colour, in the **View** menu) |
-| Axes gizmo on/off | `A` |
-| Perspective / orthographic | `C` |
-| Standard views | `1` Front, `2` Back, `3` Right, `4` Left, `5` Top, `6` Bottom, `7` Isometric |
-| Z-up model fix | `U` (remembered per file; also fixes its thumbnail) |
-| Transparency on/off | `T` (models load solid; this restores a material's own transparency, for models that have any) |
-| Save screenshot | `F12` (2x resolution PNG, without the gizmo) |
-| Copy screenshot | `Ctrl+C` |
-| Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
-| Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Framer, RoughMetal, then normal shading) |
-| MatCap editor | `E` (or **Panels → MatCap**) |
-| Environment on/off | `L` |
-| Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
-| Scene settings panel | `Shift+G` (or **Panels → Scene**) |
-| Hide/show the whole side panel | `Ctrl+B` (or the arrow on the right edge) |
-| Cycle material view: shaded, albedo, normals | `V` |
-| Reference sheet for AI 3D tools (Meshy, Tripo, Rodin, Luma) | `Shift+F12` (or **Main ▾ → Reference sheet…**) |
-| UV layout beside the model | `Shift+U` (or **Main ▾ → UV layout beside the model**) |
-| Measure between points (Measure tab) | `Shift+R` |
-| Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
-| Split style: vertical, horizontal, diagonal | `Shift+D` |
-| Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
-| Ground grid on/off | `G` |
-| Fit the model in view (keeps your angle) | `F` |
-| Lock the horizon (turntable) / free rotation | `H` (on by default) |
-| Edges over shaded | `Shift+W` |
-| Save / return to a camera view (1–3) | `Ctrl+Shift+1…3` / `Alt+1…3` |
-| Export / convert | `Ctrl+E` (or **File → Export / convert…**) |
-| About | `F1` (or **Help → About**) |
-| Open folder | `Ctrl+O` (**File → Open folder…**) |
-| Environment settings | `Shift+L` (or **Panels → Environment**) |
-| Cycle built-in lighting presets | `Ctrl+L` (or **Main ▾ → Lighting preset**) |
-| Rotate the lighting and sky | `Shift` + right-drag in the viewer (with the environment on) |
-| Reset camera | `R` |
-| Close viewer | `Esc` or the ✕ button |
+| Previous / next picture | Left / Right, PgUp / PgDn, Space / Backspace, mouse wheel |
+| First / last picture | Home / End |
+| Zoom | Ctrl + wheel; `+` / `-` (whole-number steps above 100 %); `1`..`9` jump to 100 %..900 % |
+| Pan | Click and drag |
+| Fit-to-Screen on / off | `F`. Off: every picture opens at 100 % (the default). On: every picture is scaled to fit the window. The choice stays for the following pictures and is remembered next time |
+| Fit this picture / actual size | `0` / `1`; double-click toggles |
+| Flip left-right / top-bottom | `H` / `V` (included when you save or copy the picture) |
+| Checkerboard behind transparent pictures | `B` (remembered next time) |
+| True TV aspect (retro pictures) | `T` (or Effects > True TV aspect). RECOIL already doubles pixels by whole numbers (a C64 multicolour picture of 160 x 200 is shown 320 x 200); this also gives each pixel the exact shape it had on a PAL / NTSC TV, from RECOIL's figures for that machine (for example C64 PAL pixels are 0.94 wide for 1 high, ZX Spectrum 1.05). Pictures without known figures are shown unchanged. The info bar shows the original resolution and "TV aspect". Display only: saved and copied pictures are never changed. Remembered next time |
+| Scanlines (retro pictures) | `K` cycles off / light / medium / strong (or Effects > Scanlines). Each original screen line is drawn as a soft beam with a dark gap between lines, as on a CRT, one per original line (an interlaced 640 x 400 picture of 200 lines gets 200). Bright colours make a wider beam that fills more of the gap, and the picture is brightened to make up for the gaps. Shown from about 300%; with scanlines on, fitting uses the largest whole-number size so every line is equally thick. Hidden while the picture is turned on its side (R / L to 90 or 270 degrees) and back when it is upright again. Display only. Remembered next time |
+| Video signal (retro pictures) | `C` cycles RGB / S-Video / composite (or Effects > Video signal). RGB shows the picture as decoded. S-Video and composite show it as it reached a TV through those cables: the picture's brightness and colour are blurred along each line by the signal's limited bandwidth, colour much more than brightness, and composite more than S-Video. That is what made 1-pixel dithering (checkerboards and stripes, common in C64, Amiga and Atari ST art) blend into solid in-between colours on a real TV. Lines stay separate, and hires pictures get the same blur on screen as lores ones. Worked out once per picture. Not shown: the rainbow fringes and crawling dots of real composite video, which depend on each machine's exact timing. Display only; the colour readout still shows the picture's own colours. Remembered next time |
+| Glow (retro pictures) | `W` cycles off / soft / strong (or Effects > Glow). Bright areas light up their surroundings with a soft halo, as on a CRT, most visible with white or bright text on a dark background. The halo spreads about one and a half original screen lines and is added on top of scanlines and mask. Worked out once per picture. Display only. Remembered next time |
+| Screen curvature (retro pictures) | `U` cycles off / slight / strong (or Effects > Screen curvature). The picture bulges like the glass of a CRT, with darker, rounded corners. The visible part of the picture is the screen: when you zoom in, the window is the glass. Because it bends the picture's pixels, it switches itself off at 800% and above, where the pixel grid and the pixel outline need exact pixels; near the edges, the x, y readout gives the pixel before bending. Automatic mode keeps your own curvature setting, since it is a matter of taste, and stays on when you change it; presets include it. Display only. Remembered next time |
+| Automatic screen effects | `A` (or Effects > Automatic) gives every retro picture the effects of the screen its computer was usually seen on, from the platform RECOIL reports: for example a Commodore 64 gets the S-Video look of a 1702 / 1084 monitor with a slot mask, a ZX Spectrum a home TV through the aerial socket (composite), an Amiga the RGB picture of a 1084S, an Atari ST in 640 x 400 the sharp SM124 mono monitor (no scanlines, no mask), and LCD machines (Portfolio, HP 48, Psion) no CRT effects at all. True TV aspect is always on. These are typical set-ups; many machines were used with more than one kind of screen. The flash message and the Effects menu say which screen was chosen. Your own settings are kept aside meanwhile and `A` again brings them back; changing any single effect while automatic is on keeps what you see, with your change, as your own settings. Curvature is the exception: automatic never chooses it, so `U` changes it and automatic stays on. Remembered next time |
+| Screen effects presets | Effects > Save these effects as a preset... saves the current TV aspect, scanlines, mask, video signal, glow and curvature under a name (up to 9). Use one with `Ctrl+1` .. `Ctrl+9` (top row or keypad) or from the Effects menu; Effects > Delete a preset removes one. A preset also ends automatic mode. Saving with automatic on suggests the computer's name. Presets are written to settings.ini straight away |
+| All screen effects off / on | `O` (or Effects > Show screen effects) turns True TV aspect, scanlines, mask, video signal, glow and curvature off together, to compare with the picture as decoded; `O` again, or changing any effect, brings them back. Each effect keeps its own setting. Every start shows the effects |
+| Phosphor mask (retro pictures) | `M` cycles off / aperture grille / slot mask / dot mask (or Effects > Phosphor mask). The fine pattern of red, green and blue phosphors on a CRT: aperture grille is the stripes of a Sony Trinitron, slot mask the staggered slots of most TVs and monitors such as the Commodore 1084S, dot mask a fine pattern of dots. Drawn in screen pixels (twice as wide on very high-resolution screens), so it stays still while you pan. Shown from 200%; works with or without scanlines. Hidden while the picture is turned on its side. Display only. Remembered next time |
+| Copy the picture to the clipboard | Ctrl+C (as you see it: rotation and flips included) |
+| Delete the picture (Recycle Bin) | Del, then the next picture is shown |
+| Rotate clockwise / counter-clockwise | `R` / `L` |
+| Slideshow | `S` starts / stops; Up / Down change the interval while it runs; Esc also stops it |
+| Pixel grid | `G` (drawn at 800 % and above) |
+| Filmstrip | `J` (or View > Filmstrip) shows a row of small thumbnails of the folder along the bottom, with the current picture in the middle and outlined; click one to show it. The picture is fitted above the strip. Hidden during a slideshow and when the folder has only one picture. Remembered next time |
+| Loupe | Hold `Z` over the picture: a round magnifier around the pointer at 4 times the current size (at least 400 %), showing the picture's own pixels sharply with the pixel under the pointer outlined. Handy with Fit-to-Screen. Gone when you let go of `Z` |
+| Rate, colour-label, tag | `Alt+0` .. `Alt+5`, `Shift+0` .. `Shift+5`, `X`, as in the browser; the info bar shows the picture's marks |
+| Crisp / sharp / smooth enlargement | `N` cycles crisp, sharp and smooth (retro pictures default to sharp, photos to smooth). Sharp keeps every pixel the same size when the zoom is not a whole number (for example with Fit-to-Screen or True TV aspect): the picture is enlarged with hard edges to the next whole number, then shrunk smoothly to the exact size, so only the screen pixel where two picture pixels meet is blended. Display only |
+| Info bar | `I` (also shows the x, y and colour under the pointer, and the frame number of an animated GIF or WebP) |
+| EXIF details (camera, lens, date, exposure, GPS ...) | `E`. Works for JPEG and TIFF photos, and for HEIC, AVIF, camera RAW and the other formats Windows' own decoders open, whenever the file holds these details |
+| Animated GIF or WebP: pause / play, previous / next frame | `P`; `,` / `.`. Animated WebPs play in the viewer with their own frame times; each frame is decoded by Windows' WebP decoder and the frames are put together as browsers do. A very long or very large animation (more than about 384 MB of frames) shows its first frame |
+| Save current picture as lossless PNG | Ctrl+S |
+| Back to the browser / leave fullscreen | Esc |
 
-## MatCap editor and presets
+Everywhere: **F11** fullscreen, **Ctrl+O** open, **F1** every key on one page, plus about / credits.
 
-![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
+## Command-line audit
 
-Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
-
-- **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
-- **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
-- **Colours:** shadow, body, light, rim and gloss.
-- **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
-- **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
-
-```json
-{
-  "gleek3deek_matcap": 1,
-  "name": "My Wax",
-  "type": "procedural",
-  "params": { "body": [0.78, 0.10, 0.07], "light_az": -33, "spec_tight": 0.55 }
-}
-```
-
-Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
-
-- **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
-
-Notes:
-- Image MatCaps are deliberately low resolution, so smooth materials look right but very sharp highlights get softened.
-- The image is turned into a compact smooth formula inside the shader (no lookup table or texture), which keeps rendering fast. If a graphics driver rejects the full-detail version, the viewer automatically retries with a simpler one.
-- ZBrush's own `.ZMT` material files can't be read; export the sphere as an image first.
-- If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
-
-## Split compare (MatCap vs normal shading)
-
-![splitcompare](images/france.jpg)
-
-
-Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's normal shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
-
-- **Drag the line or its round handle** to move the split. Dragging anywhere else orbits, pans and zooms as usual.
-- **Double-click** the line to snap it back to the centre.
-- **`D`** hides or shows the split without losing its position. **`Shift+D`** cycles vertical, horizontal and diagonal. **Main ▾ → Split style** also has *Swap sides* and *Reset divider to centre*.
-- **Edges over shaded** (`Shift+W`) is drawn on the normal-shaded half of the split.
-- The split shows while a MatCap is active (`M`). Cycling back to normal shading hides it and it returns with the next MatCap.
-- The MatCap shader is re-baked with the new position shortly after you move the line, so with image MatCaps the shading can trail the line slightly while you drag.
-- Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
-
-## UV inspection
-
-![heatmap](images/heatmap.jpg)
-
-Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The analysis only runs when you ask, so models open quickly; until then the tests and heatmaps are greyed out. Opening another model clears the results, and you run it again. **Shift+U** shows or hides the layout pane. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
-
-- **The layout:** every triangle edge in 0 to 1 UV space, over the part's texture if it has one. Mouse wheel zooms, drag pans, double-click fits the view. Pick one **Part** or **All parts**.
-- **Tests**, each shown on the model and in the layout (ticking one opens the layout and switches the model to the shaded view):
-  - **Out-of-bounds UVs** (orange): triangles with a UV outside the 0 to 1 square.
-  - **Flipped UVs** (red): stray triangles whose UV winding is opposite to most of the model (the majority sets the convention). Whole islands that are laid out the other way round are reported under *Mirrored islands* instead.
-  - **Zero-area UVs** (yellow): triangles squashed to a line or a point in UV space.
-  - **Overlapping islands** (cyan): islands that partly cover each other in UV space, so they share texture pixels, usually by accident.
-  - **Stacked islands** (purple): islands that sit (almost) exactly on top of each other, for example repeated parts sharing one texture area. This is often deliberate, but check it is what you meant.
-  - **Mirrored islands** (pink): whole islands whose layout is the opposite way round to the model, so their texture reads mirrored (text and logos show it first).
-  - A triangle that fails more than one active test is white; fine triangles are grey. The counts sit next to each test (islands for the last three).
-  - **How islands are found:** triangles that share vertices form an island, where vertices with the same 3D position and the same UV count as one (so a vertex split only for normals does not cut an island). Overlap is measured on a pixel grid (512 px per UV unit): more than about 80% shared with the smaller island counts as stacked, between about 5% and 80% as overlapping. Islands that only touch along their borders are not flagged. Parts over 4 million triangles skip the island tests (they take about a second per million triangles, and memory grows with them), and the UV tab and reports say so.
-- **Heatmap** (the drop-down above the tests). The tests are drawn on top of the heatmap colours.
-  - **Texel density:** how much texture resolution each triangle gets (UV area against 3D area), compared with the model's median (weighted by surface area, across all parts, so parts can be compared). Green is the median, blue is below the *too low* threshold, red is above the *too high* threshold. Defaults are ×0.5 and ×2; both are adjustable in the tab.
-  - **Stretch (distortion):** how much the UVs distort the surface. 1 means no distortion; scale, rotation and mirroring do not count, only squashing and shearing. Green is 1, yellow half way and red at the warning value (default 2, adjustable).
-  - A colour bar in the layout pane shows the scale, and the tab and the layout footer give the share of triangles outside the thresholds.
-  - Density compares triangles on the model as stored, so a part scaled differently by its node transform in the file can read differently from how it looks.
-- The texture on the model is replaced by the heatmap while a test or heatmap is on, and comes back when you switch them all off.
-- Models with no UV coordinates (STL, PLY, most CAD files) show "no UV data".
-
-## Texture audit and mesh diagnostics
-
-**Materials & parts → Textures** lists every texture with its size, bit depth, channel count, colour space, and how many parts use it. It also shows an estimate of the graphics-card memory it needs, uncompressed and with typical block compression, and flags textures that are not a power of two or are 4096 px or larger. A total sits above the list; an image that appears more than once (shared by several materials, or loaded twice by the importer) is counted once, and the repeat entries say so. Memory figures are estimates (3-channel images are stored as 4, and mipmaps add a third). Colour space is inferred from the texture's role (base colour and emissive are sRGB, normal and occlusion/roughness/metallic are linear), because the pixels don't say.
-
-**Materials & parts → Mesh** analyses the geometry only when you press **Run integrity tests**, so models open quickly. Until then it shows just the polygon, part and material counts. After the run:
-- Counts: triangles, vertices (and how many are at unique positions), parts (draw calls in the viewer), distinct materials (the minimum draw calls an engine needs), loose vertices, vertices sharing a position, separate pieces, open edges, non-manifold edges.
-- Integrity tests that colour the failing triangles on the model, each with a count: **open (boundary) edges**, **non-manifold edges**, **zero-area triangles**, **inconsistent winding** (a patch of triangles wound the opposite way round to the surface around it is coloured whole, so you see the flipped area itself rather than just its edge), **inside-out pieces** (closed pieces with a negative volume) and **duplicate faces**.
-- Vertices at the same position count as joined, so UV and hard-edge seams are not reported as holes. A colour test replaces the texture while it is on, like the UV tests, and can be combined with them.
-
-## Measurements and cross-section
-
-![Gleek3Deek](images/Cutaway3.jpg)
-
-**Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
-
-- **Calculate size, volume and centre of mass** (on request, so models open quickly) measures the visible parts and shows: bounding-box size, the oriented bounding box (the smallest box, turned to fit), surface area, volume (also in litres), and centre of mass. Volume and centre of mass need closed parts: open parts are left out of the volume and reported, and with no closed part the centre is that of the surface.
-- **Measure between points** (`Shift+R`): click 2 or 3 points on the model. You get the distance, the x/y/z differences, the second distance and the angle at the middle point. Markers and distance labels are drawn on the model. A click that doesn't move picks a point, while dragging still orbits, so the model can be turned between picks. Switching the mode off clears the points.
-- **Cross-section**: cut the model with a plane along X, Y or Z using the slider; the cut is outlined in yellow. **Keep the other side** flips which half is hidden. Measurement marks and the section outline are left out of reference sheets.
-
-## LOD preview (simplification)
-
-**Materials & parts → LOD** shows how the model looks with fewer triangles. Press **Generate LOD previews**; the 50%, 25% and 10% levels are built from the original in the background (quadric decimation, one part at a time), so the app stays usable while a large model is processed. A table lists the triangle and vertex counts of each level. Pick a level in the **Show** list to see it on the model, and go back to **Original** at any time.
-
-- Texture seams are borders of the mesh, and the decimator protects borders, so UVs hold up well. Very low levels can still stretch textures; look at the UV tab results on the original for a reference.
-- A level is a preview only: your file is not changed and **exports always use the original geometry**.
-- Switching level clears the UV, mesh and measurement results, because they describe the geometry that was showing. Run them again on the level you want to inspect.
-- Nothing is calculated until you press the button, so loading stays fast.
-
-## Command-line mode
-
-Run an audit from a console, without opening the window. Give a model file or a folder; any option starting with `-` selects this mode (`python main.py ...` and `python cli.py ...` do the same thing).
+The folder audit can also run from a batch file, PowerShell or Windows Task Scheduler, with no window:
 
 ```
-python cli.py model.glb --all
-python cli.py ./assets --recursive --mesh --textures --fail-on holes,flipped
-python cli.py ./assets -r --all --units mm:cm --json --report audit.json
-python cli.py ./assets -r --all --report audit.csv      # one row per file, for a spreadsheet
-python cli.py ./assets -r --all --report audit.html     # one self-contained web page
+RetroGleek.exe --audit "D:\Retro\Amiga" --out "D:\Reports\amiga.html"
 ```
 
-| Option | What it adds |
+| Option | Meaning |
 |---|---|
-| *(none)* | triangles, vertices, parts, materials, textures, UVs present, size |
-| `--textures` | each texture's size, bit depth, inferred colour space and estimated GPU memory (an image used twice counts once) |
-| `--mesh` | holes, non-manifold edges, zero-area and duplicate faces, inconsistent winding, inside-out pieces, loose vertices, pieces |
-| `--uv` | the UV tests, island counts, texel-density and stretch outliers |
-| `--measure` | bounding box, oriented box, surface area, volume, centre of mass |
-| `--lod` | triangle counts at the 50%, 25% and 10% levels (slow) |
-| `--all` | info, textures, mesh, uv and measure |
-| `--units m` / `--units mm:cm` | what one model unit means, and the unit to report in (mm, cm, m, in, ft) |
-| `--format text\|json\|csv\|html` | the output format (`--json` is short for `--format json`). `html` is for `--report` files only, because the console shows text |
-| `--report FILE` | also write the output to a new file. Its format follows `--format`, else the extension (`.csv`, `.html`, `.json`, `.txt`), else the console format |
-| `-r`, `--recursive` | include sub-folders |
-| `-q`, `--quiet` | print nothing except errors |
+| `--audit <folder>` | The folder to audit (its pictures only, not subfolders). Required. |
+| `--out <file>` | Where to write the report. Without it, the report goes into the audited folder with the usual name (`RetroGleek audit - <folder> - <date>.html`). |
+| `--no-thumbs` | Leave the thumbnails out (a much smaller file). |
+| `--csv` | Write a CSV file (for Excel or other tools) instead of the HTML page. |
+| `--overwrite` | Replace the report if it already exists. Without it, an existing file is never touched. |
 
-**Checks for scripts and CI.** `--fail-on` takes a comma-separated list of `holes`, `nonmanifold`, `degenerate`, `flipped`, `duplicates`, `open`, `uv-missing`, `uv-overlap`, `uv-bounds`, `uv-flipped`, `npot`. Limits: `--max-triangles N`, `--max-texture-mb MB`, `--max-texture-px PX`, `--max-materials N`. The data a check needs is switched on automatically.
+The **exit code** says how it went: **0** = every picture file opened, **1** = some could not be opened,
+**2** = error (unknown option, folder missing or not on a local drive, report already exists, or it could not be
+written). There are no dialog boxes, so a scheduled run never waits for a click. `settings.ini` is not used;
+`marks.tsv` is read (never written), so the report includes your ratings, colour labels and tags.
 
-| Exit code | Meaning |
+RetroGleek is a Windows program, not a console program, so it prints nothing in the console window. A batch file
+waits for it to finish (as does PowerShell's `Start-Process -Wait`); typed directly at a command prompt, it runs in
+the background.
+
+For console use, `build.bat` also builds **`RetroGleekCli.exe`**, a console companion made from the same source
+files. It takes the same options (the folder can be given on its own: `RetroGleekCli.exe "D:\Retro\Amiga"`),
+shows a progress count while it works, then prints a summary: totals, pictures by platform and every file that could
+not be opened, with the reason. It always waits until it is done, and errors are explained in plain words.
+`--quiet` turns the progress and summary off, `--help` lists the options. Exit codes are the same.
+
+In a batch file:
+
+```
+RetroGleek.exe --audit "D:\Retro\Amiga" --no-thumbs --overwrite
+if errorlevel 2 (echo Audit failed) else if errorlevel 1 (echo Some pictures could not be opened) else (echo All OK)
+```
+
+One report per subfolder:
+
+```
+for /d %%F in ("D:\Retro\*") do RetroGleek.exe --audit "%%F" --out "D:\Reports\%%~nxF.html" --overwrite
+```
+
+## Retro-computer formats (RECOIL)
+
+- RECOIL supports 567 file extensions. They are **shown by default**; press **F8**, use the right-click menu, or start
+  with `--no-retro` to hide them.
+- Opening a retro picture directly turns them on for that folder. The viewer shows the platform name (for example
+  "ZX Spectrum") in the info bar.
+- RECOIL itself marks some extensions as too generic (`.cs`, `.obj`, `.map`, `.raw`, `.img` ...) or made-up. Those
+  are never listed automatically, but still open when you open the file directly. `.scr` (ZX Spectrum) stays
+  listed; `.fnt` and `.3` are excluded.
+- Pictures that flicker between sub-pictures on the original hardware are blended into one image.
+- Some formats keep their palette in a companion file; those are read only from the picture's own folder.
+- `RECOIL.cs` is a **modified, machine-generated copy** of RECOIL's C# output (C# 5 syntax, lower memory caps). See
+  [`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt). Regenerate it with `tools/downgrade_recoil.py`.
+
+## Modern formats (WebP, AVIF, HEIC, JPEG XL, camera RAW)
+
+RetroGleek opens these through the **decoders installed in Windows** (the Windows Imaging Component, reached through
+WPF's imaging classes in the .NET Framework). It bundles no decoder of its own and adds no native code: the decoders
+are Microsoft's, and Windows Update or the Microsoft Store keeps them patched. Image decoders read untrusted files and
+are a favourite target for attackers (WebP's
+[CVE-2023-4863](https://nvd.nist.gov/vuln/detail/CVE-2023-4863), for example), so a decoder bundled with an app,
+which stays at the version shipped until the app is updated, was ruled out.
+
+| Files | What Windows needs (free unless noted, from the Microsoft Store) |
 |---|---|
-| 0 | everything passed |
-| 1 | a `--fail-on` or `--max-*` check failed |
-| 2 | bad usage: wrong path, unknown option, or an unsafe `--report` |
-| 3 | some files could not be loaded |
+| `.webp` | WebP Image Extensions (already installed on most PCs) |
+| `.avif` | AV1 Video Extension (and HEIF Image Extensions) |
+| `.heic` `.heif` `.hif` | HEIF Image Extensions and HEVC Video Extensions (HEVC is a small paid extension unless the PC came with it) |
+| `.jxl` | JPEG XL Image Extension (Windows 11 24H2 or later) |
+| `.jxr` `.wdp` `.hdp` | Nothing: JPEG XR is built into Windows |
+| Camera RAW (`.dng` `.cr2` `.cr3` `.nef` `.arw` `.orf` `.rw2` `.raf` `.pef` `.srw` and more) | Raw Image Extension |
 
-**Report formats.**
-- **CSV** has one row per file and one column per figure: triangles, materials, texture memory, each mesh and UV test, size, volume and so on. The columns depend on the sections you ask for, so every row has the same columns. Failed loads still get a row (`result` is `ERROR`). The file is UTF-8 with a byte-order mark so Excel reads it correctly, and text that a spreadsheet would run as a formula (starting with `=`, `+`, `-` or `@`) is prefixed with a quote.
-- **HTML** is a single page with no external files: summary cards, a sortable and filterable table (click a heading, filter by name, or show only failures or errors), and a collapsible detail block for every file. It follows your light or dark setting and blocks any outside loading. File names and error messages are escaped, so a hostile file name cannot add anything to the page.
+These files are always listed. If a PC has no decoder for one, its thumbnail and the viewer say which extension to
+install; RetroGleek never opens the Store or goes online itself. Because the decoders are the PC's own, what opens
+can differ from one PC to another.
 
-**Folders.** Supported files are audited one at a time and a summary table follows. By default each file is loaded in its own child process, so a corrupt file that crashes the loader or hangs (`--timeout`, default 300 s) is reported as an error and the run carries on; `--no-isolate` is faster but loses that protection. Files larger than `--max-size-mb` (default 1024) and anything past `--max-files` (default 2000) are skipped and listed.
+Animated WebPs play in the viewer (`P` pauses, `,` / `.` step) and Ctrl+Shift+S saves every frame: RetroGleek reads the animation's frame layout from the file itself and has Windows' WebP decoder decode each frame, so it works whatever Windows does with animations. Thumbnails, the preview pane and Save as PNG show the first frame.
 
-**Read-only by design.** This mode never changes, moves, copies or deletes a model, and has no commands that could. Symbolic links are skipped and never followed. The only file it can write is the `--report` file, which refuses to replace an existing file (unless `--force`), refuses a symbolic link, and refuses a place inside the folder being scanned.
+Limits: colour profiles are ignored, as for the other formats; `.raw` and
+`.rwl` stay with RECOIL, which claims those extensions. They can be saved as PNG, put on contact sheets and checked by
+the folder audit like any other picture.
 
-**Notes.** The text output uses × and ≈, so it is written as UTF-8. The windowed Windows `.exe` prints to the terminal it was started from; for scripting, use `python cli.py` or a console build. Texel density and stretch figures use the default thresholds (×0.5 and ×2 of the median density, stretch 2).
+Big JPEG photos get faster thumbnails the same way: Windows' JPEG decoder can decode straight to a half, a quarter or
+an eighth of the full size, so a 50-megapixel photo no longer has to be decoded in full for a 200-pixel thumbnail.
 
-## Reference sheets for AI 3D tools
+## Antivirus note
 
-Press **Shift+F12** (or **Main ▾ → Reference sheet for AI 3D tools…**) to render the model from several angles onto one image, ready to upload to Meshy, Tripo, Rodin, Luma and similar 2D-to-3D tools.
-
-- **Layouts:** *4-view orthographic* (Front, Back, Left, Right; the best default) or *4-view 3/4 hybrid* (Front, 3/4 Front, Side, Back; helps with layered or overlapping geometry).
-- **Background:** pure white or neutral mid grey. **Size:** 512 to 2048 px per view (the sheet is four views wide). Optionally write the view names under each view (off is best for AI tools) and save every view as its own PNG too.
-- **Applied automatically, then undone:** orthographic projection, flat even lighting (no sun, so every side is lit the same and there are no hard shadows), grid, sky, sky gradient, blob shadow, edge overlay, axes gizmo and the split compare are switched off, and the background becomes solid. Your camera, lighting, background and display settings are restored afterwards.
-- **Shared baseline:** every view uses the same scale and the same centre height, so the top and the bottom of the model sit on exactly the same pixel rows in every view. All views look horizontally (no tilt), including the 3/4 view.
-- Views come from the live viewport, so a larger window gives a sharper result at the bigger sizes. The model uses its current colours and textures; hidden parts stay hidden.
-
-## Managing files from the gallery
-
-Right-click a thumbnail (or select it and use the keys) to:
-
-| Action | Menu | Key |
-|---|---|---|
-| Open | Open | double-click |
-| Rename | Rename… | `F2` |
-| Copy | Copy | `Ctrl+C` |
-| Paste into the current folder | Paste | `Ctrl+V` |
-| Delete | Delete | `Del` |
-| Refresh the thumbnail | Refresh thumbnail | `F5` |
-
-- **Rename** asks for the new name and keeps the file's extension. Invalid names and names that already exist are refused. A Y-up/Z-up choice you made for the file moves with it.
-- **Copy and paste:** Copy places the file on the system clipboard, so you can paste it into Explorer/Finder as well, and Paste also accepts files copied from there. A pasted file that would clash with an existing one is saved as "name - Copy". Right-clicking empty space in the gallery offers Paste too.
-- **Thumbnails:** a renamed or pasted file keeps its thumbnail. **Refresh thumbnail** (or `F5` with a file selected) throws away the saved picture and renders it again. Right-click empty space, or press `F5` with nothing selected, to refresh every thumbnail in the folder.
-- **Delete** moves the file to the Recycle Bin / Trash after asking. If that isn't possible you are asked before anything is deleted permanently.
-- These actions affect only the selected file. For an OBJ or glTF, its `.mtl`, `.bin` and texture files are left alone, so rename or delete those yourself if you need to.
-
-## Export / convert and mesh simplification
-
-Open a model, then press **Ctrl+E** (or use **File → Export / convert…** or **Main ▾ → Export / convert…**).
-
-- **Formats:** STL (binary or ASCII), OBJ, and PLY (binary or ASCII). This also works as a converter: open a GLB, FBX or any other supported file and export it as STL, OBJ or PLY.
-- **Simplify mesh:** tick the box and choose what percentage of the triangles to keep. The dialog shows the resulting triangle count. Simplification uses quadric decimation, which removes the faces that change the shape least.
-- **What is exported:** the geometry as it is shown, including each part's placement. Parts are merged into one mesh, duplicate vertices are welded, and every polygon is turned into triangles first.
-- **Colours:** vertex colours are kept in PLY files when the model has them. OBJ gets smooth normals. Materials and textures are **not** written.
-- The export runs in the background, so the viewer stays responsive. Large models can take a while to simplify.
-
-Very strong simplification (under about 10%) can visibly change the shape, and open edges aren't specially protected, so thin or open surfaces may shrink at their edges.
-
-## About dialog
-
-Press **F1**, or choose **Help → About** (also in **Main ▾** while a model is open). It shows the app name, who made it, the legal notice, the MIT licence text and the open-source attributions. Close it with the ✕ button, the **Close** button, the window's own close button or **Esc**.
-
-All of its wording lives in one dictionary named `ABOUT`, just under `APP_NAME` near the top of `main.py`: your name and alias, copyright line, legal notice, licence text, the list of third-party projects, and an optional version string (blank means it is hidden). Edit those values and nothing else needs to change.
-
-## Model info panel
-
-Press **I** (or **Main ▾ → Model info**) to show a small card under the top toolbar. It lists:
-
-- **Format and file size**
-- **Parts:** how many separate objects the file contains
-- **Vertices:** counted as the file stores them (not inflated by the viewer's smooth shading)
-- **Faces:** polygon count, with the triangle count in brackets when the model uses quads or larger polygons
-- **Width, height, depth:** the bounding box, labelled for the model's up axis (it follows `U`). Sizes are in the file's own units, since most formats don't record a unit
-- **Materials and textures:** distinct materials and texture images. Plain meshes such as STL show "none (plain mesh)"
-- **Has:** vertex colours and UV coordinates, when present
-
-## Side panels (a collapsible drawer on the right)
-
-The four side panels (**Materials**, **MatCap**, **Environment** and **Scene**) live in one drawer on the right edge of the window, so they sit beside the viewer instead of covering it. This helps most on a laptop screen.
-
-- **Open a panel** with its key (`Shift+M`, `E`, `Shift+L`, `Shift+G`) or by ticking it in the **Panels** menu. The menu lists the panels in the same left-to-right order as the tabs: Materials, MatCap, Environment, Scene. Untick a panel, or use the ✕ on its title bar, to put it away.
-- **Collapse and expand the whole drawer:** click the slim arrow button on the right edge of the workspace, use **Panels → Show/Hide Panel**, or press `Ctrl+B`. The drawer slides out of the way and the workspace grows to fill the space; the arrow stays visible so you can bring it back. Which panels were open, and which tab was in front, are remembered.
-- **In the gallery** the drawer closes by itself and the arrow button is hidden, because the panels only apply to an open model. It comes back, as you left it, when you open a model.
-- **Docking is right-edge only.** Panels can't be docked to the top, left or bottom. Within the right edge you can rearrange them: drag a tab to reorder it, drag a panel's title bar onto another to group them as tabs, or to the top or bottom half of another to stack the two vertically. Drag a whole tab group by its title bar to move the group.
-- **Floating panels:** drag a panel out of the drawer and release it anywhere to leave it as its own window, for instance on a second screen. Drag either the tab itself or the panel's title text out of the drawer. Drag it back onto the right edge to dock it again. Floating panels are independent windows: they can overlap each other freely, and clicking one brings it to the front. A floating panel is not part of the drawer, so **Show/Hide Panel** and `Ctrl+B` leave it where it is. All panels, floating ones included, are put away in the gallery and return when you open a model.
-- **Scrolling:** every panel scrolls on its own, so nothing is clipped when a panel is short or narrow.
-- **Remembered:** your arrangement, the open panels, whether the drawer is expanded, its width and the window size are saved automatically and restored the next time you start the app. **Panels → Reset panel layout** puts the four tabs back in the default order (Materials, MatCap, Environment, Scene) with the drawer open.
-
-## Material views, textures and parts
-
-Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or pick one from **Main ▾ → Material view**. `Shift+M` opens the **Materials & parts** panel, which has the same view choice plus two tabs.
-
-**Views**
-- **Albedo (no lighting):** the model's colours and textures exactly as stored, with no light, shadow or shading. This is the quickest way to judge a texture that looks dark under normal lighting.
-- **Normals:** each surface is coloured by the direction it faces (relative to the camera). Surfaces that face away from the camera, which usually means flipped normals or inside-out geometry, are tinted red.
-- Pressing the same view again, or `S`, returns to shaded. `M` (MatCaps), `W` and `P` still work as before.
-
-**Parts tab**
-- Every separate object in the file is listed with a colour swatch, its face count, and whether it is textured. FBX, DAE and the other formats read through Assimp show the part's own name when the file has one.
-- Untick a part to hide it. Selecting a part outlines it in the view. **Show all**, **Invert** and **Isolate selected** speed things up.
-- Hidden parts are ignored by the ground grid, the shadow, **Fit view**, the Model info panel (which says how many are hidden) and **Export / convert**, so you can export just the pieces you want.
-
-**Textures tab**
-- Lists the distinct textures with a thumbnail, size and how many parts use them. Base colour is always shown; occlusion/roughness/metallic, normal and emissive maps appear when the file provides them (glTF/GLB does).
-- Double-click one for a large preview, with **R, G, B and A** buttons to look at a single channel. This is handy for checking a roughness map or whether a texture hides stray transparency.
-
-## Scene settings (ground, camera, display, screenshots)
-
-Press **Shift+G** (or **Panels → Scene**) for a small panel with:
-
-- **Ground grid (`G`):** a flat grid under the model. Its lines follow the world axes and its cell size adapts to the model. It sits at the model's lowest point, next to the blob shadow.
-- **Move to ground, Move to origin, Reset position:** *Move to ground* drops the model so its lowest point is at height 0. *Move to origin* puts the centre of the model at 0, 0, 0. *Reset position* undoes both. These change where the model sits in the world, so they also affect files you export.
-- **Field of view:** 10° to 90°. The camera moves as you change it so the model stays the same size, which gives you a flatter or more dramatic perspective.
-- **Lock horizon (`H`), on by default:** left-drag orbits like a turntable. The model's up direction always stays up, so the horizon never tilts, and the camera stops just short of looking straight up or down. Switch it off for free trackball rotation. `Shift`+left-drag still pans, and holding `Ctrl` while left-dragging still rolls in trackball mode.
-- **Orthographic (`C`) and Fit view (`F`):** *Fit* re-centres and re-frames the model without changing the angle you are looking from (`R` still resets to the front view).
-- **Saved views:** save up to three camera positions with `Ctrl+Shift+1…3` and come back with `Alt+1…3`. They belong to the open model and are cleared when you open another.
-- **Edges over shaded (`Shift+W`):** draws the mesh edges on top of the solid surface. It applies in the normal shaded view.
-- **Screenshot size and transparency:** choose 1×, 2× or 4× the window size, and optionally a **transparent background**. `F12` and `Ctrl+C` use these settings. The shadow blob stays semi-transparent in the PNG, so it drops straight onto another image.
-
-## Environment (sky, lighting, shadow)
-
-Press **L** to switch the environment on or off, or **Shift+L** to open its settings. It is off by default, so models look as they always did until you turn it on.
-
-What it does:
-
-1. **Infinite skybox:** a panorama wrapped around the scene. It is locked to the camera, so zooming never gets you closer to the background.
-2. **Hemispheric ambient light:** three flat colours (sky, equator and ground) are blended onto the model by which way each surface faces. There is no per-pixel image lookup: it is a few lines of shader maths.
-3. **Sun:** one directional light with a direction, colour and intensity, plus a simple highlight.
-4. **Blob shadow:** a soft dark patch on a plane under the model. It scales with the model, shifts away from the sun and fades with the opacity slider. There is no shadow map and no extra render pass.
-
-Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`, PNG, JPG, TIFF, BMP or WebP). The colours and sun are fitted to it automatically: the three bands are averaged from the image and the sun is the brightest spot. **Fit lighting to panorama** repeats that after you have made changes. Without a panorama you can still use the lighting and shadow with your own three colours.
-
-**Built-in lighting presets:** you don't need a panorama to get a good look. The **Light preset** box in the Environment panel (or **Main ▾ → Lighting preset**, or `Ctrl+L` to cycle) offers Studio Soft, Overcast, Midday Sun, Golden Hour, Blue Hour, Dramatic Rim and Neutral Grey. Each sets the three ambient colours, the sun and the shadow, and tints the background with a matching sky gradient.
-
-**Exposure and tone mapping:** the **Exposure** slider brightens or darkens the lighting in stops (it doesn't change the sky image or MatCaps). **Tone mapping** can be left off, set to *Soft highlights* (Reinhard) or *Filmic* (ACES), which are cheap curves that keep bright areas from clipping. **Sky blur** softens the panorama behind the model. **Sky gradient** replaces the background with a gradient from the equator colour up to the sky colour when no panorama is showing.
-
-**Rotate the lighting:** hold `Shift` and right-drag in the viewer to swing the sun, and the panorama with it, around the model. The shadow follows.
-
-**Presets:** **Save preset…** writes your sky colours, sun, ambient, shadow and on/off choices to a small JSON file, and **Load preset…** brings them back (loading also switches the environment on). A preset looks like this:
-
-```json
-{
-  "gleek3deek_environment": 1,
-  "name": "Golden hour",
-  "settings": { "sky": [0.5, 0.65, 0.85], "sun_az": 35, "sun_el": 20, "sun_int": 0.9 },
-  "panorama": "C:/Panoramas/sunset.hdr"
-}
-```
-
-The panorama is stored as a path, not embedded. When a preset is loaded on another machine, the viewer also looks for the same file name next to the preset file, so you can share a preset together with its panorama in one folder. If the panorama can't be found, the preset's colours and sun are still applied. Values left out fall back to the defaults, and out-of-range values are clamped.
-
-Notes:
-- **Rotate environment** turns the panorama and carries the sun with it, so you can line the lighting up with the picture.
-- The environment follows the model's up axis (`U` switches between Y-up and Z-up).
-- `.exr` panoramas aren't supported; save them as `.hdr` or a PNG/JPG first. Large panoramas are shrunk to 2048 pixels wide when loaded.
-- Environment lighting applies in the normal shaded view. Wireframe, points and MatCaps keep their own look.
-- Deliberately excluded to keep it light: reflections, roughness and microfacet maths, and bounced light.
-- If a graphics driver rejects the environment shader, the viewer falls back to lighting that follows the camera, or switches the lighting off, and says so in the status bar.
-
-## Supported formats
-
-| Format | Extensions | How it's read | Notes |
-|---|---|---|---|
-| glTF / GLB | `.gltf` `.glb` | VTK glTF importer | Base colour textures; PBR is shown as simple shading. WebP textures and quantized geometry (`KHR_mesh_quantization`, used by Tripo AI and gltfpack) in GLB files are converted automatically. Draco (`KHR_draco_mesh_compression`) and Meshopt (`EXT_meshopt_compression`) compressed geometry in GLB files is decoded when the optional packages are installed: `pip install DracoPy meshoptimizer`. KTX2-compressed textures are not supported, and compressed `.gltf` files with separate buffers are not converted |
-| OBJ | `.obj` | VTK OBJ reader / importer | Uses the `.mtl` file if present; reads `v x y z r g b` vertex colours |
-| STL | `.stl` | VTK | No colour data in the format, so it's shown grey |
-| PLY | `.ply` | VTK | Vertex and face colours |
-| Assimp formats | `.fbx` `.dae` `.usd` `.usda` `.usdc` `.usdz` `.3mf` `.amf` `.x3d` `.dxf` `.ifc` `.3ds` `.ase` `.lwo` `.lws` `.lxo` `.ac` `.b3d` `.cob` `.scn` `.ms3d` `.ndo` `.nff` `.off` `.sib` `.x` `.xgl` `.m3d` `.q3o` `.irr` `.irrmesh` `.ogex` `.pmx` `.mesh.xml` `.md2` `.md3` `.md5mesh` `.mdc` `.mdl` `.bsp` `.smd` `.vta` `.hmp` `.ter` | Assimp (`assimp-py`) | Requires `pip install assimp-py`. Which of these open depends on the Assimp build inside your `assimp-py` wheel (for example, USD needs a recent one). Files that fail show an error and keep a generic icon |
-| Motion capture | `.bvh` `.csm` | not displayable | Skeleton data only, no mesh |
-| STEP | `.step` `.stp` | VTK OpenCASCADE, else CadQuery | Requires `pip install cadquery` on most setups |
-| Blender | `.blend` | Blender command line | Needs Blender installed (set `BLENDER_PATH` if it isn't on your PATH). Without it, Assimp's legacy reader is tried, which only handles older files |
-| Cinema 4D, Maya, 3ds Max | `.c4d` `.mb` `.ma` `.max` | not readable | Closed formats. Export to glTF, FBX or OBJ from the original app |
-
-Any file whose thumbnail can't be generated keeps the generic cube icon. Thumbnails are skipped outright for `.blend`, motion-capture and the closed formats, and for files over 200 MB (change with the `GLEEK_THUMB_MAX_MB` environment variable).
-
-## Building the Windows .exe
-
-**On your own PC:** double-click `build_exe.bat` (or run `build_exe.bat onedir` for a folder build that starts faster). The result is `dist\Gleek3Deek.exe`. It needs Python 3.10–3.12 and an internet connection for the first build.
-
-**Automatically on GitHub:** the workflow in `.github/workflows/build-windows.yml` builds the exe on a Windows runner. Publish a release by pushing a version tag:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-GitHub then attaches `Gleek3Deek.exe` to a Release. You can also run it by hand from the repository's **Actions** tab.
-
-The `.exe` is large (VTK and Qt are bundled). STEP support through CadQuery is not included in it; use the source install for that.
-
-## Troubleshooting
-
-- **App won't start / install fails:** check `python --version`. Use Python 3.10–3.12 if a package can't be found for your version.
-- **FBX / DAE / LWO won't open:** make sure `assimp-py` installed (`pip install assimp-py` inside `.venv`). The error box shows the exact reason.
-- **A compressed GLB says to install a decoder:** run `pip install DracoPy meshoptimizer` inside `.venv` (use the one the message names).
-- **STEP files won't open:** run `pip install cadquery`.
-- **Black or blank 3D view:** update your graphics driver. VTK needs OpenGL 3.2 or newer.
-- **Thumbnails missing:** the generic icon stays if a file is too large, in an unsupported format, or can't be parsed. Thumbnail cache lives in your OS user cache folder under `Gleek3Deek/thumbs` and is safe to delete.
+RetroGleek is an unsigned executable with no reputation yet, and it does the kinds of things file managers do
+(enumerates drives, copies, renames and deletes files). A few heuristic / machine-learning scanners may therefore flag
+a freshly built copy as suspicious. Because the program is a few readable source files, the safest approach is to read
+the source and build it yourself with `build.bat`.
 
 ## Project layout
 
-```
-Gleek3Deek/
-├── main.py                   # the window, the 3D viewer and the About dialog (start here: python main.py)
-├── formats.py                # file loading: format list, importers, GLB fixes (no windows)
-├── analysis.py               # texture audit, mesh checks, measurements, UV maths, LOD, export (no windows)
-├── cli.py                    # command-line mode (read-only audit of a file or folder)
-├── matcap.py                 # MatCap shaders, custom MatCap parameters, editor and preview
-├── gallery.py                # thumbnail grid, thumbnails, file icons, background loading
-├── environment.py            # sky, lighting and tone mapping, panorama handling, Environment panel
-├── panels.py                 # Materials, Info and Scene panels, export dialog
-├── requirements.txt          # required packages
-├── requirements-optional.txt # optional format support
-├── run.bat                   # Windows launcher
-├── run.sh                    # macOS / Linux launcher
-├── build_exe.bat             # builds the Windows .exe
-├── gleek3deek.spec           # PyInstaller recipe
-├── requirements-build.txt    # build-only packages
-├── .github/workflows/build-windows.yml   # automatic exe builds
-├── .github/workflows/tests.yml           # runs the tests on every push
-├── tests/                    # automated tests (no VTK or Qt needed)
-├── pytest.ini, requirements-dev.txt, .gitignore
-├── LICENSE
-└── README.md
-```
-
-## Running the tests
-
-```
-pip install -r requirements-dev.txt
-python -m pytest -q
-```
-The tests cover the mesh checks, measurements, UV maths, texture audit and the command-line mode (about 30 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
-
-## Contributing
-
-Issues and pull requests are welcome. When reporting a model that won't open, please include the file format, the exact text of the error box, and (if you can share it) a small sample file.
+| File | Purpose |
+|---|---|
+| `Program.cs` | Overview comment, version info and start-up (`Main`) |
+| `Util.cs` | Shared helpers |
+| `Imaging.cs` | Picture decoding, the RECOIL wrapper, lossless PNG export |
+| `Thumbnails.cs` | Thumbnail cache and background decoding |
+| `Controls.cs` | Rename dialog and the custom dark controls |
+| `Canvas.cs` | The full-canvas viewer |
+| `ThumbGrid.cs` | The thumbnail grid |
+| `MainForm.Undo.cs` | Undo for renames, batch renames and moves |
+| `BatchRename.cs` | Batch rename: pattern, preview and safe renaming |
+| `Settings.cs` | Remembered settings (`settings.ini`) |
+| `Audit.cs` | Folder audit: the offline HTML report |
+| `ScreenEffects.cs` | Screen effect presets and the automatic choice of effects for each computer |
+| `Marks.cs` | Ratings, colour labels and tags (`marks.tsv`) |
+| `ContactSheet.cs` | Contact sheet: lossless PNG index sheets |
+| `JpegRotate.cs` | Lossless JPEG changes: the turn on disk, and writing your rating into the photo |
+| `RetroConvert.cs` | Converting pictures into retro formats (ZX Spectrum, C64 Koala, Atari ST Degas, Amiga IFF, MSX Screen 2 and 8), checked with RECOIL |
+| `WinCodecs.cs` | Pictures decoded by Windows' own codecs (WebP, AVIF, HEIC, JPEG XL, camera RAW); fast thumbnails of big JPEGs |
+| `MainForm.cs`, `MainForm.Files.cs` | The main window (one class in two files: layout and browsing; menus, file operations and keys) |
+| `RECOIL.cs` | Bundled, modified C# build of RECOIL (retro formats) |
+| `RetroGleek.manifest` | Windows manifest: high-DPI awareness, Windows 10/11 compatibility |
+| `build.bat` | One-click build using the compiler included in Windows (`RetroGleek.exe` and the console companion `RetroGleekCli.exe`) |
+| `LICENSE` | MIT License for RetroGleek's own code |
+| `THIRD-PARTY-NOTICES.txt` | RECOIL's MIT license and a description of the modifications |
+| `tools/downgrade_recoil.py` | Regenerates `RECOIL.cs` from a RECOIL checkout (needs the `fut` translator) |
 
 ## License
 
-Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://doc.qt.io/qtforpython/) (LGPL), [VTK](https://vtk.org/) (BSD), [NumPy](https://numpy.org/) (BSD) and, optionally, [assimp-py](https://pypi.org/project/assimp-py/) / [Assimp](https://github.com/assimp/assimp) (BSD), [DracoPy](https://pypi.org/project/DracoPy/) / [Draco](https://github.com/google/draco) (Apache-2.0), [meshoptimizer](https://pypi.org/project/meshoptimizer/) / [meshoptimizer](https://github.com/zeux/meshoptimizer) (MIT) and [CadQuery](https://github.com/CadQuery/cadquery) (Apache-2.0), each under its own license.
+RetroGleek is Copyright (c) 2026 Mark Billson and released under the [MIT License](LICENSE).
+
+The bundled `RECOIL.cs` is a separate work by Piotr Fusik under its own MIT License; see
+`THIRD-PARTY-NOTICES.txt`. Keep both notices when you redistribute RetroGleek.
+
+## Credits
+
+Retro-computer picture decoding by **[RECOIL](https://github.com/pfusik/recoil)** by Piotr Fusik, used under the MIT
+License. See `THIRD-PARTY-NOTICES.txt`.

@@ -1,0 +1,62 @@
+RetroGleek - third-party notices
+==============================
+
+RetroGleek itself is Copyright (c) 2026 Mark Billson, MIT License (see LICENSE).
+This file covers the third-party code bundled with it.
+
+RECOIL - Retro Computer Image Library
+--------------------------------------
+Version 7.0.0, source commit 7b4d11e
+https://github.com/pfusik/recoil
+Used in: RECOIL.cs (a modified, machine-generated C# build of RECOIL)
+
+MIT License
+
+Copyright (c) 2009-2026 Piotr Fusik
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Modifications made for RetroGleek (RECOIL.cs)
+-------------------------------------------
+RECOIL.cs is NOT the unmodified upstream output. It is produced by tools/downgrade_recoil.py, which:
+  1. translates recoil.fu to C# with the "fut" translator (https://github.com/fusionlanguage/fut; the
+     translator itself is not part of RetroGleek),
+  2. rewrites the result to C# 5 syntax so it builds with the C# compiler that ships with Windows
+     (removes `#nullable` and nullable annotations, removes the null-forgiving operator, converts
+     expression-bodied members to block bodies). Only code is rewritten: every string literal, character
+     literal and comment is verified to be identical to the translator's output,
+  3. lowers RECOIL's allocation cap from 134217728 to 16777216 pixels/bytes at all six places it occurs,
+  4. adds `#pragma warning disable 162` (unreachable-code warning) to RECOIL.cs only, because the translator
+     emits constant conditions such as `if (true) ... else ...`; no code is changed by this,
+  5. appends the RetroFormats extension tables taken from RECOIL's formats.xml.
+
+Reproducing / verifying RECOIL.cs
+---------------------------------
+  python3 tools/downgrade_recoil.py <path-to-recoil-checkout> RECOIL.cs        (needs `fut` on PATH or FUT=...)
+
+To check that the whole program still parses as C# 5 (the language level of the compiler built into
+Windows), compile it with a Roslyn csc pinned to that version, for example:
+  csc -langversion:5 -target:winexe <every .cs file listed in build.bat>  (plus the usual /reference: assemblies)
+Re-run this check, and re-test, whenever RECOIL.cs is regenerated from a newer RECOIL.
+
+Network / privacy
+-----------------
+RECOIL.cs contains no networking, process-launching, registry, reflection or unsafe/native code. The only
+files it ever opens on its own are companion files (palettes, colour maps) of the picture being decoded,
+and RetroGleek restricts those to the picture's own folder and refuses cloud placeholder files.
