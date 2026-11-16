@@ -4,9 +4,7 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+![Gleek3Deek](images/SplitCow_Matcap.jpg)
 
 ## Features
 
@@ -120,6 +118,8 @@ python main.py
 
 ## MatCap editor and presets
 
+![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
+
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
@@ -149,6 +149,8 @@ Notes:
 
 ## Split compare (MatCap vs normal shading)
 
+![Gleek3Deek](images/france.jpg)
+
 Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's normal shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
 
 - **Drag the line or its round handle** to move the split. Dragging anywhere else orbits, pans and zooms as usual.
@@ -160,6 +162,8 @@ Press **D** with a model open. The viewport is split by a line: the MatCap on on
 - Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
 
 ## UV inspection
+
+![Gleek3Deek](images/heatmap.jpg)
 
 Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The analysis only runs when you ask, so models open quickly; until then the tests and heatmaps are greyed out. It runs in the background, so you can keep looking around, and the button turns into **Cancel** while it works (it stops within a moment, between steps). Opening another model clears the results, and you run it again. **Shift+U** shows or hides the layout pane. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
 
@@ -191,6 +195,8 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 - Vertices at the same position count as joined, so UV and hard-edge seams are not reported as holes. A colour test replaces the texture while it is on, like the UV tests, and can be combined with them.
 
 ## Measurements and cross-section
+
+![Gleek3Deek](images/Cutaway.jpg)
 
 **Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
 
