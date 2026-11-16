@@ -865,7 +865,80 @@ def uv_raster_overlaps(uv, tris, island, n_islands: int, res: int = 512, max_can
 UV_ISLAND_MAX_TRIS = 4_000_000      # about 1 s and 0.35 GB per million triangles; larger parts skip the island tests
 
 
-def uv_island_tests(points, uv, tris, flip, stack_ratio: float = 0.8, min_ratio: float = 0.05):
+class Cancelled(Exception):
+    """Raised inside an analysis when the user pressed Cancel."""
+
+
+def _check(cancel):
+    if cancel is not None and cancel():
+        raise Cancelled()
+
+
+def run_parts(func, inputs: list, label: str, cancel=None, progress=None) -> list:
+    """Run func(data, cancel) for every part, in order. A part that fails gives None (as it always did); Cancel
+    raises Cancelled, checked before every part and, inside func, between its stages. Nothing here touches VTK
+    objects of the live scene: inputs are read-only copies, so this can run on a worker thread."""
+    out = []
+    n = len(inputs)
+    for i, data in enumerate(inputs):
+        _check(cancel)
+        if progress is not None:
+            progress(f"{label}: part {i + 1} of {n} …" if n > 1 else f"{label} …")
+        try:
+            out.append(func(data, cancel))
+        except Cancelled:
+            raise
+        except Exception:
+            out.append(None)
+    return out
+
+
+def cavity_per_vertex(points, tris, cancel=None):
+    """Cheap 'is this vertex in a crease?' value in 0..1 (0 flat or convex, 1 deep crease), used by the Fake AO
+    option. For every edge, how far the neighbour lies in front of this vertex's tangent plane (area-weighted
+    normal): neighbours above the plane mean a concave spot. Averaged per vertex and smoothed once. It sees local
+    creases only (no distant occluders) and depends on mesh density, which is fine for a fake."""
+    pts = np.asarray(points, np.float64)
+    t = np.asarray(tris, np.int64)
+    n = len(pts)
+    out = np.zeros(n, np.float32)
+    if n == 0 or len(t) == 0:
+        return out
+    p0, p1, p2 = pts[t[:, 0]], pts[t[:, 1]], pts[t[:, 2]]
+    fn = np.cross(p1 - p0, p2 - p0)                     # length = 2 x area, so this is area weighting
+    nrm = np.zeros((n, 3))
+    for k in range(3):
+        for c in range(3):
+            nrm[:, c] += np.bincount(t[:, k], weights=fn[:, c], minlength=n)
+    ln = np.linalg.norm(nrm, axis=1)
+    nrm /= np.maximum(ln, 1e-30)[:, None]
+    _check(cancel)
+    a = np.concatenate([t[:, 0], t[:, 1], t[:, 2]])
+    b = np.concatenate([t[:, 1], t[:, 2], t[:, 0]])
+    a, b = np.concatenate([a, b]), np.concatenate([b, a])   # both directions
+    e = pts[b] - pts[a]
+    el = np.maximum(np.linalg.norm(e, axis=1), 1e-30)
+    sv = np.einsum("ij,ij->i", nrm[a], e) / el           # > 0: the neighbour is in front of the surface
+    cnt = np.maximum(np.bincount(a, minlength=n), 1)
+    cav = np.bincount(a, weights=sv, minlength=n) / cnt
+    _check(cancel)
+    cav = 0.5 * cav + 0.5 * (np.bincount(a, weights=cav[b], minlength=n) / cnt)   # one smoothing pass
+    return np.clip(cav * 2.0, 0.0, 1.0).astype(np.float32)
+
+
+def cavity_part(pd, cancel=None):
+    """cavity_per_vertex() for one part's polydata (None when it has no polygon surface)."""
+    if pd is None or pd.GetNumberOfPolys() == 0:
+        return None
+    polys = pd.GetPolys()
+    tris, _parent = fan_triangulate(numpy_support.vtk_to_numpy(polys.GetOffsetsArray()),
+                                    numpy_support.vtk_to_numpy(polys.GetConnectivityArray()))
+    if not len(tris):
+        return None
+    return cavity_per_vertex(numpy_support.vtk_to_numpy(pd.GetPoints().GetData()), tris, cancel)
+
+
+def uv_island_tests(points, uv, tris, flip, stack_ratio: float = 0.8, min_ratio: float = 0.05, cancel=None):
     """Overlapping / stacked / mirrored islands. Returns per-triangle bool flags, the island count, the
     number of islands involved in each test, and the 'flip' flags with whole mirrored islands taken out
     (those are reported as mirrored islands instead of as thousands of single flipped triangles)."""
@@ -874,6 +947,7 @@ def uv_island_tests(points, uv, tris, flip, stack_ratio: float = 0.8, min_ratio:
     ntri = np.bincount(island, minlength=n).astype(float)
     nflip = np.bincount(island, weights=flip.astype(float), minlength=n)
     mirrored = nflip > 0.5 * np.maximum(ntri, 1)
+    _check(cancel)
     area, pairs = uv_raster_overlaps(uv, tris, island, n)
     over = np.zeros(n, bool)
     stack = np.zeros(n, bool)
@@ -1009,7 +1083,7 @@ SHEET_CELLS = [512, 768, 1024, 1536, 2048]
 SHEET_ENV = {"enabled": True, "skybox": False, "lighting": True, "shadow": False, "gradient_bg": False,
              "sky": [0.95, 0.95, 0.95], "equator": [0.88, 0.88, 0.88], "ground": [0.76, 0.76, 0.76],
              "sun_int": 0.0, "highlight": 0.0, "ambient": 1.0, "exposure": 0.0, "tonemap": "none",
-             "sky_blur": 0.0, "yaw": 0.0}
+             "sky_blur": 0.0, "yaw": 0.0, "fake_ao": False, "pano_light": 0.0}
 
 
 def sheet_views(layout: str, u, f, r):
@@ -1066,10 +1140,11 @@ def world_parts(actors: list) -> list:
     return out
 
 
-def mesh_part_analysis(pd):
+def mesh_part_analysis(pd, cancel=None):
     """Integrity analysis of one part's polygons, or None when it has no polygon surface."""
     if pd is None or pd.GetNumberOfPolys() == 0:
         return None
+    _check(cancel)
     polys = pd.GetPolys()
     tris, parent = fan_triangulate(numpy_support.vtk_to_numpy(polys.GetOffsetsArray()),
                                    numpy_support.vtk_to_numpy(polys.GetConnectivityArray()))
@@ -1105,7 +1180,7 @@ def mesh_totals(infos: list) -> dict:
     return out
 
 
-def uv_collect_part(pd):
+def uv_collect_part(pd, cancel=None):
     """UV analysis of one part (tests, islands, density and stretch), or None when it has no UVs."""
     tc = pd.GetPointData().GetTCoords() if pd is not None else None
     if tc is None or pd.GetNumberOfPolys() == 0:
@@ -1117,17 +1192,21 @@ def uv_collect_part(pd):
     if not len(tris):
         return None
     diag = uv_diagnose(uv, tris)
+    _check(cancel)
     pts = numpy_support.vtk_to_numpy(pd.GetPoints().GetData())
     flags = {"oob": diag["oob"], "flip": diag["flip"], "zero": diag["zero"],
              **{k: np.zeros(len(tris), bool) for k in UV_ISLAND_TESTS}}
     isl = None
     if len(tris) <= UV_ISLAND_MAX_TRIS:                 # island tests need real work: skip huge meshes
         try:
-            isl = uv_island_tests(pts, uv, tris, diag["flip"])
+            isl = uv_island_tests(pts, uv, tris, diag["flip"], cancel=cancel)
             for k in UV_ISLAND_TESTS + ("flip",):
                 flags[k] = isl[k]
+        except Cancelled:
+            raise
         except Exception:
             isl = None
+    _check(cancel)
     return {"m": uv_metrics(pts, uv, tris), "uv": uv, "tris": tris, "parent": parent,
             "npoly": polys.GetNumberOfCells(), "first": pd.GetNumberOfVerts() + pd.GetNumberOfLines(),
             "flags": flags, "isl": isl, "ref": diag["ref"]}

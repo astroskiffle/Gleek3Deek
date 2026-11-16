@@ -55,7 +55,7 @@ _MC_BODIES = [
   mcCol += vec3(0.60, 0.14, 0.09) * pow(1.0 - clamp(mcN.z, 0.0, 1.0), 2.0) * 0.30;
   mcCol += vec3(1.0, 0.92, 0.86) * (pow(mcS, 14.0) * 0.22 + pow(mcS, 70.0) * 0.18);
 """),
-    ("Framer", """
+    ("Glossy", """
   vec2 p = mcN.xy;
   mcCol = mix(vec3(0.06, 0.065, 0.075), vec3(0.62, 0.64, 0.68), smoothstep(-0.3, 0.9, mcD));
   float bx = 1.0 - smoothstep(0.0, 0.06, abs(p.x + 0.38) - 0.22);

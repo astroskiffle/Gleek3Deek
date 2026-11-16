@@ -38,6 +38,8 @@ import tempfile
 
 import threading
 
+import time
+
 import traceback
 
 from collections import deque
@@ -90,7 +92,7 @@ from vtkmodules.vtkRenderingAnnotation import vtkAxesActor
 
 from vtkmodules.util import numpy_support
 
-from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
+from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkFloatArray, vtkPoints
 
 from vtkmodules.vtkCommonMath import vtkMatrix4x4
 
@@ -168,15 +170,16 @@ from analysis import (
     UV_COLOR_OK, UV_HEAT_DEFAULTS, UV_HEAT_MODES, UV_ISLAND_TESTS, UV_TESTS, _HEAT_STOPS, _STRETCH_STOPS,
     _fmt_len, angle_at, build_export_polydata, collect_model_info, collect_textures, export_default_name,
     fan_triangulate, fmt_num, lod_decimate, material_summary, measure_model, mesh_diagnose,
-    mesh_part_analysis, mesh_totals, sheet_framing, sheet_views, snapshot_export_parts, texture_channel_rgb,
+    Cancelled, cavity_part, mesh_part_analysis, mesh_totals, run_parts, sheet_framing, sheet_views, snapshot_export_parts, texture_channel_rgb,
     texture_facts, texture_fingerprint, texture_to_array, unit_scale, uv_collect_part, uv_diagnose,
     uv_heat_density, uv_heat_stretch, uv_island_tests, uv_metrics, uv_poly_colors, weighted_median,
     world_parts, write_mesh)
-from panels import ExportDialog, InfoPanel, MaterialsPanel, ScenePanel, VIEW_CHANNELS, _rgb_to_qimage
+from panels import ExportDialog, InfoPanel, MaterialsPanel, ScenePanel, TagsDialog, VIEW_CHANNELS, _rgb_to_qimage
+from library import COLORS, Library, parse_query, query_is_empty, resolve_library_path, split_tags
 
 from environment import (
     ENV_BUILTIN_PRESETS, ENV_DEFAULTS, EnvironmentPanel, SKY_TEX_W, blob_texture_array, clean_env,
-    dir_to_azel, env_shader_code, frame_to_world, numpy_to_vtk_image, prepare_panorama, read_panorama,
+    dir_to_azel, env_shader_code, frame_to_world, numpy_to_vtk_image, pano_frame_matrix, prepare_panorama, read_panorama,
     reproject_panorama, sun_dir_frame)
 
 from gallery import Gallery, LoadTask, ORIENT, SORTS, ThumbnailManager, _setting_int, scan_assets
@@ -192,12 +195,12 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.7.3",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle/Gleek3Deek",                  # optional extra line, e.g. a website or contact address
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
@@ -266,6 +269,40 @@ class Overlay(QLabel):
     def reposition(self):
         p = self.parent()
         self.move((p.width() - self.width()) // 2, (p.height() - self.height()) // 2)
+
+
+class _AnalysisSignals(QObject):
+    progress = Signal(str)
+    done = Signal(int, object)
+    failed = Signal(int, str)
+
+
+class AnalysisTask(QRunnable):
+    """Runs one per-part analysis (UV tests or integrity tests) on a worker thread. It only ever sees read-only
+    copies of the geometry. Cancelling is checked between parts and between the stages of a part, so it takes
+    effect within a moment, not instantly."""
+
+    def __init__(self, token: int, func, inputs: list, label: str):
+        super().__init__()
+        self.token, self.func, self.inputs, self.label = token, func, inputs, label
+        self.cancelled = False
+        self.signals = _AnalysisSignals()
+        self._last = 0.0
+
+    def _progress(self, text: str):
+        now = time.monotonic()
+        if now - self._last >= 0.15:                 # a model with thousands of parts must not flood the window
+            self._last = now
+            self.signals.progress.emit(text)
+
+    def run(self):
+        try:
+            res = run_parts(self.func, self.inputs, self.label, lambda: self.cancelled, self._progress)
+            self.signals.done.emit(self.token, res)
+        except Cancelled:
+            self.signals.failed.emit(self.token, "cancelled")
+        except Exception as e:
+            self.signals.failed.emit(self.token, str(e) or type(e).__name__)
 
 
 class _LodSignals(QObject):
@@ -807,6 +844,7 @@ class Viewer(QWidget):
     panel_requested = Signal(str)         # show/raise a docked panel: environment, matcap, scene, materials
     uv_changed = Signal()                 # UV analysis or UV view settings changed
     mesh_changed = Signal()               # mesh analysis or mesh test selection changed
+    analysis_progress = Signal(str, str)  # ("uv" | "mesh", text) while an analysis runs in the background
     measure_changed = Signal()            # measurement results, units, points or section changed
     lod_changed = Signal()                # LOD generation progress, results or shown level changed
 
@@ -888,6 +926,9 @@ class Viewer(QWidget):
         self.uv_tests: set = set()                 # active UV diagnostics (keys of UV_TESTS)
         self.mesh_tests: set = set()               # active mesh diagnostics (keys of MESH_TESTS)
         self._mesh_data = None                     # per-part mesh analysis; None until asked for
+        self._mesh_task, self._mesh_token, self.mesh_status = None, 0, ""     # background integrity analysis
+        self._uv_task, self._uv_token, self.uv_status = None, 0, ""           # background UV analysis
+        self._ao_cav, self._ao_task, self._ao_token, self._ao_on = None, None, 0, False   # Fake AO
         self.uv_part = -1                          # -1 = all parts
         self.uv_backdrop_on = True
         self.uv_heat = "off"                       # off | density | stretch
@@ -1110,11 +1151,14 @@ class Viewer(QWidget):
         self._measure_clear(render=False)
         self._section_clear()
         self._measure_result = None
+        self._uv_stop()
+        self._mesh_stop()
         self._uv_saved, self._uv_data = {}, []
         self._uv_ready = False
         self.uv_tests, self.uv_heat = set(), "off"   # settings belong to the previous model
         self._mesh_data = None
         self.mesh_tests = set()                    # tests belong to the previous model; run them again
+        self._ao_stop()
         self._uv_tex_cache = {}
         for a in self.actors:
             self.renderer.RemoveActor(a)
@@ -1170,7 +1214,7 @@ class Viewer(QWidget):
 
     # ----- shading modes ----------------------------------------------------
     def cycle_matcap(self):
-        """M: Red Wax -> Clay Green -> RealSkin -> Framer -> RoughMetal -> normal shading."""
+        """M: Red Wax -> Clay Green -> RealSkin -> Glossy -> RoughMetal -> normal shading."""
         if not self.actors:
             return
         nxt = 0 if self.mode != "matcap" else self.matcap_idx + 1
@@ -1187,6 +1231,7 @@ class Viewer(QWidget):
             mode = "surface"  # pressing W/P again toggles back to shaded
         entries = self._matcaps()
         self.matcap_idx = min(self.matcap_idx, len(entries) - 1)
+        self._ao_mode = mode                      # the mode being installed (self.mode still has the old one)
         log_pos = _log_size()
         for a in self.actors:
             prop = a.GetProperty()
@@ -1194,6 +1239,7 @@ class Viewer(QWidget):
                 a.GetShaderProperty().ClearAllFragmentShaderReplacements()
             except Exception:
                 pass
+            self._ao_detach(a)
             if mode == "wire":
                 prop.SetRepresentationToWireframe()
             elif mode == "points":
@@ -1213,6 +1259,7 @@ class Viewer(QWidget):
                 self._clear_replacements()
                 mode = "surface"
         self._env_code = ""
+        self._ao_mode = mode
         if mode == "surface" and self._current_env_code():
             try:
                 self._install_env()
@@ -1222,6 +1269,7 @@ class Viewer(QWidget):
         self._sync_env_lights(mode)
         self._apply_edges(mode)
         self.mode = mode
+        self._ao_mode = None
         self._split_sync()
         label = entries[self.matcap_idx][0]
         self.matcap_btn.setText((label if len(label) <= 16 else label[:15] + "…")
@@ -1459,11 +1507,16 @@ class Viewer(QWidget):
             self.act_split.setChecked(False)
             self.act_split.blockSignals(False)
             return
+        had_ao = self._ao_wanted()
         self.split_on = bool(on)
         if self.actors:
             self._split_timer.stop()
             if self.split_on or self.mode == "matcap":
                 self.set_mode("matcap", force=True)   # re-bakes (and switches to MatCap when turning on)
+        if on and had_ao:
+            self.message.emit("Split compare on (Fake AO is paused while it is on): drag the line, "
+                              "double-click it to centre, D hides it")
+            return
         self.message.emit("Split compare on: drag the line, double-click it to centre, D hides it"
                           if on else "Split compare off")
 
@@ -1622,18 +1675,154 @@ class Viewer(QWidget):
     def _current_env_code(self) -> str:
         if not self._env_on("lighting"):
             return ""
-        return env_shader_code(self.env, self._sun_frame_dir(), self._env_view_locked)
+        sh = None
+        if self._pano is not None and self.env.get("pano_light", 0) > 0 and self._pano.get("sh") is not None:
+            sh = (self._pano["sh"], pano_frame_matrix(self.up_axis, self.env["yaw"]))
+        return env_shader_code(self.env, self._sun_frame_dir(), self._env_view_locked, self._ao_wanted(),
+                               sh, self.up_axis)
 
     def _install_env(self):
         code = self._current_env_code()
+        ao = self._ao_wanted()
+        if ao:
+            self._ao_update()
         for a in self.actors:
             sp = a.GetShaderProperty()
             sp.ClearAllFragmentShaderReplacements()
+            self._ao_detach(a)
             sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
+            if ao:
+                self._ao_attach(a)
         self._env_code = code
 
+    # ----- Fake AO: crease darkening + a gentle height gradient, as a per-vertex attribute -----
+    AO_ARRAY = "gk_fake_ao"
+
+    def _ao_wanted(self) -> bool:
+        return bool(self._env_on("lighting") and self.env.get("fake_ao") and self.env.get("ao_strength", 0) > 0
+                    and self.actors and not self._ao_split_blocks() and not self.edges_on
+                    and not getattr(self, "_ao_broken", False))
+
+    def _ao_split_blocks(self) -> bool:
+        """Split compare pauses Fake AO only while the MatCap | normal split is actually showing. The setting
+        itself stays on after you leave MatCap, so it must not block AO in plain shaded mode."""
+        m = getattr(self, "_ao_mode", None) or self.mode
+        return bool(self.split_on and m == "matcap")
+
+    def _ao_live(self) -> bool:
+        return bool(self._ao_wanted() and self._ao_on and self.mode == "surface" and self._env_code)
+
+    def _ao_attach(self, a):
+        pd = _mapper_data(a.GetMapper())
+        arr = getattr(a, "_ao_arr", None)
+        if pd is None or arr is None or not isinstance(pd, vtkPolyData):
+            return
+        pd.GetPointData().AddArray(arr)
+        sp = a.GetShaderProperty()
+        sp.AddVertexShaderReplacement("//VTK::PositionVC::Dec", True,
+                                      "//VTK::PositionVC::Dec\nin vec2 gkAO;\nout vec2 gkAOv;\n", False)
+        sp.AddVertexShaderReplacement("//VTK::PositionVC::Impl", True,
+                                      "//VTK::PositionVC::Impl\ngkAOv = gkAO;\n", False)
+        sp.AddFragmentShaderReplacement("//VTK::Light::Dec", True,
+                                        "//VTK::Light::Dec\nin vec2 gkAOv;\n", False)
+        a.GetMapper().MapDataArrayToVertexAttribute("gkAO", self.AO_ARRAY, 0, -1)   # 0 = point data
+        self._ao_on = True
+
+    def _ao_detach(self, a):
+        if not self._ao_on:
+            return
+        try:
+            a.GetShaderProperty().ClearAllVertexShaderReplacements()
+            a.GetMapper().RemoveAllVertexAttributeMappings()
+            pd = _mapper_data(a.GetMapper())
+            if pd is not None and pd.GetPointData().GetArray(self.AO_ARRAY) is not None:
+                pd.GetPointData().RemoveArray(self.AO_ARRAY)
+        except Exception:
+            pass
+
+    def _ao_heights(self):
+        """Per part: height of every vertex in world space, scaled 0 (lowest point of the model) to 1 (highest)."""
+        vax = 2 if self.up_axis == "Z" else 1
+        hs = []
+        for a in self.actors:
+            pd = _mapper_data(a.GetMapper())
+            if pd is None or pd.GetPoints() is None or pd.GetNumberOfPoints() == 0:
+                hs.append(None)
+                continue
+            m = a.GetMatrix()
+            row = np.array([m.GetElement(vax, j) for j in range(4)])
+            p = numpy_support.vtk_to_numpy(pd.GetPoints().GetData()).astype(np.float64)
+            hs.append(p @ row[:3] + row[3])
+        got = [h for h in hs if h is not None]
+        if not got:
+            return hs
+        lo, hi = min(h.min() for h in got), max(h.max() for h in got)
+        span = max(hi - lo, 1e-12)
+        return [None if h is None else ((h - lo) / span).astype(np.float32) for h in hs]
+
+    def _ao_update(self):
+        """(Re)build the attribute arrays from the cached crease values and the current placement.
+        The crease values come from a worker thread the first time; until then they are zero."""
+        hs = self._ao_heights()
+        for i, a in enumerate(self.actors):
+            h = hs[i]
+            if h is None:
+                a._ao_arr = None
+                continue
+            cav = self._ao_cav[i] if (self._ao_cav is not None and i < len(self._ao_cav)) else None
+            data = np.zeros((len(h), 2), np.float32)
+            if cav is not None and len(cav) == len(h):
+                data[:, 0] = cav
+            data[:, 1] = h
+            arr = numpy_support.numpy_to_vtk(data, deep=True, array_type=None)
+            arr.SetName(self.AO_ARRAY)
+            a._ao_arr = arr
+        if self._ao_cav is None and self._ao_task is None:
+            self._ao_start()
+
+    def _ao_start(self):
+        self._ao_token += 1
+        task = AnalysisTask(self._ao_token, cavity_part, self._task_inputs(), "Fake AO")
+        task.signals.done.connect(self._ao_done)
+        task.signals.failed.connect(self._ao_failed)
+        self._ao_task = task
+        QThreadPool.globalInstance().start(task)
+
+    def _ao_stop(self):
+        if self._ao_task is not None:
+            self._ao_task.cancelled = True
+        self._ao_task = None
+        self._ao_token += 1
+        self._ao_cav = None
+        self._ao_on = False
+        self._ao_broken = False
+
+    def _ao_failed(self, token: int, msg: str):
+        if token == self._ao_token:
+            self._ao_task = None                  # no crease values: the height gradient still works
+            self._ao_cav = [None] * len(self.actors)
+
+    def _ao_done(self, token: int, data: list):
+        if token != self._ao_token:
+            return
+        self._ao_task = None
+        self._ao_cav = data
+        if self._ao_live():
+            self._ao_refresh_arrays()
+
+    def _ao_refresh_arrays(self):
+        """New values for the live attribute (no shader change): after the crease values arrive or a part moves."""
+        self._ao_update()
+        for a in self.actors:
+            pd = _mapper_data(a.GetMapper())
+            arr = getattr(a, "_ao_arr", None)
+            if pd is not None and arr is not None and isinstance(pd, vtkPolyData):
+                pd.GetPointData().AddArray(arr)      # replaces the array of the same name
+                pd.Modified()
+        self.rw.Render()
+
     def _sync_env_lights(self, mode=None):
-        """Two scene lights carry 'world up' and 'the sun' into the shader (surface mode only,
+        """Three scene lights carry 'world up', 'the sun' and 'world +X' into the shader (surface mode only,
         so every other mode keeps VTK's normal headlight)."""
         mode = mode or self.mode
         if mode == "matcap" and self.split_on:
@@ -1642,12 +1831,15 @@ class Viewer(QWidget):
                 and not self._env_view_locked)
         if want:
             if self._env_lights is None:
-                self._env_lights = (vtkLight(), vtkLight())
+                self._env_lights = (vtkLight(), vtkLight(), vtkLight())
                 for light in self._env_lights:
                     light.SetLightTypeToSceneLight()
                     light.SetPositional(False)
                     light.SetFocalPoint(0.0, 0.0, 0.0)
-            up_l, sun_l = self._env_lights
+            up_l, sun_l, x_l = self._env_lights
+            x_l.SetPosition(1.0, 0.0, 0.0)             # only its direction is used (panorama light)
+            x_l.SetColor(0.3, 0.3, 0.3)
+            x_l.SetIntensity(1.0)
             up_l.SetPosition(*((0.0, 0.0, 1.0) if self.up_axis == "Z" else (0.0, 1.0, 0.0)))
             up_l.SetColor(*[v * 0.3 for v in self.env["sky"]])
             sun_l.SetPosition(*[float(x) for x in frame_to_world(self._sun_frame_dir(), self.up_axis)])
@@ -1658,6 +1850,7 @@ class Viewer(QWidget):
                 self.renderer.AutomaticLightCreationOff()
                 self.renderer.AddLight(up_l)
                 self.renderer.AddLight(sun_l)
+                self.renderer.AddLight(x_l)
                 self._env_lights_added = True
         elif self._env_lights_added:
             for light in self._env_lights:
@@ -1780,7 +1973,8 @@ class Viewer(QWidget):
         if ov is None:
             return
         self._preset_idx = list(ENV_BUILTIN_PRESETS).index(name)
-        self.apply_environment_preset(clean_env({**ENV_DEFAULTS, **ov, "path": ""}), "", name)
+        keep = {k: self.env.get(k, ENV_DEFAULTS[k]) for k in ("fake_ao", "ao_strength")}
+        self.apply_environment_preset(clean_env({**ENV_DEFAULTS, **keep, **ov, "path": ""}), "", name)
 
     def cycle_lighting_preset(self):
         names = list(ENV_BUILTIN_PRESETS)
@@ -1922,7 +2116,24 @@ class Viewer(QWidget):
             self.rw.Render()
 
     def _env_failed(self):
-        """The environment shader didn't compile: follow the camera instead, or switch off."""
+        """The environment shader didn't compile: drop Fake AO first, then follow the camera instead, then switch off."""
+        if self._ao_wanted():
+            self._ao_broken = True
+            self._ao_on = True
+            for a in self.actors:
+                self._ao_detach(a)
+            self._ao_on = False
+            after = _log_size()
+            try:
+                self._install_env()
+                self.rw.Render()
+            except Exception:
+                pass
+            if not _shader_error_since(after):
+                self.message.emit("This GPU rejected Fake AO, so it was switched off")
+                if self._env_panel is not None:
+                    self._env_panel.set_env(self.env)
+                return
         if not self._env_view_locked:
             self._env_view_locked = True
             self._sync_env_lights()
@@ -2222,6 +2433,8 @@ class Viewer(QWidget):
         self._after_move()
 
     def _after_move(self):
+        if self._ao_live():
+            self._ao_refresh_arrays()
         self._sync_ground()
         self._sync_shadow()
         self.renderer.ResetCamera()
@@ -2319,9 +2532,15 @@ class Viewer(QWidget):
                 p.EdgeVisibilityOff()
 
     def set_edges(self, on: bool):
+        had_ao = self._ao_wanted()
         self.edges_on = bool(on)
         self.settings.setValue("edges_on", "true" if on else "false")
         self._apply_edges()
+        if self.actors and self.mode == "surface" and had_ao != self._ao_wanted():
+            self.set_mode("surface")              # Fake AO is paused while the wireframe overlay is on
+            if on:
+                self.message.emit("Wireframe overlay on (Fake AO is paused while it is on)")
+            return
         self.rw.Render()
 
     def toggle_edges(self):
@@ -2605,6 +2824,7 @@ class Viewer(QWidget):
 
     def uv_refresh(self):
         """A model opened: forget the old analysis. Nothing is calculated until the user asks (uv_ensure)."""
+        self._uv_stop()
         self._uv_restore_heatmap()
         self._uv_data = []
         self._uv_ready = False
@@ -2613,24 +2833,82 @@ class Viewer(QWidget):
             self.rw.Render()
         self.uv_changed.emit()
 
+    def _task_inputs(self) -> list:
+        """Read-only copies of every part's geometry for a worker (the live data is never handed over)."""
+        out = []
+        for a in self.actors:
+            ds = _mapper_data(a.GetMapper())
+            if ds is not None and isinstance(ds, vtkPolyData):
+                c = vtkPolyData()
+                c.ShallowCopy(ds)                   # shared arrays, read-only
+                out.append(c)
+            else:
+                out.append(None)
+        return out
+
     def uv_ensure(self):
-        """Run the UV analysis for the open model (once): tests, islands, density and stretch."""
-        if self._uv_ready or not self.actors:
+        """Start the UV analysis for the open model (once). It runs in the background: the window stays usable and
+        the Run button turns into Cancel until it finishes."""
+        if self._uv_ready or not self.actors or self._uv_task is not None:
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            self._uv_restore_heatmap()
-            self._uv_data = self._uv_collect()
-            dens, w = [], []
-            for d in self._uv_data:
-                if d is not None:
-                    ok = d["m"]["valid"]
-                    dens.append(d["m"]["dens"][ok])
-                    w.append(d["m"]["area3"][ok])
-            self._uv_ref = weighted_median(np.concatenate(dens), np.concatenate(w)) if dens else 0.0
-            self._uv_ready = True
-        finally:
-            QApplication.restoreOverrideCursor()
+        self._uv_restore_heatmap()
+        self._uv_token += 1
+        task = AnalysisTask(self._uv_token, uv_collect_part, self._task_inputs(), "Analysing UVs")
+        task.signals.progress.connect(self._uv_progress)
+        task.signals.done.connect(self._uv_done)
+        task.signals.failed.connect(self._uv_failed)
+        self._uv_task = task
+        self.uv_status = "Analysing UVs …"
+        self.uv_changed.emit()
+        QThreadPool.globalInstance().start(task)
+
+    def uv_run_or_cancel(self):
+        if self._uv_task is not None:
+            self._uv_task.cancelled = True
+            self.uv_status = "Cancelling …"
+            self.uv_changed.emit()
+        else:
+            self.uv_ensure()
+
+    def _uv_stop(self):
+        """Drop a running UV analysis without waiting for it (a model was opened or the geometry changed)."""
+        if self._uv_task is not None:
+            self._uv_task.cancelled = True
+        self._uv_task = None
+        self._uv_token += 1
+        self.uv_status = ""
+
+    def _uv_progress(self, text: str):
+        if self._uv_task is not None and not self._uv_task.cancelled:
+            self.uv_status = text
+            self.analysis_progress.emit("uv", text)
+
+    def _mesh_progress(self, text: str):
+        if self._mesh_task is not None and not self._mesh_task.cancelled:
+            self.mesh_status = text
+            self.analysis_progress.emit("mesh", text)
+
+    def _uv_failed(self, token: int, msg: str):
+        if token != self._uv_token:
+            return                                   # another model was opened meanwhile
+        self._uv_task = None
+        self.uv_status = "" if msg == "cancelled" else "The UV analysis failed: " + msg
+        self.uv_changed.emit()
+
+    def _uv_done(self, token: int, data: list):
+        if token != self._uv_token:
+            return
+        self._uv_task = None
+        self.uv_status = ""
+        self._uv_data = data
+        dens, w = [], []
+        for d in self._uv_data:
+            if d is not None:
+                ok = d["m"]["valid"]
+                dens.append(d["m"]["dens"][ok])
+                w.append(d["m"]["area3"][ok])
+        self._uv_ref = weighted_median(np.concatenate(dens), np.concatenate(w)) if dens else 0.0
+        self._uv_ready = True
         self._uv_recolor()
 
     def _uv_heat_active(self) -> bool:
@@ -3163,6 +3441,7 @@ class Viewer(QWidget):
         # everything measured on the old geometry no longer applies
         self.uv_tests, self.uv_heat = set(), "off"
         self.mesh_tests = set()
+        self._mesh_stop()
         self._mesh_data = None
         self._measure_result = None
         self.uv_refresh()
@@ -3179,20 +3458,48 @@ class Viewer(QWidget):
 
     # ----- mesh integrity diagnostics ------------------------------------------------------
     def mesh_ensure(self):
-        """Analyse every part once (on first use after a model opens). Cheap for normal assets, a few
-        seconds for multi-million-triangle scans."""
-        if self._mesh_data is not None:
+        """Start the integrity analysis of every part (once per model). It runs in the background: the window stays
+        usable and the Run button turns into Cancel until it finishes."""
+        if self._mesh_data is not None or not self.actors or self._mesh_task is not None:
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        data = []
-        try:
-            for a in self.actors:
-                try:
-                    data.append(mesh_part_analysis(_mapper_data(a.GetMapper())))
-                except Exception:
-                    data.append(None)
-        finally:
-            QApplication.restoreOverrideCursor()
+        self._mesh_token += 1
+        task = AnalysisTask(self._mesh_token, mesh_part_analysis, self._task_inputs(), "Analysing the mesh")
+        task.signals.progress.connect(self._mesh_progress)
+        task.signals.done.connect(self._mesh_done)
+        task.signals.failed.connect(self._mesh_failed)
+        self._mesh_task = task
+        self.mesh_status = "Analysing the mesh …"
+        self.mesh_changed.emit()
+        QThreadPool.globalInstance().start(task)
+
+    def mesh_run_or_cancel(self):
+        if self._mesh_task is not None:
+            self._mesh_task.cancelled = True
+            self.mesh_status = "Cancelling …"
+            self.mesh_changed.emit()
+        else:
+            self.mesh_ensure()
+
+    def _mesh_stop(self):
+        """Drop a running integrity analysis without waiting for it (a model was opened or the geometry changed)."""
+        if self._mesh_task is not None:
+            self._mesh_task.cancelled = True
+        self._mesh_task = None
+        self._mesh_token += 1
+        self.mesh_status = ""
+
+    def _mesh_failed(self, token: int, msg: str):
+        if token != self._mesh_token:
+            return
+        self._mesh_task = None
+        self.mesh_status = "" if msg == "cancelled" else "The mesh analysis failed: " + msg
+        self.mesh_changed.emit()
+
+    def _mesh_done(self, token: int, data: list):
+        if token != self._mesh_token:
+            return
+        self._mesh_task = None
+        self.mesh_status = ""
         self._mesh_data = data
         self.mesh_changed.emit()
 
@@ -3206,7 +3513,9 @@ class Viewer(QWidget):
 
     def set_mesh_test(self, key: str, on: bool):
         if on:
-            self.mesh_ensure()
+            if self._mesh_data is None:              # the tests need the analysis first (the checkboxes are off until then)
+                self.mesh_ensure()
+                return
             self.mesh_tests.add(key)
             self._mesh_need_view()
         else:
@@ -3473,6 +3782,8 @@ class Viewer(QWidget):
         self.message.emit("Screenshot copied to clipboard")
 
     def shutdown(self):
+        self._uv_stop()
+        self._mesh_stop()
         self._orbit_timer.stop()
         self.vtk_widget.Finalize()
 
@@ -3658,6 +3969,14 @@ class MainWindow(QMainWindow):
         self.token = 0
         self.current_path = ""
         self._tasks: dict[int, LoadTask] = {}
+        # tags, colour labels and ratings: one JSON file next to the program (never inside a model file)
+        base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+        fallback = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation) or str(Path.home())
+        self.library = Library(resolve_library_path(str(base), fallback,
+                                                    str(self.settings.value("library_path", "") or "")))
+        self._virtual_query = ""
+        if self.library.notice or self.library.error:
+            QTimer.singleShot(0, lambda: self.statusBar().showMessage(self.library.notice or self.library.error, 15000))
 
         # ---- left: file tree
         self.fs = QFileSystemModel()
@@ -3686,6 +4005,9 @@ class MainWindow(QMainWindow):
         self.gallery.delete_requested.connect(self._delete_file)
         self.gallery.refresh_thumb_requested.connect(self._refresh_thumbnail)
         self.gallery.refresh_all_requested.connect(self._refresh_all_thumbnails)
+        self.gallery.set_library(self.library)
+        self.gallery.tags_requested.connect(self._edit_tags)
+        self.gallery.metadata_changed.connect(self._library_saved)
         self.thumbs = ThumbnailManager()
         self.thumbs.ready.connect(self.gallery.set_thumb)
 
@@ -3695,9 +4017,14 @@ class MainWindow(QMainWindow):
         gl.setSpacing(0)
         bar = QFrame()
         bar.setObjectName("galleryBar")
-        bl = QHBoxLayout(bar)
+        bl = QVBoxLayout(bar)                  # two rows: the address bar on top, the tools below it
         bl.setContentsMargins(10, 6, 10, 6)
-        bl.setSpacing(8)
+        bl.setSpacing(6)
+        row1, row2 = QHBoxLayout(), QHBoxLayout()
+        row1.setSpacing(8)
+        row2.setSpacing(8)
+        bl.addLayout(row1)
+        bl.addLayout(row2)
         self.up_btn = QToolButton()
         self.up_btn.setObjectName("upBtn")
         self.up_btn.setArrowType(Qt.ArrowType.UpArrow)
@@ -3711,9 +4038,19 @@ class MainWindow(QMainWindow):
         self.address.returnPressed.connect(self._address_entered)
         self.address.textEdited.connect(lambda _t: self._address_error(False))
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search models…")
+        self.search.setPlaceholderText("Search…  tag:rock  rating:>=4  color:red")
+        self.search.setToolTip("Words match the file name or its tags.\n"
+                               "tag:name   -tag:name   color:red   rating:4   rating:>=3\n"
+                               "Use quotes for several words: tag:\"hard surface\"")
         self.search.setClearButtonEnabled(True)
-        self.search.setMaximumWidth(260)
+        self.search.setMaximumWidth(480)
+        self.library_btn = QToolButton()
+        self.library_btn.setText("Library ▾")
+        self.library_btn.setToolTip("Tags, colour labels, ratings and smart folders")
+        self.library_btn.setPopupMode(QToolButton.InstantPopup)
+        self.library_menu = QMenu(self.library_btn)
+        self.library_menu.aboutToShow.connect(self._build_library_menu)
+        self.library_btn.setMenu(self.library_menu)
         self.search.textChanged.connect(self.gallery.set_filter)
         self.sort_box = QComboBox()
         self.sort_box.addItems([s[0] for s in SORTS])
@@ -3733,13 +4070,16 @@ class MainWindow(QMainWindow):
         self.size_slider.setValue(max(64, min(card, 192)))
         self.gallery.set_card_size(self.size_slider.value())
         self.size_slider.valueChanged.connect(self._size_changed)
-        bl.addWidget(self.up_btn)
-        bl.addWidget(self.address, 1)
-        bl.addWidget(self.search)
-        bl.addWidget(self.sort_box)
-        bl.addWidget(self.count_label)
-        bl.addWidget(size_label)
-        bl.addWidget(self.size_slider)
+        row1.addWidget(self.up_btn)
+        row1.addWidget(self.address, 1)
+        row2.addWidget(self.search, 1)
+        row2.addWidget(self.sort_box)
+        row2.addSpacing(30)                    # room between the sort box and Library
+        row2.addWidget(self.library_btn)
+        row2.addStretch(1)
+        row2.addWidget(self.count_label)
+        row2.addWidget(size_label)
+        row2.addWidget(self.size_slider)
         gl.addWidget(bar)
         gl.addWidget(self.gallery)
 
@@ -4171,6 +4511,9 @@ class MainWindow(QMainWindow):
         return (name[:-len(ext)] if ext else name), ext
 
     def _refresh_gallery(self, select: str = ""):
+        if self.gallery.virtual:
+            self._show_query(self._virtual_query, self.gallery.virtual, select=select)
+            return
         folder = self.gallery.folder
         if not folder:
             return
@@ -4202,6 +4545,7 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "Rename", f"Could not rename the file.\n\n{e}")
             return
+        self.library.rename(path, dst)                 # keep its tags, colour and rating
         ORIENT.set(dst, ORIENT.get(path))              # keep its Y-up / Z-up choice
         ORIENT.set(path, "Y")
         self.thumbs.adopt(old_cache, dst)              # the renamed file keeps its thumbnail
@@ -4296,8 +4640,131 @@ class MainWindow(QMainWindow):
                 return
         if self.current_path == path:
             self.current_path = ""
+        self.library.remove(path)
         self._refresh_gallery()
         self.statusBar().showMessage(f"Deleted {name}", 6000)
+
+    # ----- library: tags, colour labels, ratings, smart folders ----------------------------------
+    def _library_saved(self):
+        if self.library.error:
+            self.statusBar().showMessage(self.library.error, 10000)
+
+    def _edit_tags(self, paths: list):
+        lib = self.library
+        sets = [{t.lower() for t in lib.get(p)["tags"]} for p in paths]
+        common = set.intersection(*sets) if sets else set()
+        shared = [t for t in lib.get(paths[0])["tags"] if t.lower() in common]
+        dlg = TagsDialog(self, len(paths), shared, lib.all_tags())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        typed = split_tags(",".join(dlg.tags()))
+        typed_l = {t.lower() for t in typed}
+        removed = [t for t in shared if t.lower() not in typed_l]
+        added = [t for t in typed if t.lower() not in common]
+        if lib.change_tags(paths, removed, added):
+            self.gallery._rebuild()
+            self.statusBar().showMessage(f"Tags updated for {len(paths)} file{'s' if len(paths) != 1 else ''}", 6000)
+        self._library_saved()
+
+    def _show_query(self, query: str, title: str, select: str = ""):
+        """A smart-folder view: every library file that matches the saved search, from any folder."""
+        self._virtual_query = query
+        paths = self.library.find(query)
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        self.thumbs.request_batch(self.gallery.populate_paths(paths, title))
+        self.address.setText("")
+        self.address.setPlaceholderText(f"Smart folder: {title}   ({query})")
+        self._address_error(False)
+        if select:
+            self.gallery.select_path(select)
+        if self.stack.currentWidget() is self.viewer:
+            self.close_viewer()
+        self.statusBar().showMessage(f"{title}: {len(paths)} file{'s' if len(paths) != 1 else ''}", 8000)
+
+    def _leave_smart(self, folder: str = ""):
+        folder = folder or str(self.settings.value("last_dir", str(Path.home())))
+        self.address.setPlaceholderText("Type a folder path and press Enter…")
+        self.address.setText(os.path.normpath(folder))
+        self.search.blockSignals(True)
+        self.search.clear()
+        self.search.blockSignals(False)
+        self.thumbs.request_batch(self.gallery.populate(folder))
+
+    def _build_library_menu(self):
+        m, lib = self.library_menu, self.library
+        m.clear()
+        if self.gallery.virtual:
+            m.addAction("← Back to the folder view", lambda: self._leave_smart(self._current_folder()))
+            m.addSeparator()
+        text = self.search.text().strip()
+        save = m.addAction("Save this search as a smart folder…", self._save_smart)
+        save.setEnabled(not query_is_empty(parse_query(text)))
+        if lib.smart:
+            m.addSeparator()
+            for name, query in lib.smart.items():
+                m.addAction(f"★ {name}", lambda _=False, n=name, q=query: self._show_query(q, n))
+            dm = m.addMenu("Delete a smart folder")
+            for name in lib.smart:
+                dm.addAction(name, lambda _=False, n=name: self._delete_smart(n))
+        m.addSeparator()
+        tm = m.addMenu("Browse by tag")
+        tags = lib.all_tags()
+        for t, n in tags[:60]:
+            tm.addAction(f"{t}  ({n})", lambda _=False, t=t: self._show_query(f'tag:"{t}"', f"Tag: {t}"))
+        tm.setEnabled(bool(tags))
+        cm = m.addMenu("Browse by colour")
+        for k, label, _hex in COLORS:
+            cm.addAction(label, lambda _=False, k=k, lb=label: self._show_query(f"color:{k}", f"{lb} label"))
+        rm = m.addMenu("Browse by rating")
+        for n in (5, 4, 3, 2, 1):
+            rm.addAction("★" * n + ("  and up" if n < 5 else ""),
+                         lambda _=False, n=n: self._show_query(f"rating:>={n}", f"{n}★" + (" and up" if n < 5 else "")))
+        m.addSeparator()
+        m.addAction("Library file…", self._library_location)
+
+    def _save_smart(self):
+        query = self.search.text().strip()
+        if query_is_empty(parse_query(query)):
+            return
+        name, ok = QInputDialog.getText(self, "Smart folder", f"Name for the search “{query}”:",
+                                        QLineEdit.Normal, query[:40])
+        if ok and name.strip():
+            if self.library.save_smart(name, query):
+                self.statusBar().showMessage(f"Saved smart folder “{name.strip()}”", 6000)
+            self._library_saved()
+
+    def _delete_smart(self, name: str):
+        self.library.delete_smart(name)
+        self._library_saved()
+        self.statusBar().showMessage(f"Deleted smart folder “{name}”", 6000)
+
+    def _library_location(self):
+        box = QMessageBox(self)
+        box.setWindowTitle("Library file")
+        box.setText("Tags, colour labels, ratings and smart folders are stored in this file:")
+        box.setInformativeText(f"{self.library.path}\n\nNothing is ever written into your model files. "
+                               "A backup copy (.bak) is kept next to it. Back up or move this file to keep your data.")
+        choose = box.addButton("Choose another location…", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+        if box.clickedButton() is not choose:
+            return
+        new, _ = QFileDialog.getSaveFileName(self, "Library file", self.library.path, "Library (*.json)",
+                                             options=QFileDialog.DontConfirmOverwrite)
+        if not new:
+            return
+        if not new.lower().endswith(".json"):
+            new += ".json"
+        old = self.library.path
+        if self.library.move_to(new):
+            self.settings.setValue("library_path", new)
+            self.gallery._rebuild()
+            self.statusBar().showMessage(f"Library file: {new}", 8000)
+        else:
+            self.library.move_to(old)
+            QMessageBox.warning(self, "Library file", self.library.error or "That location could not be used.")
 
     def _choose_folder(self):
         start = str(self.settings.value("last_dir", str(Path.home())))
@@ -4369,6 +4836,8 @@ class MainWindow(QMainWindow):
         self.address.setText(os.path.normpath(folder))
         self._address_error(False)
         idx = self.fs.index(folder)
+        if self.gallery.virtual:                       # leave a smart-folder view even if the tree row is unchanged
+            self._leave_smart(folder)
         self.tree.setCurrentIndex(idx)   # triggers _tree_changed -> gallery
         self.tree.scrollTo(idx, QAbstractItemView.PositionAtCenter)
         self.tree.expand(idx)
@@ -4378,6 +4847,7 @@ class MainWindow(QMainWindow):
         if os.path.isdir(path):
             self.settings.setValue("last_dir", path)
             self.address.setText(os.path.normpath(path))
+            self.address.setPlaceholderText("Type a folder path and press Enter…")
             self._address_error(False)
             self.search.blockSignals(True)
             self.search.clear()

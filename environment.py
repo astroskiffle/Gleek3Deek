@@ -32,11 +32,12 @@ ENV_DEFAULTS = {
     "sun_color": [1.0, 0.95, 0.85], "sun_az": 35.0, "sun_el": 50.0, "sun_int": 0.85,
     "highlight": 0.25, "ambient": 1.0, "yaw": 0.0, "shadow_opacity": 0.5, "shadow_size": 1.0,
     "exposure": 0.0, "tonemap": "none", "sky_blur": 0.0, "gradient_bg": False,
+    "fake_ao": False, "ao_strength": 0.6, "pano_light": 0.0,
 }
 
 
 ENV_FLAGS = [("enabled", "Environment on"), ("skybox", "Skybox"), ("lighting", "Lighting"),
-             ("shadow", "Blob shadow"), ("gradient_bg", "Sky gradient")]
+             ("shadow", "Blob shadow"), ("gradient_bg", "Sky gradient"), ("fake_ao", "Fake AO")]
 
 
 TONEMAPS = [("none", "None (clamp)"), ("reinhard", "Soft highlights (Reinhard)"),
@@ -58,6 +59,8 @@ ENV_SLIDERS = [
     ("shadow_size", "Shadow size", 0.5, 2.0, 0.05, 2),
     ("exposure", "Exposure (stops)", -3.0, 3.0, 0.1, 1),
     ("sky_blur", "Sky blur", 0.0, 1.0, 0.01, 2),
+    ("ao_strength", "Fake AO strength", 0.0, 1.0, 0.01, 2),
+    ("pano_light", "Panorama light", 0.0, 1.0, 0.01, 2),
 ]
 
 
@@ -284,9 +287,43 @@ def analyze_panorama(lin: np.ndarray, k) -> dict:
             "sun_int": float(np.clip(0.35 + 0.13 * math.log2(max(ratio, 1.0)), 0.35, 1.2))}
 
 
+_SH_C = np.array([0.282095, 0.488603, 0.488603, 0.488603, 1.092548, 1.092548, 0.315392, 1.092548, 0.546274])
+_SH_BAND = np.array([1.0, 2 / 3, 2 / 3, 2 / 3, 0.25, 0.25, 0.25, 0.25, 0.25])    # cosine lobe, divided by pi
+
+
+def sh_irradiance(disp: np.ndarray) -> np.ndarray:
+    """Diffuse light from a whole panorama as nine colour coefficients (9 x 3).
+    For a unit direction n = (x, y, z) in the panorama's own frame the light is
+    K0 + K1 y + K2 z + K3 x + K4 xy + K5 yz + K6 (3zz - 1) + K7 xz + K8 (xx - yy)
+    (the constants of the spherical-harmonic basis are already folded into K)."""
+    ds = _block_mean(disp, max(1, disp.shape[1] // 128)).astype(np.float64)
+    h, w, _ = ds.shape
+    uu, vv = np.meshgrid((np.arange(w) + 0.5) / w, 1.0 - (np.arange(h) + 0.5) / h)
+    d = equirect_dir(uu, vv)
+    x, y, z = d[..., 0], d[..., 1], d[..., 2]
+    poly = np.stack([np.ones_like(x), y, z, x, x * y, y * z, 3 * z * z - 1, x * z, x * x - y * y], -1)
+    dw = np.cos((0.5 - (np.arange(h) + 0.5) / h) * math.pi)[:, None] * (2 * math.pi / w) * (math.pi / h)
+    basis = poly * _SH_C                                         # (h, w, 9) real spherical harmonics
+    lm = np.einsum("hwk,hwc,h->kc", basis, ds, dw[:, 0])
+    return (lm * (_SH_BAND * _SH_C)[:, None]).astype(np.float64)
+
+
+def sh_eval(k: np.ndarray, n) -> np.ndarray:
+    x, y, z = [float(v) for v in n]
+    poly = np.array([1.0, y, z, x, x * y, y * z, 3 * z * z - 1, x * z, x * x - y * y])
+    return poly @ k
+
+
+def pano_frame_matrix(up: str, yaw_deg: float) -> np.ndarray:
+    """3x3: a world-space direction -> the panorama's frame (the same turn the sky texture gets)."""
+    cols = [_rot_y(world_to_frame(np.eye(3)[i], up), -math.radians(yaw_deg)) for i in range(3)]
+    return np.stack(cols, 1)
+
+
 def prepare_panorama(lin: np.ndarray) -> dict:
     k = tonemap_exposure(lin)
-    return {"disp": tonemap(lin, k).astype(np.float32), "info": analyze_panorama(lin, k)}
+    disp = tonemap(lin, k).astype(np.float32)
+    return {"disp": disp, "info": analyze_panorama(lin, k), "sh": sh_irradiance(disp)}
 
 
 def reproject_panorama(disp: np.ndarray, up: str, yaw_deg: float, out_w: int = SKY_TEX_W) -> np.ndarray:
@@ -329,11 +366,13 @@ def blob_texture_array(n: int = 128) -> np.ndarray:
     return out
 
 
-def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
+def env_shader_code(env: dict, sun_frame, view_locked: bool = False, ao: bool = False,
+                    sh=None, up_axis: str = "Y") -> str:
     """Hemispheric ambient + one sun, as GLSL for the 'Light::Impl' slot (literals only).
     World-up and the sun come from two VTK scene lights (lightDirectionVC0 / 1), so they stay
     fixed in the world as the camera orbits. view_locked=True is the fallback that keeps them
-    fixed relative to the screen instead."""
+    fixed relative to the screen instead. ao=True multiplies the ambient light by a per-vertex 'fake AO'
+    (gkAOv: x = crease amount, y = height 0 at the bottom .. 1 at the top of the model)."""
     amb = env["ambient"]
 
     def col(key):
@@ -347,6 +386,29 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
     tone = {"reinhard": "  envCol = envCol * (1.0 + envCol * 0.25) / (1.0 + envCol);\n",
             "aces": ("  envCol = (envCol * (2.51 * envCol + 0.03)) / "
                      "(envCol * (2.43 * envCol + 0.59) + 0.14);\n")}.get(env.get("tonemap"), "")
+    sh_code = ""
+    mix = float(env.get("pano_light", 0.0))
+    if sh is not None and mix > 0 and not view_locked:
+        # sh = (K as 9x3, 3x3 world->panorama matrix). Light 2 points along world +X, light 0 along 'up'.
+        k, rot = np.asarray(sh[0], float), np.asarray(sh[1], float)
+        if up_axis == "Z":
+            axes = "  vec3 envAxZ = envUp;\n  vec3 envAxX = normalize(-lightDirectionVC2);\n  vec3 envAxY = cross(envAxZ, envAxX);\n"
+        else:
+            axes = "  vec3 envAxY = envUp;\n  vec3 envAxX = normalize(-lightDirectionVC2);\n  vec3 envAxZ = cross(envAxX, envAxY);\n"
+        kk = [_vec3(k[i]) for i in range(9)]
+        sh_code = (axes
+                   + "  vec3 envNW = vec3(dot(envN, envAxX), dot(envN, envAxY), dot(envN, envAxZ));\n"
+                   + f"  vec3 envNF = vec3(dot({_vec3(rot[0])}, envNW), dot({_vec3(rot[1])}, envNW), "
+                     f"dot({_vec3(rot[2])}, envNW));\n"
+                   + f"  vec3 envIrr = {kk[0]} + {kk[1]} * envNF.y + {kk[2]} * envNF.z + {kk[3]} * envNF.x\n"
+                     f"    + {kk[4]} * (envNF.x * envNF.y) + {kk[5]} * (envNF.y * envNF.z)\n"
+                     f"    + {kk[6]} * (3.0 * envNF.z * envNF.z - 1.0) + {kk[7]} * (envNF.x * envNF.z)\n"
+                     f"    + {kk[8]} * (envNF.x * envNF.x - envNF.y * envNF.y);\n"
+                   + f"  envAmb = mix(envAmb, max(envIrr, vec3(0.0)) * {amb:.4f}, {min(mix, 1.0):.4f});\n")
+    s = float(env.get("ao_strength", 0.6))
+    ao_code = (f"  float envAO = (1.0 - {s:.4f} * gkAOv.x) * "
+               f"(1.0 - 0.5 * {s:.4f} * (1.0 - gkAOv.y) * (1.0 - gkAOv.y));\n"
+               "  envAmb *= envAO;\n") if ao else ""
     return f"""
   vec3 envN = normalize(normalVCVSOutput);
   if (!gl_FrontFacing) envN = -envN;
@@ -354,7 +416,7 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False) -> str:
   vec3 envSun = {sun_src};
   float envH = dot(envN, envUp);
   vec3 envAmb = mix(mix({col('equator')}, {col('sky')}, max(envH, 0.0)), {col('ground')}, max(-envH, 0.0));
-  float envNL = max(dot(envN, envSun), 0.0);
+{sh_code}{ao_code}  float envNL = max(dot(envN, envSun), 0.0);
   vec3 envHalf = normalize(envSun + vec3(0.0, 0.0, 1.0));
   float envSpec = pow(max(dot(envN, envHalf), 0.0), 32.0) * step(0.001, envNL);
   vec3 envCol = diffuseColor * (envAmb + {_vec3(sun)} * envNL)

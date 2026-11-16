@@ -41,10 +41,15 @@ python -m pip install DracoPy
 python -m pip install meshoptimizer
 python -c "import importlib.util as u; print('Bundled in the exe:', [n for n in ('assimp_py','DracoPy','meshoptimizer') if u.find_spec(n)])"
 
+rem Keep the tags / ratings library if it sits next to a previously built exe
+if exist dist\gleek3deek-library.json copy /y dist\gleek3deek-library.json "%TEMP%\g3d-library-keep.json" >nul
+if exist dist\Gleek3Deek\gleek3deek-library.json copy /y dist\Gleek3Deek\gleek3deek-library.json "%TEMP%\g3d-library-keep-onedir.json" >nul
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 
 python -m PyInstaller --noconfirm --clean gleek3deek.spec || goto :fail
+if exist "%TEMP%\g3d-library-keep.json" if exist dist copy /y "%TEMP%\g3d-library-keep.json" dist\gleek3deek-library.json >nul
+if exist "%TEMP%\g3d-library-keep-onedir.json" if exist dist\Gleek3Deek copy /y "%TEMP%\g3d-library-keep-onedir.json" dist\Gleek3Deek\gleek3deek-library.json >nul
 
 echo.
 if defined GLEEK_ONEDIR ( echo Done: dist\Gleek3Deek\Gleek3Deek.exe ) else ( echo Done: dist\Gleek3Deek.exe )

@@ -6,7 +6,8 @@ import numpy as np
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QFormLayout, QGridLayout, QPushButton, QSlider, QTabWidget)
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QLineEdit, QPushButton, QSlider,
+    QTabWidget)
 from PySide6.QtWidgets import QScrollArea, QDoubleSpinBox
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 from formats import _cells, human_size
@@ -374,8 +375,8 @@ class MaterialsPanel(QWidget):
         ul.addWidget(self.uv_show)
         self.uv_run = QPushButton("Run UV tests")
         self.uv_run.setToolTip("Analyse the UVs (tests, islands, texel density and stretch). This is not done "
-                               "automatically, so models open quickly.")
-        self.uv_run.clicked.connect(lambda: viewer.uv_ensure())
+                               "automatically, so models open quickly. It runs in the background and can be cancelled.")
+        self.uv_run.clicked.connect(lambda: viewer.uv_run_or_cancel())
         ul.addWidget(self.uv_run)
         prow = QHBoxLayout()
         prow.addWidget(QLabel("Part"))
@@ -463,8 +464,8 @@ class MaterialsPanel(QWidget):
         ml.addWidget(self.mesh_stats)
         self.mesh_run = QPushButton("Run integrity tests")
         self.mesh_run.setToolTip("Analyse the geometry for holes, bad edges, flipped faces and more. "
-                                 "This is not done automatically, so models open quickly.")
-        self.mesh_run.clicked.connect(lambda: viewer.mesh_ensure())
+                                 "This is not done automatically, so models open quickly. It runs in the background and can be cancelled.")
+        self.mesh_run.clicked.connect(lambda: viewer.mesh_run_or_cancel())
         ml.addWidget(self.mesh_run)
         ml.addWidget(QLabel("Integrity tests (they colour the model)"))
         self.mesh_checks, self.mesh_count_labels = {}, {}
@@ -608,6 +609,7 @@ class MaterialsPanel(QWidget):
         self.tabs.addTab(lw, "LOD")
         viewer.uv_changed.connect(self._uv_sync)
         viewer.mesh_changed.connect(self._mesh_sync)
+        viewer.analysis_progress.connect(self._analysis_progress)
         viewer.measure_changed.connect(self._measure_sync)
         viewer.lod_changed.connect(self._lod_sync)
         self.tabs.currentChanged.connect(lambda _i: viewer.highlight_part(None))
@@ -701,8 +703,11 @@ class MaterialsPanel(QWidget):
             w.setChecked(bool(state))
             w.blockSignals(False)
         ready = v._uv_ready
-        self.uv_run.setEnabled(bool(v.actors) and not ready)
-        self.uv_run.setText("UV tests done" if ready else "Run UV tests")
+        running = v._uv_task is not None
+        cancelling = running and v._uv_task.cancelled
+        self.uv_run.setEnabled(bool(v.actors) and not cancelling and (running or not ready))
+        self.uv_run.setText("Cancelling …" if cancelling else "Cancel" if running else
+                            "UV tests done" if ready else "Run UV tests")
         for w in (self.uv_heat_box, *self.uv_checks.values()):
             w.setEnabled(ready)
         c = v.uv_counts()
@@ -732,6 +737,10 @@ class MaterialsPanel(QWidget):
             self.uv_heat_stats.setText("")
         if not v.actors:
             self.uv_note.setText("Open a model to analyse its UVs.")
+        elif running:
+            self.uv_note.setText(v.uv_status)
+        elif v.uv_status and not ready:
+            self.uv_note.setText(v.uv_status)        # the last run failed
         elif not ready:
             self.uv_note.setText("Press “Run UV tests” to analyse the UVs. Nothing is calculated until you do, "
                                  "so models open quickly.")
@@ -743,6 +752,12 @@ class MaterialsPanel(QWidget):
                 f". Island tests were skipped because the model has more than {UV_ISLAND_MAX_TRIS:,} triangles")
             self.uv_note.setText(f"{c['tris']:,} triangles analysed{extra}.")
 
+    def _analysis_progress(self, kind: str, text: str):
+        """Progress text while an analysis runs in the background (kept light: no full refresh of the tab)."""
+        label = getattr(self, "uv_note" if kind == "uv" else "mesh_note", None)
+        if label is not None:
+            label.setText(text)
+
     def _mesh_sync(self):
         if not hasattr(self, "mesh_stats"):
             return
@@ -753,8 +768,11 @@ class MaterialsPanel(QWidget):
             cb.setChecked(k in v.mesh_tests)
             cb.blockSignals(False)
             cb.setEnabled(analysed)
-        self.mesh_run.setEnabled(bool(v.actors) and not analysed)
-        self.mesh_run.setText("Integrity tests done" if analysed else "Run integrity tests")
+        running = v._mesh_task is not None
+        cancelling = running and v._mesh_task.cancelled
+        self.mesh_run.setEnabled(bool(v.actors) and not cancelling and (running or not analysed))
+        self.mesh_run.setText("Cancelling …" if cancelling else "Cancel" if running else
+                              "Integrity tests done" if analysed else "Run integrity tests")
         if not v.actors:
             self.mesh_stats.setText("Open a model to analyse its mesh.")
             self.mesh_note.setText("")
@@ -768,8 +786,10 @@ class MaterialsPanel(QWidget):
                 f"<table><tr><td style='padding-right:10px'>Polygons</td><td><b>{tris:,}</b></td></tr>"
                 f"<tr><td>Parts (draw calls here)</td><td><b>{ms['parts']:,}</b></td></tr>"
                 f"<tr><td>Distinct materials</td><td><b>{ms['materials']:,}</b></td></tr></table>")
-            self.mesh_note.setText("Press “Run integrity tests” for the full mesh statistics and the colour tests. "
-                                   "Nothing is calculated until you do, so models open quickly.")
+            self.mesh_note.setText(
+                v.mesh_status if (running or v.mesh_status) else
+                "Press “Run integrity tests” for the full mesh statistics and the colour tests. "
+                "Nothing is calculated until you do, so models open quickly.")
             for lab in self.mesh_count_labels.values():
                 lab.setText("")
             return
@@ -918,3 +938,48 @@ class MaterialsPanel(QWidget):
             return
         size = f"{e['size'][0]}×{e['size'][1]}" if e["size"] else ""
         TexturePreview(self, e["role"], arr, f"{e['role']}  ·  {size}  ·  {arr.shape[2]} channel(s)").exec()
+
+
+class TagsDialog(QDialog):
+    """Edit the tags of one or several files. Shows the tags every selected file shares; files keep their own extra tags."""
+
+    def __init__(self, parent, count: int, shared: list, known: list):
+        super().__init__(parent)
+        self.setWindowTitle("Tags")
+        self.setMinimumWidth(360)
+        lay = QVBoxLayout(self)
+        what = "this file" if count == 1 else f"all {count} selected files"
+        lay.addWidget(QLabel(f"Tags for {what} (separate with commas):"))
+        self.edit = QLineEdit(", ".join(shared))
+        self.edit.setPlaceholderText("rock, hard surface, wip …")
+        self.edit.setClearButtonEnabled(True)
+        lay.addWidget(self.edit)
+        if count > 1:
+            note = QLabel("Only tags shared by every selected file are shown. Other tags on each file are kept.")
+            note.setWordWrap(True)
+            note.setObjectName("barLabel")
+            lay.addWidget(note)
+        if known:
+            lay.addWidget(QLabel("Existing tags (double-click to add):"))
+            self.known = QListWidget()
+            self.known.setMaximumHeight(120)
+            for t, n in known:
+                self.known.addItem(f"{t}   ({n})")
+                self.known.item(self.known.count() - 1).setData(Qt.UserRole, t)
+            self.known.itemDoubleClicked.connect(self._add_known)
+            lay.addWidget(self.known)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+        self.edit.setFocus()
+
+    def _add_known(self, item):
+        t = item.data(Qt.UserRole)
+        have = [x.strip() for x in self.edit.text().split(",") if x.strip()]
+        if t.lower() not in [h.lower() for h in have]:
+            have.append(t)
+        self.edit.setText(", ".join(have))
+
+    def tags(self) -> list:
+        return [x for x in self.edit.text().split(",")]
