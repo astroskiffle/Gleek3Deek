@@ -1,0 +1,133 @@
+{
+ "gleek3deek_library": 1,
+ "files": {
+  "../../Documents/Blender/AnisotropyBarnLamp.glb": {
+   "rating": 3,
+   "fp": "7726012:189253f52d866425"
+  },
+  "../../Documents/Blender/armadillommmm.glb": {
+   "rating": 3,
+   "fp": "332056:cd6a9db5bb3747ba"
+  },
+  "../../Documents/Blender/AutodeskFBX_cow.fbx": {
+   "rating": 5,
+   "fp": "319120:cc66d87c339bd683"
+  },
+  "../../Documents/Blender/CarConcept.glb": {
+   "rating": 3,
+   "fp": "11062268:5ad7216f4109778e"
+  },
+  "../../Documents/Blender/ChronographWatchAlpha0286.glb": {
+   "rating": 4,
+   "fp": "7399432:adce63ebf8de8569"
+  },
+  "../../Documents/Blender/cowmoo.dae": {
+   "rating": 5,
+   "fp": "1163840:42666230a9508be9"
+  },
+  "../../Documents/Blender/DamagedHelmet.glb": {
+   "rating": 4,
+   "fp": "3773916:b96060981ee60757"
+  },
+  "../../Documents/Blender/Demon25.obj": {
+   "color": "red",
+   "fp": "111497721:8dc91b1d28ac741f"
+  },
+  "../../Documents/Blender/Flamethrower.glb": {
+   "color": "green",
+   "fp": "877768:6ac2255b1fb8421d"
+  },
+  "../../Documents/Blender/Girl_simplified.obj": {
+   "tags": [
+    "girl"
+   ],
+   "color": "red",
+   "fp": "4612131:28881396cbe750b2"
+  },
+  "../../Documents/Blender/Girl_Statue.obj": {
+   "tags": [
+    "girl"
+   ],
+   "color": "red",
+   "fp": "6037054:8a55827864ac41a5"
+  },
+  "../../Documents/Blender/Girl_statue2.glb": {
+   "tags": [
+    "girl"
+   ],
+   "color": "green",
+   "rating": 4,
+   "fp": "14676684:7ba2850666116847"
+  },
+  "../../Documents/Blender/Girl_statue2_simplified.obj": {
+   "tags": [
+    "girl"
+   ],
+   "color": "red",
+   "fp": "8913580:db9cc606db0af062"
+  },
+  "../../Documents/Blender/Girl_StatueUV.obj": {
+   "tags": [
+    "girl"
+   ],
+   "color": "red",
+   "fp": "6728153:8218c96d8bd4398a"
+  },
+  "../../Documents/Blender/happy.obj": {
+   "color": "red",
+   "fp": "4648727:9e8fd4ae9285c6ba"
+  },
+  "../../Documents/Blender/happyDraco.glb": {
+   "color": "green",
+   "rating": 4,
+   "fp": "162324:def3b89c3639e603"
+  },
+  "../../Documents/Blender/IridescenceLamp.glb": {
+   "color": "green",
+   "rating": 1,
+   "fp": "4083736:12e9685b54f15b6e"
+  },
+  "../../Documents/Blender/Jet Engine Assembly.glb": {
+   "color": "green",
+   "fp": "5028656:ab331f1ad4c31a0c"
+  },
+  "../../Documents/Blender/Lantern.glb": {
+   "color": "green",
+   "fp": "9564264:20b0eac95d125039"
+  },
+  "../../Documents/Blender/nefertiti.obj": {
+   "tags": [
+    "girl"
+   ],
+   "color": "red",
+   "fp": "3660678:3f3db3cd3bb9ca9a"
+  },
+  "../../Documents/Blender/SheenWoodLeatherSofa.glb": {
+   "color": "green",
+   "rating": 4,
+   "fp": "10107912:81983b0ea5686e5f"
+  },
+  "../../Documents/Blender/Sphere.mtl.obj": {
+   "color": "red",
+   "fp": "19454173:a5bc867671536847"
+  },
+  "../../Documents/Blender/STTL_cow.STL": {
+   "rating": 2,
+   "fp": "290284:640c2111c292c44a"
+  },
+  "../../Documents/Blender/xxd.glb": {
+   "color": "green",
+   "fp": "6767044:ee2bc704f2e1eae1"
+  },
+  "../../Documents/Blender/xyzrgb_dragon.obj": {
+   "color": "red",
+   "fp": "11817802:8a0ea5f2cb9e3fa3"
+  },
+  "../3D Models/Place de la Nation-The Triumphe of the Republic/Place de la Nation-The Triumphe of the Republic.glb": {
+   "color": "green",
+   "rating": 5,
+   "fp": "129961588:e1d3685298a862f7"
+  }
+ },
+ "smart_folders": {}
+}
