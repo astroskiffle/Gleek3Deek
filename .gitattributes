@@ -1,3 +1,0 @@
-* text=auto
-# build.bat must keep Windows line endings
-*.bat text eol=crlf
