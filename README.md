@@ -89,7 +89,7 @@ python main.py
 | Save screenshot | `F12` (2x resolution PNG, without the gizmo) |
 | Copy screenshot | `Ctrl+C` |
 | Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
-| Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Glossy, RoughMetal, then normal shading) |
+| Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Glossy, RoughMetal, then standard shading) |
 | MatCap editor | `E` (or **Panels → MatCap**) |
 | Environment on/off | `L` |
 | Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
@@ -99,7 +99,7 @@ python main.py
 | Reference sheet for AI 3D tools (Meshy, Tripo, Rodin, Luma) | `Shift+F12` (or **Main ▾ → Reference sheet…**) |
 | UV layout beside the model | `Shift+U` (or **Main ▾ → UV layout beside the model**) |
 | Measure between points (Measure tab) | `Shift+R` |
-| Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
+| Split compare (MatCap on one side, standard shading on the other) | `D` (hide/show, keeps its position) |
 | Split style: vertical, horizontal, diagonal | `Shift+D` |
 | Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
 | Ground grid on/off | `G` |
@@ -145,13 +145,13 @@ Notes:
 - Image MatCaps are deliberately low resolution, so smooth materials look right but very sharp highlights get softened.
 - The image is turned into a compact smooth formula inside the shader (no lookup table or texture), which keeps rendering fast. If a graphics driver rejects the full-detail version, the viewer automatically retries with a simpler one.
 - ZBrush's own `.ZMT` material files can't be read; export the sphere as an image first.
-- If your graphics driver rejects a MatCap shader, the viewer returns to normal shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
+- If your graphics driver rejects a MatCap shader, the viewer returns to standard shading and says so in the status bar. Details go to `gleek3deek_vtk.log` in your temp folder.
 
-## Split compare (MatCap vs normal shading)
+## Split compare (MatCap vs standard shading)
 
 ![France](images/france.jpg)
 
-Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's normal shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
+Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's standard shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
 
 - **Drag the line or its round handle** to move the split. Dragging anywhere else orbits, pans and zooms as usual.
 - **Double-click** the line to snap it back to the centre.
