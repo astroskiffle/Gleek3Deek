@@ -17,6 +17,8 @@ LIB_NAME = "gleek3deek-library.json"
 RATING_MAX = 5
 MAX_TAGS = 32
 MAX_TAG_LEN = 40
+MAX_FAVOURITES = 20
+MAX_RECENT = 10
 RELINK_LIMIT = 300                                   # most files fingerprinted in one folder view
 
 # (key, label, colour)
@@ -80,6 +82,14 @@ def resolve_library_path(base_dir: str, fallback_dir: str, override: str = "") -
     if os.path.isfile(here) or os.access(base_dir, os.W_OK):
         return here
     return os.path.join(fallback_dir, LIB_NAME)
+
+
+def push_recent(items, path: str, limit: int = MAX_RECENT) -> list:
+    """The recent-folders list after opening `path`: newest first, no duplicates, at most `limit` entries."""
+    path = os.path.normpath(path)
+    same = os.path.normcase(path)
+    out = [path] + [p for p in items if os.path.normcase(os.path.normpath(p)) != same]
+    return out[:limit]
 
 
 # ----- searching -----------------------------------------------------------------------------
@@ -156,6 +166,8 @@ class Library:
         self.root = os.path.dirname(os.path.abspath(path))
         self.files: dict = {}                        # comparison key -> {"p": key, "tags", "color", "rating", "fp"}
         self.smart: dict = {}                        # name -> query text
+        self.favourites: list = []                   # folder keys, in the order they were added
+        self._fav_dirty = False
         self.error = ""                              # last problem, for the status bar ("" = none)
         self.notice = ""                             # one-time message (e.g. a damaged file was set aside)
         self._mtime = None
@@ -182,7 +194,10 @@ class Library:
             d = json.load(f)
         if not isinstance(d, dict) or d.get("gleek3deek_library") != 1:
             raise ValueError("not a Gleek3Deek library")
-        files, smart = {}, {}
+        files, smart, favs = {}, {}, []
+        for p in (d.get("favourite_folders") or []):
+            if isinstance(p, str) and p.strip() and p not in favs:
+                favs.append(p)
         for p, e in (d.get("files") or {}).items():
             if not isinstance(e, dict):
                 continue
@@ -193,16 +208,16 @@ class Library:
         for n, qtext in (d.get("smart_folders") or {}).items():
             if isinstance(qtext, str) and str(n).strip():
                 smart[str(n).strip()[:60]] = qtext
-        return files, smart
+        return files, smart, favs[:MAX_FAVOURITES]
 
     def load(self):
-        self.files, self.smart, self.error = {}, {}, ""
-        self._dirty, self._dirty_smart = set(), set()
+        self.files, self.smart, self.favourites, self.error = {}, {}, [], ""
+        self._dirty, self._dirty_smart, self._fav_dirty = set(), set(), False
         if not os.path.isfile(self.path):
             self._mtime = None
             return
         try:
-            self.files, self.smart = self._read(self.path)
+            self.files, self.smart, self.favourites = self._read(self.path)
             self._mtime = os.path.getmtime(self.path)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
             bad = f"{self.path}.damaged-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -216,7 +231,7 @@ class Library:
     def _merge_disk(self):
         """Another copy of the app saved since we loaded: take its changes, then lay ours over them."""
         try:
-            files, smart = self._read(self.path)
+            files, smart, favs = self._read(self.path)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return
         for nk in self._dirty:
@@ -230,6 +245,8 @@ class Library:
             else:
                 smart.pop(n, None)
         self.files, self.smart = files, smart
+        if not self._fav_dirty:
+            self.favourites = favs
 
     def save(self) -> bool:
         try:
@@ -239,7 +256,8 @@ class Library:
                  "files": {e["p"]: {k: v for k, v in (("tags", e["tags"]), ("color", e["color"]),
                                                      ("rating", e["rating"]), ("fp", e["fp"])) if v}
                            for e in sorted(self.files.values(), key=lambda e: e["p"].lower())},
-                 "smart_folders": dict(sorted(self.smart.items(), key=lambda kv: kv[0].lower()))}
+                 "smart_folders": dict(sorted(self.smart.items(), key=lambda kv: kv[0].lower())),
+                 "favourite_folders": list(self.favourites)}
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             tmp = self.path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
@@ -251,7 +269,7 @@ class Library:
                     pass
             os.replace(tmp, self.path)
             self._mtime = os.path.getmtime(self.path)
-            self._dirty, self._dirty_smart = set(), set()
+            self._dirty, self._dirty_smart, self._fav_dirty = set(), set(), False
             self.error = ""
             return True
         except OSError as e:
@@ -268,7 +286,9 @@ class Library:
             return not self.error
         # relative keys must follow the new root
         absolute = {self.abspath_from(old[1], e["p"]): e for e in old[2].values()}
+        favs = [self.abspath_from(old[1], k) for k in self.favourites]
         self.files, self.smart = {}, dict(old[3])
+        self.favourites = [self.key(p) for p in favs]
         for ap, e in absolute.items():
             k = self.key(ap)
             self.files[_nk(k)] = {**e, "p": k}
@@ -380,6 +400,35 @@ class Library:
         if done:
             self.save()
         return done
+
+    # ----- favourite folders (shortcuts only: the folders themselves are never touched)
+    def fav_paths(self) -> list:
+        return [self.abspath(k) for k in self.favourites]
+
+    def is_fav(self, folder: str) -> bool:
+        k = _nk(self.key(folder))
+        return any(_nk(f) == k for f in self.favourites)
+
+    def add_fav(self, folder: str) -> str:
+        """'added', 'exists' or 'full'."""
+        if self.is_fav(folder):
+            return "exists"
+        if len(self.favourites) >= MAX_FAVOURITES:
+            return "full"
+        self.favourites.append(self.key(folder))
+        self._fav_dirty = True
+        self.save()
+        return "added"
+
+    def remove_fav(self, folder: str) -> bool:
+        k = _nk(self.key(folder))
+        keep = [f for f in self.favourites if _nk(f) != k]
+        if len(keep) == len(self.favourites):
+            return False
+        self.favourites = keep
+        self._fav_dirty = True
+        self.save()
+        return True
 
     # ----- smart folders (saved searches over the whole library)
     def save_smart(self, name: str, query: str):

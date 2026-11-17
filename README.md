@@ -4,7 +4,9 @@ A fast, minimalist, native 3D asset browser and viewer. Browse a folder of model
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
-![Gleek3Deek](images/SplitCow_Matcap.jpg)
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
 
 ## Features
 
@@ -118,8 +120,6 @@ python main.py
 
 ## MatCap editor and presets
 
-![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
-
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
@@ -149,8 +149,6 @@ Notes:
 
 ## Split compare (MatCap vs normal shading)
 
-![Gleek3Deek](images/france.jpg)
-
 Press **D** with a model open. The viewport is split by a line: the MatCap on one side, the model's normal shading (including the Environment lighting if it is on) on the other. Both sides are the same mesh and camera. The model is rendered once; the shader chooses the look from each pixel's screen position.
 
 - **Drag the line or its round handle** to move the split. Dragging anywhere else orbits, pans and zooms as usual.
@@ -162,8 +160,6 @@ Press **D** with a model open. The viewport is split by a line: the MatCap on on
 - Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
 
 ## UV inspection
-
-![Gleek3Deek](images/heatmap.jpg)
 
 Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The analysis only runs when you ask, so models open quickly; until then the tests and heatmaps are greyed out. It runs in the background, so you can keep looking around, and the button turns into **Cancel** while it works (it stops within a moment, between steps). Opening another model clears the results, and you run it again. **Shift+U** shows or hides the layout pane. The UV layout appears in a pane beside the 3D model (or below it; there is a tick box for that) and you can drag the divider between them.
 
@@ -195,8 +191,6 @@ Open **Materials** and go to the **UV** tab, then press **Run UV tests**. The an
 - Vertices at the same position count as joined, so UV and hard-edge seams are not reported as holes. A colour test replaces the texture while it is on, like the UV tests, and can be combined with them.
 
 ## Measurements and cross-section
-
-![Gleek3Deek](images/Cutaway3.jpg)
 
 **Materials & parts → Measure** has three tools. Set the **Model units** first, because most formats don't say what one unit means (glTF/GLB is metres by convention; STL and OBJ files are often millimetres). Results can be shown in mm, cm, m, in or ft.
 
@@ -287,6 +281,14 @@ Right-click a thumbnail (or select it and use the keys) to:
 - **Thumbnails:** a renamed or pasted file keeps its thumbnail. **Refresh thumbnail** (or `F5` with a file selected) throws away the saved picture and renders it again. Right-click empty space, or press `F5` with nothing selected, to refresh every thumbnail in the folder.
 - **Delete** moves the file to the Recycle Bin / Trash after asking. If that isn't possible you are asked before anything is deleted permanently.
 - These actions affect only the selected file. For an OBJ or glTF, its `.mtl`, `.bin` and texture files are left alone, so rename or delete those yourself if you need to.
+
+**Large STEP files:** thumbnails for `.step` / `.stp` files above 20 MB are skipped (the file shows the generic icon and still opens normally), because the STEP reader holds Python's global lock and would freeze the window while it loads. Set the environment variable `GLEEK_THUMB_CAD_MAX_MB` to change the limit.
+
+## Favourite and recent folders
+
+- **Favourites:** right-click a folder in the tree → **Add to favourites**, or **Go → Favourites → Add this folder to favourites**. A favourite gets a small yellow star on its icon in the tree, is listed in **Go → Favourites** and appears in a **★ Favourites** list above the tree (the list is hidden while you have none). Click one to jump to it. Right-click a favourite (in the list or in the tree) → **Remove from favourites**, or use **Go → Favourites → Remove a favourite**. Only the shortcut is removed; the folder itself is never touched. Up to 20, remembered in the library file (so they move with it).
+- **Recent folders:** **Go → Recent folders** lists the last 10 folders you opened, newest first, remembered next time, with **Clear this list**.
+- A favourite or recent folder that cannot be found (an unplugged drive, say) is greyed out and shows a message instead of failing.
 
 ## Tags, colour labels, ratings and smart folders
 
@@ -392,7 +394,7 @@ Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`,
 
 **Panorama light:** with a panorama loaded, the **Panorama light** slider blends the ambient light from the three colours toward the light of the whole panorama. When the panorama loads, nine numbers describing its diffuse light are worked out once (spherical harmonics); the shader then lights every surface by which part of the sky it faces, so a warm sunset on one side tints that side of the model, and the ground colour comes from the actual floor of the image. 0 keeps the three colours (the default); 1 uses the panorama fully. It follows Rotate environment and the Y-up/Z-up setting. It is soft, directional diffuse light only: no reflections and no shadows from the panorama. It needs a loaded panorama and is ignored if lighting falls back to following the camera. It works together with Fake AO, which then darkens the result in creases.
 
-**Fake Ambient Occlusion:** tick *Fake AO* in the Environment panel and set its strength. It darkens the ambient light in two cheap ways: creases and corners (a value per vertex, worked out once per model on a background thread) and a gentle fall-off toward the ground (following the Y-up/Z-up setting and any move you make). There is no screen-space pass and no ray tracing, so it costs almost nothing per frame. It sees only local creases, not a part shadowing a distant one, and it looks best on reasonably dense meshes. It is paused while split compare or the wireframe overlay is on. It affects the ambient light only, never the sun, and works in shaded mode with environment lighting on. If a GPU rejects it, it switches itself off with a message.
+**Fake AO:** tick *Fake AO* in the Environment panel and set its strength. It darkens the ambient light in two cheap ways: creases and corners (a value per vertex, worked out once per model on a background thread) and a gentle fall-off toward the ground (following the Y-up/Z-up setting and any move you make). There is no screen-space pass and no ray tracing, so it costs almost nothing per frame. It sees only local creases, not a part shadowing a distant one, and it looks best on reasonably dense meshes. It is paused while split compare or the wireframe overlay is on. It affects the ambient light only, never the sun, and works in shaded mode with environment lighting on. If a GPU rejects it, it switches itself off with a message.
 
 **Exposure and tone mapping:** the **Exposure** slider brightens or darkens the lighting in stops (it doesn't change the sky image or MatCaps). **Tone mapping** can be left off, set to *Soft highlights* (Reinhard) or *Filmic* (ACES), which are cheap curves that keep bright areas from clipping. **Sky blur** softens the panorama behind the model. **Sky gradient** replaces the background with a gradient from the equator colour up to the sky colour when no panorama is showing.
 
@@ -463,7 +465,8 @@ The `.exe` is large (VTK and Qt are bundled). STEP support through CadQuery is n
 
 ```
 Gleek3Deek/
-├── main.py                   # the window, the 3D viewer and the About dialog (start here: python main.py)
+├── main.py                   # the main window: folder tree, gallery page, menus (start here: python main.py)
+├── viewer.py                 # the 3D viewer widget, its tools, and the About-box wording (ABOUT)
 ├── formats.py                # file loading: format list, importers, GLB fixes (no windows)
 ├── analysis.py               # texture audit, mesh checks, measurements, UV maths, LOD, export (no windows)
 ├── cli.py                    # command-line mode (read-only audit of a file or folder)

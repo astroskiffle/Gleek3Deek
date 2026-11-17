@@ -123,11 +123,81 @@
    "color": "red",
    "fp": "11817802:8a0ea5f2cb9e3fa3"
   },
+  "../../Pictures/_My Art/_3D Stuff/Indi/head front and profile bathroom 2 9430929.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "699019:752d5397c78eb7da"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/head front and profile bathroom.glb": {
+   "tags": [
+    "India"
+   ],
+   "fp": "360772:ec1d89a1c1adfc02"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/ind_beach.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "696445:ccca9a09a6e60731"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/indi 4way images flux 6697689 full body zbrush.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "6990230:3710ea6dbaf2e999"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/indi 4way images flux 6697689 full body.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "699202:ef84fad89acdc6f6"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/Indi Braids 1932124-smooth-zbrush.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "9376701:a705a66d37e5910c"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/Indi Braids 1932124.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "695859:f149721496fd6c0a"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/Indi Head profile good.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "698702:ef2bc0c5284d2d6c"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/indi_full nude 4735147 512 cleanedup_zbrush.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "9223187:91f33079e0847e54"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/indi_full nude 4735147 512.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "24194088:ea758aa284a15af8"
+  },
+  "../../Pictures/_My Art/_3D Stuff/Indi/indi_side armsup2.obj": {
+   "tags": [
+    "India"
+   ],
+   "fp": "696589:492fa1710e86ef00"
+  },
   "../3D Models/Place de la Nation-The Triumphe of the Republic/Place de la Nation-The Triumphe of the Republic.glb": {
    "color": "green",
    "rating": 5,
    "fp": "129961588:e1d3685298a862f7"
   }
  },
- "smart_folders": {}
+ "smart_folders": {},
+ "favourite_folders": [
+  "../../Documents/Blender",
+  "../../Pictures/_My Art/_3D Stuff"
+ ]
 }

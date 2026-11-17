@@ -157,6 +157,9 @@ THUMB_EXTS = NATIVE | CAD | ASSIMP            # no Blender spawns for thumbnails
 
 
 MAX_THUMB_BYTES = int(os.environ.get("GLEEK_THUMB_MAX_MB", "200")) * 1024 * 1024
+# STEP files are read by cadquery/OpenCascade, which does not release Python's global lock: a big one stalls the
+# whole window while it loads. Their thumbnails are skipped above this size (the file still opens normally).
+MAX_THUMB_BYTES_CAD = int(os.environ.get("GLEEK_THUMB_CAD_MAX_MB", "20")) * 1024 * 1024
 
 
 class _ThumbSignals(QObject):
@@ -264,6 +267,8 @@ class ThumbnailManager(QObject):
         except OSError:
             return None
         if st.st_size > MAX_THUMB_BYTES:
+            return None
+        if asset_ext(path) in CAD and st.st_size > MAX_THUMB_BYTES_CAD:
             return None
         key = hashlib.sha1(f"{path}|{st.st_mtime_ns}|{st.st_size}|{ORIENT.get(path)}|v2".encode()).hexdigest()[:24]
         return self.cache_dir / f"{key}.png"
