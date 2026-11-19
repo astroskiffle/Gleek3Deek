@@ -2,10 +2,10 @@
 
 **A fast, minimalist 3D asset manager, viewer and auditor.** Browse a folder of models as a thumbnail gallery, open any of them in an interactive 3D viewer, and find out what's wrong with it, all in a small native app. No Electron, no web view: just Python, Qt and VTK.
 
-[![Tests](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml/badge.svg)](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Tests](https://github.com)](https://github.com)
+[![License: MIT](https://shields.io)](LICENSE)
 
-![Gleek3Deek](images/france.jpg)
+<img src="images/france.jpg" alt="Gleek3Deek" width="700">
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
@@ -24,17 +24,25 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Opens instantly** on double-click, with the camera fitted to the model. Previous/next browsing with the arrow keys.
 - **Material views:** albedo, normals, texture inspector with channel previews, and a parts list to hide or isolate pieces.
 - **MatCap shading** with five ZBrush-style procedural materials, a live MatCap editor and **split compare** against normal shading.
-![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
+
+<img src="images/matcap_laliqueGlassGirl.jpg" alt="Gleek3Deek" width="700">
+
 - **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image) and **Fake AO**, tuned to stay fast on low-end machines.
-![Gleek3Deek](images/AmOcc.jpg)
+
+<img src="images/AmOcc.jpg" alt="Gleek3Deek" width="700">
+
 - **Scene tools:** ground grid, field of view, saved camera views, orthographic mode, auto-orbit, screenshots up to 4× with a transparent background.
 
 ### Inspect
 - **UV inspection** with a layout view that flags overlaps, flipped and out-of-bounds UVs.
- ![Gleek3Deek](images/heatmap.jpg)
+
+<img src="images/heatmap.jpg" alt="Gleek3Deek" width="700">
+
 - **Texture audit and mesh diagnostics:** oversized or non-power-of-two textures, holes, non-manifold edges, flipped faces and more.
 - **Measurements and cross-section** for checking real-world scale.
-![Gleek3Deek](images/Cutaway3.jpg)
+
+<img src="images/Cutaway3.jpg" alt="Gleek3Deek" width="700">
+
 - **LOD preview** to see how a model looks at a fraction of its faces.
 
 ### Convert and automate
@@ -47,7 +55,7 @@ glTF/GLB (including Draco and Meshopt compressed), OBJ, STL, PLY, FBX, DAE, USD,
 
 ## Download (Windows, no Python needed)
 
-Go to the **[Releases](https://github.com/astroskiffle/Gleek3Deek/releases)** page, download `Gleek3Deek.exe` and double-click it. Nothing to install.
+Go to the **[Releases](https://github.com)** page, download `Gleek3Deek.exe` and double-click it. Nothing to install.
 
 - The first launch takes a few seconds longer, because the single-file exe unpacks itself to a temporary folder each time it starts.
 - The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC". Choose **More info → Run anyway**. Some antivirus tools also flag PyInstaller programs by mistake; you can always run from source instead.
@@ -86,4 +94,4 @@ Issues and pull requests are welcome. When reporting a model that won't open, pl
 
 ## License
 
-Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://doc.qt.io/qtforpython/) (LGPL), [VTK](https://vtk.org/) (BSD), [NumPy](https://numpy.org/) (BSD) and, optionally, [assimp-py](https://pypi.org/project/assimp-py/) / [Assimp](https://github.com/assimp/assimp) (BSD), [DracoPy](https://pypi.org/project/DracoPy/) / [Draco](https://github.com/google/draco) (Apache-2.0), [meshoptimizer](https://pypi.org/project/meshoptimizer/) / [meshoptimizer](https://github.com/zeux/meshoptimizer) (MIT) and [CadQuery](https://github.com/CadQuery/cadquery) (Apache-2.0), each under its own license.
+Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://qt.io) (LGPL), [VTK](https://vtk.org) (BSD), [NumPy](https://numpy.org) (BSD) and, optionally, [assimp-py](https://pypi.org) / [Assimp](https://github.com) (BSD), [DracoPy](https://pypi.org) / [Draco](https://github.com) (Apache-2.0), [meshoptimizer](https://pypi.org) / [meshoptimizer](https://github.com) (MIT) and [CadQuery](https://github.com) (Apache-2.0), each under its own license.
