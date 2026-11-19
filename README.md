@@ -5,9 +5,7 @@
 [![Tests](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml/badge.svg)](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+![Gleek3Deek](images/france.jpg)
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
@@ -26,13 +24,17 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Opens instantly** on double-click, with the camera fitted to the model. Previous/next browsing with the arrow keys.
 - **Material views:** albedo, normals, texture inspector with channel previews, and a parts list to hide or isolate pieces.
 - **MatCap shading** with five ZBrush-style procedural materials, a live MatCap editor and **split compare** against normal shading.
+![Gleek3Deek](images/matcap_laliqueGlassGirl.jpg)
 - **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image) and **Fake AO**, tuned to stay fast on low-end machines.
+![Gleek3Deek](images/AmOcc.jpg)
 - **Scene tools:** ground grid, field of view, saved camera views, orthographic mode, auto-orbit, screenshots up to 4× with a transparent background.
 
 ### Inspect
 - **UV inspection** with a layout view that flags overlaps, flipped and out-of-bounds UVs.
+ ![Gleek3Deek](images/heatmap.jpg)
 - **Texture audit and mesh diagnostics:** oversized or non-power-of-two textures, holes, non-manifold edges, flipped faces and more.
 - **Measurements and cross-section** for checking real-world scale.
+![Gleek3Deek](images/Cutaway3.jpg)
 - **LOD preview** to see how a model looks at a fraction of its faces.
 
 ### Convert and automate
