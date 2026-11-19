@@ -1,10 +1,6 @@
 # Gleek3Deek
-
-**A fast, minimalist 3D asset manager, viewer and auditor.** Browse a folder of models as a thumbnail gallery, open any of them in an interactive 3D viewer, and find out what's wrong with it, all in a small native app. No Electron, no web view: just Python, Qt and VTK.
-
 <img src="images/france.jpg" alt="Gleek3Deek" width="700">
-
-> **Status:** early release. Expect rough edges, and please report them in the Issues tab.
+The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists. Spend less time digging through folders and more time creating, with a fast, minimalist 3D asset manager, viewer and auditor. Browse a folder of models as a thumbnail gallery, open any of them in an interactive 3D viewer, and find out what's wrong with it, all in a small native app. No Electron, no web view: just Python, Qt and VTK.
 
 ## Why Gleek3Deek?
 
