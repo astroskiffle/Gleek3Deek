@@ -2,9 +2,6 @@
 
 **A fast, minimalist 3D asset manager, viewer and auditor.** Browse a folder of models as a thumbnail gallery, open any of them in an interactive 3D viewer, and find out what's wrong with it, all in a small native app. No Electron, no web view: just Python, Qt and VTK.
 
-[![Tests](https://github.com)](https://github.com)
-[![License: MIT](https://shields.io)](LICENSE)
-
 <img src="images/france.jpg" alt="Gleek3Deek" width="700">
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
