@@ -48,7 +48,7 @@ glTF/GLB (including Draco and Meshopt compressed), OBJ, STL, PLY, FBX, DAE, USD,
 
 ## Download (Windows, no Python needed)
 
-Go to the **[Releases](https://github.com)** page, download `Gleek3Deek.exe` and double-click it. Nothing to install.
+Go to the **[Releases](https://github.com/astroskiffle/Gleek3Deek/releases)** page, download `Gleek3Deek.exe` and double-click it. Nothing to install.
 
 - The first launch takes a few seconds longer, because the single-file exe unpacks itself to a temporary folder each time it starts.
 - The exe is not code-signed, so Windows SmartScreen may say "Windows protected your PC". Choose **More info → Run anyway**. Some antivirus tools also flag PyInstaller programs by mistake; you can always run from source instead.
