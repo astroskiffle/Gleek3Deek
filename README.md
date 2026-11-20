@@ -4,7 +4,7 @@ The ultra-fast, self-hosted 3D asset browser and viewer built specifically for d
 
 ## Why Gleek3Deek?
 
-You have a folder full of models from a dozen sources and you want to *see* them, sort them and trust them, without opening a heavyweight 3D package for each one. Gleek3Deek gives you a visual library, a viewer that opens instantly, and checks that tell you whether a model is ready to use.
+You have a folder full of models from a dozen sources and you want to *see* them, sort them and trust them, without opening a heavyweight 3D package, or uploading them to a website solution where your content might get fed to AI. Gleek3Deek gives you a visual library, a viewer that opens instantly, and checks that tell you whether a model is ready to use.
 
 ## Highlights
 
