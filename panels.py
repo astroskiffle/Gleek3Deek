@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import html
+import os
 import numpy as np
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QLineEdit, QPushButton, QSlider,
     QTabWidget)
-from PySide6.QtWidgets import QScrollArea, QDoubleSpinBox
+from PySide6.QtWidgets import QScrollArea, QDoubleSpinBox, QFileDialog, QMessageBox, QSpinBox
+from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 from formats import _cells, human_size
 from analysis import (
@@ -983,3 +985,147 @@ class TagsDialog(QDialog):
 
     def tags(self) -> list:
         return [x for x in self.edit.text().split(",")]
+
+
+
+class TransferDialog(QDialog):
+    """Choose the folder to copy or move files to: type or browse, or pick one of the folders used last."""
+
+    def __init__(self, parent, move: bool, count: int, recent: list, start: str, companions: bool):
+        super().__init__(parent)
+        verb = "Move" if move else "Copy"
+        self.setWindowTitle(f"{verb} to")
+        self.setMinimumWidth(460)
+        lay = QVBoxLayout(self)
+        what = "the selected file" if count == 1 else f"the {count} selected files"
+        lay.addWidget(QLabel(f"{verb} {what} to this folder:"))
+        row = QHBoxLayout()
+        self.edit = QLineEdit(start)
+        self.edit.setClearButtonEnabled(True)
+        row.addWidget(self.edit, 1)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        row.addWidget(browse)
+        lay.addLayout(row)
+        self.recent = QListWidget()
+        if recent:
+            lay.addWidget(QLabel("Folders used before (double-click to choose):"))
+            self.recent.setMaximumHeight(130)
+            for p in recent:
+                self.recent.addItem(p)
+            self.recent.itemClicked.connect(lambda it: self.edit.setText(it.text()))
+            self.recent.itemDoubleClicked.connect(lambda it: (self.edit.setText(it.text()), self._ok()))
+            lay.addWidget(self.recent)
+        self.companions_box = QCheckBox("Include the files a model needs (an OBJ's .mtl and textures, a glTF's .bin and images)")
+        self.companions_box.setChecked(companions)
+        lay.addWidget(self.companions_box)
+        note = QLabel("Nothing is overwritten: a model whose name is taken gets a number. "
+                      "Files that other models also use are copied, not moved away from them. Local drives only.")
+        note.setWordWrap(True)
+        note.setObjectName("barLabel")
+        lay.addWidget(note)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.button(QDialogButtonBox.Ok).setText(verb)
+        box.accepted.connect(self._ok)
+        box.rejected.connect(self.reject)
+        lay.addWidget(box)
+        self.edit.setFocus()
+        self.edit.selectAll()
+
+    def _browse(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder", self.edit.text().strip() or "")
+        if d:
+            self.edit.setText(d)
+
+    def _ok(self):
+        if not os.path.isdir(self.folder()):
+            QMessageBox.warning(self, self.windowTitle(), "That folder does not exist.")
+            return
+        self.accept()
+
+    def folder(self) -> str:
+        return os.path.normpath(self.edit.text().strip().strip('"')) if self.edit.text().strip() else ""
+
+    def include_companions(self) -> bool:
+        return self.companions_box.isChecked()
+
+
+class BatchRenameDialog(QDialog):
+    """Rename several files with a pattern. Every old and new name is listed; the Rename button stays off
+    while any name has a problem."""
+
+    def __init__(self, parent, paths: list, pattern: str = "[name]_###"):
+        super().__init__(parent)
+        import fileops
+        self._fileops = fileops
+        self.paths = list(paths)
+        self.items: list = []
+        self.setWindowTitle("Batch rename")
+        self.setMinimumSize(620, 460)
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel(f"Rename the {len(paths)} selected files, in the order shown in the gallery."))
+        form = QFormLayout()
+        self.pattern = QLineEdit(pattern)
+        self.pattern.setClearButtonEnabled(True)
+        form.addRow("Pattern", self.pattern)
+        self.first = QSpinBox()
+        self.first.setRange(0, 999999)
+        self.first.setValue(1)
+        form.addRow("Start at", self.first)
+        lay.addLayout(form)
+        hint = QLabel("# is a number: ### gives 001, 002 …   [name] is the file's current name.   "
+                      "Extensions are kept.   Example: chair_## or [name]_final")
+        hint.setWordWrap(True)
+        hint.setObjectName("barLabel")
+        lay.addWidget(hint)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Current name", "New name", "Problem"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        h = self.table.horizontalHeader()
+        h.setSectionResizeMode(0, QHeaderView.Stretch)
+        h.setSectionResizeMode(1, QHeaderView.Stretch)
+        h.setSectionResizeMode(2, QHeaderView.Stretch)
+        lay.addWidget(self.table, 1)
+        self.status = QLabel("")
+        lay.addWidget(self.status)
+        self.box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.box.button(QDialogButtonBox.Ok).setText("Rename")
+        self.box.accepted.connect(self.accept)
+        self.box.rejected.connect(self.reject)
+        lay.addWidget(self.box)
+        self.pattern.textChanged.connect(self._update)
+        self.first.valueChanged.connect(self._update)
+        self._update()
+        self.pattern.setFocus()
+        self.pattern.selectAll()
+
+    def _update(self):
+        self.items = self._fileops.plan_batch_rename(self.paths, self.pattern.text(), self.first.value())
+        self.table.setRowCount(len(self.items))
+        bad = changed = 0
+        for r, it in enumerate(self.items):
+            cells = (os.path.basename(it.src), it.name if it.changed or it.problem else "(unchanged)", it.problem)
+            for c, text in enumerate(cells):
+                cell = QTableWidgetItem(text)
+                if it.problem:
+                    cell.setForeground(QColor("#e8913a"))
+                elif not it.changed:
+                    cell.setForeground(QColor("#808080"))
+                self.table.setItem(r, c, cell)
+            bad += bool(it.problem)
+            changed += bool(it.changed) and not it.problem
+        if bad:
+            self.status.setText(f"{bad} name{'s' if bad != 1 else ''} can't be used. Fix the pattern to continue.")
+        elif not changed:
+            self.status.setText("No file would change name.")
+        else:
+            self.status.setText(f"{changed} file{'s' if changed != 1 else ''} will be renamed.")
+        self.box.button(QDialogButtonBox.Ok).setEnabled(not bad and bool(changed))
+
+    def pattern_text(self) -> str:
+        return self.pattern.text()
+
+    def pairs(self) -> list:
+        return [(it.src, it.dst) for it in self.items if it.changed and not it.problem]

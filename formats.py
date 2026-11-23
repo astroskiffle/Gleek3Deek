@@ -1001,10 +1001,35 @@ def _cells(a: vtkActor) -> int:
         return 0
 
 
+def pbr_factors(p):
+    """(metallic, roughness) for a glTF material, as numbers the viewer's own PBR look can use.
+    The factors are multiplied by the average of the metallic-roughness map (green = roughness, blue = metallic),
+    because the viewer does not sample that map per pixel. None if the property has no such values."""
+    try:
+        metal, rough = float(p.GetMetallic()), float(p.GetRoughness())
+    except Exception:
+        return None
+    tex = p.GetTexture("materialTex")
+    if tex is not None:
+        try:
+            img = tex.GetInput()
+            arr = numpy_support.vtk_to_numpy(img.GetPointData().GetScalars())
+            if arr.ndim != 2 or arr.shape[1] < 3 or arr.dtype != np.uint8 or len(arr) == 0:
+                raise ValueError("unsupported map")
+            sample = arr[::max(1, len(arr) // 65536), :3].astype(np.float32) / 255.0
+            rough *= float(sample[:, 1].mean())
+            metal *= float(sample[:, 2].mean())
+        except Exception:
+            metal, rough = 0.0, 0.6                  # a map we cannot read: a plain, fairly matte look
+    return (min(max(metal, 0.0), 1.0), min(max(rough, 0.0), 1.0))
+
+
 def _phongify(a: vtkActor):
-    """PBR needs image-based lighting to look right; use Phong but keep the albedo texture."""
+    """PBR needs image-based lighting to look right; use Phong but keep the albedo texture.
+    The metallic and roughness values are kept on the actor (a._pbr) for the viewer's PBR option."""
     p = a.GetProperty()
     if p.GetInterpolation() == 3:                 # VTK_PBR
+        a._pbr = pbr_factors(p)
         tex = p.GetTexture("albedoTex")
         if tex is not None:
             a.SetTexture(tex)

@@ -33,28 +33,6 @@ _MC_OUT = "  fragOutput0 = vec4(clamp(mcCol, 0.0, 1.0), opacity);\n"
 
 
 _MC_BODIES = [
-    ("Red Wax", """
-  vec3 deep = vec3(0.24, 0.015, 0.02), mid = vec3(0.78, 0.10, 0.07), lite = vec3(0.98, 0.38, 0.26);
-  mcCol = mix(deep, mid, smoothstep(0.05, 0.60, mcD));
-  mcCol = mix(mcCol, lite, smoothstep(0.55, 1.0, mcD) * 0.75);
-  mcCol += vec3(0.55, 0.10, 0.06) * mcRim * 0.45;
-  mcCol += vec3(1.0, 0.78, 0.72) * (pow(mcS, 40.0) * 0.55 + pow(mcS, 8.0) * 0.10);
-"""),
-    ("Clay Matte Green", """
-  vec3 deep = vec3(0.05, 0.12, 0.06), mid = vec3(0.28, 0.50, 0.20), lite = vec3(0.66, 0.84, 0.48);
-  mcCol = mix(deep, mid, smoothstep(0.05, 0.65, mcD));
-  mcCol = mix(mcCol, lite, smoothstep(0.62, 1.0, mcD) * 0.65);
-  float fill = clamp(dot(mcN, normalize(vec3(0.7, -0.35, 0.5))), 0.0, 1.0);
-  mcCol += vec3(0.10, 0.18, 0.08) * fill * 0.5;
-  mcCol += vec3(0.9, 1.0, 0.8) * pow(mcS, 5.0) * 0.05;
-"""),
-    ("RealSkin", """
-  vec3 deep = vec3(0.30, 0.11, 0.09), mid = vec3(0.86, 0.58, 0.47), lite = vec3(1.0, 0.84, 0.74);
-  mcCol = mix(deep, mid, smoothstep(0.05, 0.62, mcD));
-  mcCol = mix(mcCol, lite, smoothstep(0.58, 1.0, mcD) * 0.7);
-  mcCol += vec3(0.60, 0.14, 0.09) * pow(1.0 - clamp(mcN.z, 0.0, 1.0), 2.0) * 0.30;
-  mcCol += vec3(1.0, 0.92, 0.86) * (pow(mcS, 14.0) * 0.22 + pow(mcS, 70.0) * 0.18);
-"""),
     ("Glossy", """
   vec2 p = mcN.xy;
   mcCol = mix(vec3(0.06, 0.065, 0.075), vec3(0.62, 0.64, 0.68), smoothstep(-0.3, 0.9, mcD));
@@ -62,15 +40,6 @@ _MC_BODIES = [
   float by = 1.0 - smoothstep(0.0, 0.06, abs(p.y - 0.42) - 0.16);
   mcCol += vec3(0.95) * bx * by * 0.85;
   mcCol += vec3(0.80, 0.85, 1.0) * smoothstep(0.55, 0.95, length(p)) * smoothstep(-0.2, 0.6, p.x) * 0.5;
-"""),
-    ("RoughMetal", """
-  float up = mcN.y;
-  vec3 sky = vec3(0.70, 0.73, 0.78), horizon = vec3(0.30, 0.31, 0.33), ground = vec3(0.07, 0.065, 0.06);
-  mcCol = mix(ground, horizon, smoothstep(-0.7, 0.0, up));
-  mcCol = mix(mcCol, sky, smoothstep(0.0, 0.9, up));
-  mcCol *= vec3(0.92, 0.94, 1.0);
-  mcCol += vec3(0.85, 0.88, 0.95) * pow(mcS, 9.0) * 0.35;
-  mcCol += vec3(0.20, 0.21, 0.24) * mcRim * 0.5;
 """),
 ]
 
@@ -81,7 +50,7 @@ MATCAPS = [(name, _MC_PRELUDE + body + _MC_OUT) for name, body in _MC_BODIES]
 # ---------------------------------------------------------------------------
 # Custom MatCaps: procedural parameters (editor) or a baked image, saved as small JSON
 # ---------------------------------------------------------------------------
-PARAM_DEFAULTS = {                      # reproduces the built-in "Red Wax"
+PARAM_DEFAULTS = {                      # the editor's default look (a glossy red wax)
     "shadow": [0.24, 0.015, 0.02], "body": [0.78, 0.10, 0.07], "light": [0.98, 0.38, 0.26],
     "rim_color": [0.55, 0.10, 0.06], "spec_color": [1.0, 0.78, 0.72],
     "light_az": -33.0, "light_el": 33.5,
@@ -110,17 +79,34 @@ COLOR_KEYS = [("shadow", "Shadow"), ("body", "Body"), ("light", "Light"),
               ("rim_color", "Rim"), ("spec_color", "Gloss")]
 
 
+REALSKIN_PARAMS = {                     # the built-in "RealSkin" (a procedural MatCap, tweakable in the editor)
+    "shadow": [0.5255, 0.2824, 0.1961], "body": [0.7843, 0.4706, 0.3294], "light": [0.9020, 0.6078, 0.4392],
+    "rim_color": [0.8157, 0.5176, 0.3922], "spec_color": [1.0, 0.8706, 0.8471],
+    "light_az": 15.0, "light_el": 34.0, "shadow_start": 0.45, "light_start": 0.52,
+    "rim_strength": 0.16, "rim_power": 3.0,
+    "spec_tight": 0.2, "spec_tight_pow": 36.0, "spec_broad": 0.04, "spec_broad_pow": 8.0,
+}
+
+GOOSH_PARAMS = {                        # the built-in "Goosh" (a procedural MatCap, tweakable in the editor)
+    "shadow": [0.6824, 0.6863, 0.5216], "body": [0.1137, 0.1216, 0.5961], "light": [0.8667, 0.8745, 0.3843],
+    "rim_color": [0.5373, 0.5412, 0.4118], "spec_color": [0.8706, 0.8745, 0.6667],
+    "light_az": 42.0, "light_el": 32.0, "shadow_start": 0.14, "light_start": 0.45,
+    "rim_strength": 0.39, "rim_power": 1.5,
+    "spec_tight": 0.15, "spec_tight_pow": 4.0, "spec_broad": 0.1, "spec_broad_pow": 20.0,
+}
+
+FROSTED_GLASS_PARAMS = {                # the built-in "Frosted Glass" (a procedural MatCap, tweakable in the editor)
+    "shadow": [0.3294, 0.3333, 0.3294], "body": [0.3294, 0.3333, 0.3216], "light": [0.0, 0.0, 0.0],
+    "rim_color": [0.5333, 0.5490, 0.5333], "spec_color": [1.0, 1.0, 1.0],
+    "light_az": -34.0, "light_el": 49.0, "shadow_start": 0.31, "light_start": 0.45,
+    "rim_strength": 0.51, "rim_power": 3.3,
+    "spec_tight": 0.32, "spec_tight_pow": 7.0, "spec_broad": 0.17, "spec_broad_pow": 32.0,
+}
+
 START_PRESETS = {                       # overrides on top of PARAM_DEFAULTS
-    "Red Wax": {},
-    "Clay Matte Green": {"shadow": [0.05, 0.12, 0.06], "body": [0.28, 0.50, 0.20],
-                         "light": [0.66, 0.84, 0.48], "light_start": 0.62, "rim_strength": 0.0,
-                         "spec_color": [0.9, 1.0, 0.8], "spec_tight": 0.0,
-                         "spec_broad": 0.05, "spec_broad_pow": 5.0},
-    "RealSkin": {"shadow": [0.30, 0.11, 0.09], "body": [0.86, 0.58, 0.47],
-                 "light": [1.0, 0.84, 0.74], "light_start": 0.58,
-                 "rim_color": [0.60, 0.14, 0.09], "rim_strength": 0.30, "rim_power": 2.0,
-                 "spec_color": [1.0, 0.92, 0.86], "spec_tight": 0.18, "spec_tight_pow": 70.0,
-                 "spec_broad": 0.22, "spec_broad_pow": 14.0},
+    "Frosted Glass": FROSTED_GLASS_PARAMS,
+    "Goosh": GOOSH_PARAMS,
+    "RealSkin": REALSKIN_PARAMS,
 }
 
 
@@ -203,6 +189,11 @@ def procedural_matcap_code(p: dict) -> str:
   fragOutput0 = vec4(clamp(mcCol, 0.0, 1.0), opacity);
 """
 
+
+# Frosted Glass, Goosh and RealSkin are built from their parameters (the first three in the M-key cycle)
+MATCAPS.insert(0, ("Frosted Glass", procedural_matcap_code(clean_params(FROSTED_GLASS_PARAMS))))
+MATCAPS.insert(1, ("Goosh", procedural_matcap_code(clean_params(GOOSH_PARAMS))))
+MATCAPS.insert(2, ("RealSkin", procedural_matcap_code(clean_params(REALSKIN_PARAMS))))
 
 IMAGE_MATCAP_DEGREE = 15                # polynomial degree used for the full-detail image MatCap
 

@@ -491,13 +491,17 @@ class Gallery(QListWidget):
     open_folder = Signal(str)
     counts = Signal(int, int)          # models shown, models total
     rename_requested = Signal(str)
-    copy_requested = Signal(str)
+    batch_rename_requested = Signal(list)
+    copy_requested = Signal(list)      # the selected files
+    cut_requested = Signal(list)
     paste_requested = Signal()
-    delete_requested = Signal(str)
+    delete_requested = Signal(list)
+    transfer_requested = Signal(list, bool)   # files, move (True) or copy (False) to a folder to be chosen
     refresh_thumb_requested = Signal(str)
     refresh_all_requested = Signal()
     tags_requested = Signal(list)      # files whose tags should be edited
     metadata_changed = Signal()
+    folder_changed = Signal()          # files were added, removed or changed in the open folder (outside the app too)
 
     def __init__(self):
         super().__init__()
@@ -516,13 +520,26 @@ class Gallery(QListWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
         for key, fn in (("F2", lambda: self._emit_file(self.rename_requested)),
-                        ("Delete", lambda: self._emit_file(self.delete_requested)),
-                        ("Ctrl+C", lambda: self._emit_file(self.copy_requested)),
+                        ("Ctrl+F2", self._batch_key),
+                        ("Delete", lambda: self._emit_files(self.delete_requested)),
+                        ("Ctrl+C", lambda: self._emit_files(self.copy_requested)),
+                        ("Ctrl+X", lambda: self._emit_files(self.cut_requested)),
                         ("Ctrl+V", lambda: self.paste_requested.emit()),
+                        ("Ctrl+Shift+Y", lambda: self._transfer_key(False)),
+                        ("Ctrl+Shift+M", lambda: self._transfer_key(True)),
+                        ("Ctrl+I", self.invert_selection),
                         ("F5", self._refresh_key),
                         ("Ctrl+T", lambda: self._tags_key()),
                         *[(f"Ctrl+{n}", (lambda n=n: self.set_rating_selected(n))) for n in range(RATING_MAX + 1)]):
             QShortcut(QKeySequence(key), self, activated=fn, context=Qt.WidgetShortcut)
+        # Files copied in with Explorer and the like are noticed by looking at the folder every second or two.
+        # (A file-system watcher would hold the folder open, which on Windows can stop you renaming or deleting it.)
+        self._sig = None                           # what the folder looked like when it was last read
+        self._seen = None                          # what it looked like at the previous check, if that was different
+        self._poll = QTimer(self)
+        self._poll.setInterval(1500)
+        self._poll.timeout.connect(self._poll_folder)
+        self._poll.start()
         self.folder = ""
         self.virtual = ""                          # title of a smart-folder view ("" = a normal folder)
         self.library = None
@@ -569,6 +586,7 @@ class Gallery(QListWidget):
 
     def populate_paths(self, paths: list, title: str) -> list[str]:
         """A smart-folder view: files from anywhere, shown as one list."""
+        self._sig = None
         self.folder = ""
         self.virtual = title
         self._filter = ""
@@ -586,11 +604,26 @@ class Gallery(QListWidget):
         self._rebuild(keep=False)
         return [e["path"] for e in entries]
 
-    def populate(self, folder: str) -> list[str]:
-        self.folder = folder
-        self.virtual = ""
-        self._filter = ""
-        self._thumbs = {}
+    @staticmethod
+    def _signature(entries: list):
+        return tuple(sorted((e["path"], e["size"], e["mtime"]) for e in entries))
+
+    def _poll_folder(self):
+        """Emit folder_changed once the open folder differs from what is shown AND has stopped changing for a
+        moment (so a big copy that is still being written is not picked up half-finished)."""
+        if self.virtual or not self.folder or not self.isVisible() or self._sig is None:
+            return
+        now = self._signature(self._scan(self.folder))
+        if now == self._sig:
+            self._seen = None
+        elif now == self._seen:
+            self._seen = None
+            self.folder_changed.emit()
+        else:
+            self._seen = now
+
+    @staticmethod
+    def _scan(folder: str) -> list:
         entries = []
         try:
             with os.scandir(folder) as scan:
@@ -612,14 +645,50 @@ class Gallery(QListWidget):
                         continue
         except OSError:
             entries = []
-        self._entries = entries
+        return entries
+
+    def _relink(self, folder: str, entries: list):
         if self.library is not None:
             try:                                   # files renamed outside the app keep their tags and ratings
                 self.library.relink(folder, [e["path"] for e in entries if not e["dir"]])
             except Exception:
                 pass
+
+    def populate(self, folder: str) -> list[str]:
+        self.folder = folder
+        self.virtual = ""
+        self._filter = ""
+        self._thumbs = {}
+        entries = self._scan(folder)
+        self._entries = entries
+        self._relink(folder, entries)
         self._rebuild(keep=False)
+        self._sig, self._seen = self._signature(entries), None
         return [e["path"] for e in entries if not e["dir"]]
+
+    def rescan(self) -> list[str]:
+        """Re-read the open folder after it changed on disk, keeping the search, sort, selection, scroll position
+        and the thumbnails already made. Returns the files that still need a thumbnail (new, changed, or not
+        finished yet)."""
+        if self.virtual or not self.folder or not os.path.isdir(self.folder):
+            return []
+        old = {e["path"]: (e["size"], e["mtime"]) for e in self._entries if not e["dir"]}
+        entries = self._scan(self.folder)
+        self._entries = entries
+        self._sig, self._seen = self._signature(entries), None
+        self._relink(self.folder, entries)
+        need = []
+        for e in entries:
+            if e["dir"]:
+                continue
+            p = e["path"]
+            if p in old and old[p] != (e["size"], e["mtime"]):
+                self._thumbs.pop(p, None)          # the file itself changed: make a new thumbnail
+                need.append(p)
+            elif p not in self._thumbs:
+                need.append(p)
+        self._rebuild(keep=True)
+        return need
 
     def _meta(self, path: str):
         return self.library.get(path) if self.library is not None else None
@@ -743,6 +812,32 @@ class Gallery(QListWidget):
         path, is_dir = item.data(Qt.UserRole)
         return "" if is_dir else path
 
+    def _emit_files(self, signal):
+        paths = self._targets(self._current_file())
+        if paths:
+            signal.emit(paths)
+
+    def _in_grid_order(self, paths) -> list:
+        rank = {os.path.normcase(p): i for i, p in enumerate(self._order)}
+        return sorted(paths, key=lambda p: rank.get(os.path.normcase(p), len(rank)))
+
+    def _batch_key(self):
+        paths = self.selected_files()
+        if len(paths) >= 2:
+            self.batch_rename_requested.emit(self._in_grid_order(paths))
+
+    def _transfer_key(self, move: bool):
+        paths = self._targets(self._current_file())
+        if paths:
+            self.transfer_requested.emit(paths, move)
+
+    def invert_selection(self):
+        """Select what is not selected (files only; folders stay as they are)."""
+        for i in range(self.count()):
+            it = self.item(i)
+            if not it.data(Qt.UserRole)[1]:
+                it.setSelected(not it.isSelected())
+
     def _emit_file(self, signal):
         path = self._current_file()
         if path:
@@ -778,9 +873,18 @@ class Gallery(QListWidget):
                 cm.addAction("No colour", lambda _=False, t=targets: self.set_color_selected("", t))
                 menu.addAction("Tags…\tCtrl+T", lambda _=False, t=targets: self._tags_key(t))
             if not is_dir:
+                files = self._targets(path) if path in self.selected_files() else [path]
+                n = len(files)
                 menu.addSeparator()
-                menu.addAction("Rename…\tF2", lambda _=False: self.rename_requested.emit(path))
-                menu.addAction("Copy\tCtrl+C", lambda _=False: self.copy_requested.emit(path))
+                ren = menu.addAction("Rename…\tF2", lambda _=False: self.rename_requested.emit(path))
+                ren.setEnabled(n == 1)
+                if n >= 2:
+                    menu.addAction(f"Batch rename {n} files…\tCtrl+F2",
+                                   lambda _=False, f=files: self.batch_rename_requested.emit(self._in_grid_order(f)))
+                menu.addAction("Cut\tCtrl+X", lambda _=False, f=files: self.cut_requested.emit(f))
+                menu.addAction("Copy\tCtrl+C", lambda _=False, f=files: self.copy_requested.emit(f))
+                menu.addAction("Copy to…\tCtrl+Shift+Y", lambda _=False, f=files: self.transfer_requested.emit(f, False))
+                menu.addAction("Move to…\tCtrl+Shift+M", lambda _=False, f=files: self.transfer_requested.emit(f, True))
                 menu.addAction("Refresh thumbnail\tF5", lambda _=False: self.refresh_thumb_requested.emit(path))
         mime = QApplication.clipboard().mimeData()
         paste = menu.addAction("Paste\tCtrl+V", lambda _=False: self.paste_requested.emit())
@@ -790,7 +894,9 @@ class Gallery(QListWidget):
             menu.addAction("Refresh all thumbnails\tF5", lambda _=False: self.refresh_all_requested.emit())
         if item is not None and not is_dir:
             menu.addSeparator()
-            menu.addAction("Delete\tDel", lambda _=False: self.delete_requested.emit(path))
+            files = self._targets(path) if path in self.selected_files() else [path]
+            menu.addAction("Delete\tDel" if len(files) == 1 else f"Delete {len(files)} files\tDel",
+                           lambda _=False, f=files: self.delete_requested.emit(f))
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _activated(self, item: QListWidgetItem):

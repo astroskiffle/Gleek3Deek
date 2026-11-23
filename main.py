@@ -37,7 +37,8 @@ import vtkmodules.vtkRenderingOpenGL2  # noqa: F401  (registers GL backend)
 import vtkmodules.vtkInteractionStyle  # noqa: F401  (registers styles)
 import vtkmodules.vtkRenderingFreeType  # noqa: F401  (text for the axes gizmo)
 from formats import ALL_EXTS, asset_ext
-from panels import TagsDialog
+import fileops
+from panels import BatchRenameDialog, TagsDialog, TransferDialog
 from library import (
     COLORS, Library, parse_query, push_recent, query_is_empty, resolve_library_path, split_tags)
 from gallery import Gallery, LoadTask, ORIENT, SORTS, ThumbnailManager, _setting_int, scan_assets
@@ -162,6 +163,9 @@ QToolButton#upBtn:hover { background:#252d38; }
 QComboBox QAbstractItemView { background:#1b2028; selection-background-color:#34506f; border:1px solid #2f3947; }
 QSlider::groove:horizontal { height:4px; background:#2c3542; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-5px 0; background:#6aa8e8; border-radius:6px; }
+QSlider::groove:horizontal:disabled { background:#1b2028; }
+QSlider::handle:horizontal:disabled { background:#3a424e; }
+QLabel:disabled { color:#5c6672; }
 #barLabel { color:#7c8794; background:transparent; }
 #drawerBtn { background:#10141a; border:none; border-left:1px solid #1c232c; color:#aeb8c4; }
 #drawerBtn:hover { background:#27486b; }
@@ -322,6 +326,12 @@ class FavouriteDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+def fileops_companion_count(res) -> int:
+    """Files moved or copied besides the models themselves."""
+    models = {d for _s, d, _m in res.models}
+    return len([d for _s, d in res.moves if d not in models]) + len([d for d in res.copies if d not in models])
+
+
 class MainWindow(QMainWindow):
     def __init__(self, start: str | None):
         super().__init__()
@@ -382,9 +392,13 @@ class MainWindow(QMainWindow):
         self.gallery.open_asset.connect(self.open_asset)
         self.gallery.open_folder.connect(self.goto_folder)
         self.gallery.rename_requested.connect(self._rename_file)
-        self.gallery.copy_requested.connect(self._copy_file)
+        self.gallery.batch_rename_requested.connect(self._batch_rename)
+        self.gallery.copy_requested.connect(self._copy_files)
+        self.gallery.cut_requested.connect(self._cut_files)
         self.gallery.paste_requested.connect(self._paste_files)
-        self.gallery.delete_requested.connect(self._delete_file)
+        self.gallery.transfer_requested.connect(self._transfer_files)
+        self.gallery.delete_requested.connect(self._delete_files)
+        self.gallery.folder_changed.connect(self._folder_changed)
         self.gallery.refresh_thumb_requested.connect(self._refresh_thumbnail)
         self.gallery.refresh_all_requested.connect(self._refresh_all_thumbnails)
         self.gallery.set_library(self.library)
@@ -560,6 +574,12 @@ class MainWindow(QMainWindow):
         quit_act = fm.addAction("Quit")
         quit_act.setShortcut(QKeySequence("Ctrl+Q"))
         quit_act.triggered.connect(self.close)
+        em = mb.addMenu("&Edit")
+        self._undo: list = []                                  # renames and moves, newest last (see _push_undo)
+        self.act_undo = em.addAction("Undo")
+        self.act_undo.setShortcut(QKeySequence("Ctrl+Z"))
+        self.act_undo.triggered.connect(self._undo_last)
+        self._update_undo_action()
         gm = mb.addMenu("&Go")
         self.go_menu = gm
         gm.addAction("Parent folder\tAlt+Up", self._go_up)
@@ -900,6 +920,12 @@ class MainWindow(QMainWindow):
         ext = asset_ext(name)
         return (name[:-len(ext)] if ext else name), ext
 
+    def _folder_changed(self):
+        """Files appeared, vanished or changed in the open folder (copied in with Explorer, say)."""
+        need = self.gallery.rescan()
+        if need:
+            self.thumbs.request_batch(need)
+
     def _refresh_gallery(self, select: str = ""):
         if self.gallery.virtual:
             self._show_query(self._virtual_query, self.gallery.virtual, select=select)
@@ -935,6 +961,7 @@ class MainWindow(QMainWindow):
         except OSError as e:
             QMessageBox.warning(self, "Rename", f"Could not rename the file.\n\n{e}")
             return
+        self._push_undo(f"rename of {old}", [(path, dst)], [(path, dst)])
         self.library.rename(path, dst)                 # keep its tags, colour and rating
         ORIENT.set(dst, ORIENT.get(path))              # keep its Y-up / Z-up choice
         ORIENT.set(path, "Y")
@@ -944,51 +971,192 @@ class MainWindow(QMainWindow):
         self._refresh_gallery(select=dst)
         self.statusBar().showMessage(f"Renamed to {new_base + ext}", 6000)
 
-    def _copy_file(self, path: str):
+    def _batch_rename(self, paths: list):
+        paths = [p for p in paths if os.path.isfile(p)]
+        if len(paths) < 2:
+            return
+        dlg = BatchRenameDialog(self, paths, str(self.settings.value("fileops/rename_pattern", "[name]_###") or "[name]_###"))
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.settings.setValue("fileops/rename_pattern", dlg.pattern_text())
+        pairs = dlg.pairs()
+        caches = {s: self.thumbs._cache_file(s) for s, _d in pairs}        # before the names change
+        done, err = fileops.rename_many(pairs)
+        if err:
+            QMessageBox.warning(self, "Batch rename", f"Nothing was renamed.\n\n{err}")
+            return
+        for src, dst in done:
+            self.library.rename(src, dst)
+            ORIENT.set(dst, ORIENT.get(src))
+            ORIENT.set(src, "Y")
+            self.thumbs.adopt(caches.get(src), dst)
+            if self.current_path == src:
+                self.current_path = dst
+        self._push_undo(f"rename of {len(done)} files", done, done, batch=True)
+        self._refresh_gallery(select=done[0][1] if done else "")
+        self.statusBar().showMessage(f"Renamed {len(done)} files", 6000)
+
+    # ----- clipboard, copy to / move to (the file work itself is in fileops.py) ------------------
+    CUT_MIME = "application/x-gleek3deek-cut"
+
+    def _put_on_clipboard(self, paths: list, cut: bool):
         md = QMimeData()
-        md.setUrls([QUrl.fromLocalFile(path)])         # lets Explorer/Finder paste it too
-        md.setText(path)
+        md.setUrls([QUrl.fromLocalFile(p) for p in paths])         # lets Explorer/Finder paste them too
+        md.setText("\n".join(paths))
+        if cut:
+            md.setData(self.CUT_MIME, b"1")
+            md.setData("Preferred DropEffect", (2).to_bytes(4, "little"))   # what Explorer's own Cut sets
         QApplication.clipboard().setMimeData(md)
-        self.statusBar().showMessage(f"Copied {os.path.basename(path)}", 6000)
 
     @staticmethod
-    def _unique_path(folder: str, name: str) -> str:
-        cand = os.path.join(folder, name)
-        if not os.path.exists(cand):
-            return cand
-        base, ext = MainWindow._split_name(name)
-        n = 1
-        while os.path.exists(cand):
-            cand = os.path.join(folder, f"{base} - Copy" + (f" ({n})" if n > 1 else "") + ext)
-            n += 1
-        return cand
+    def _what(paths: list) -> str:
+        return os.path.basename(paths[0]) if len(paths) == 1 else f"{len(paths)} files"
+
+    def _copy_files(self, paths: list):
+        self._put_on_clipboard(paths, cut=False)
+        self.statusBar().showMessage(f"Copied {self._what(paths)}", 6000)
+
+    def _cut_files(self, paths: list):
+        self._put_on_clipboard(paths, cut=True)
+        self.statusBar().showMessage(f"Cut {self._what(paths)}: paste into a folder to move it", 6000)
+
+    def _clipboard_files(self):
+        """(files on the clipboard, True if they were cut rather than copied)."""
+        md = QApplication.clipboard().mimeData()
+        if md is None or not md.hasUrls():
+            return [], False
+        files = [u.toLocalFile() for u in md.urls() if u.isLocalFile() and os.path.isfile(u.toLocalFile())]
+        cut = md.hasFormat(self.CUT_MIME)
+        if not cut and md.hasFormat("Preferred DropEffect"):
+            data = bytes(md.data("Preferred DropEffect"))
+            cut = bool(data) and data[0] == 2
+        return files, cut
+
+    def _companions_pref(self) -> bool:
+        return self.settings.value("fileops/companions", True, type=bool)
 
     def _paste_files(self):
         folder = self.gallery.folder
-        md = QApplication.clipboard().mimeData()
-        srcs = [u.toLocalFile() for u in md.urls() if u.isLocalFile()] if md is not None and md.hasUrls() else []
-        files = [p for p in srcs if os.path.isfile(p)]
-        if not folder or not files:
-            self.statusBar().showMessage("Nothing to paste: copy a file first", 6000)
+        files, cut = self._clipboard_files()
+        if not folder or self.gallery.virtual or not files:
+            self.statusBar().showMessage("Nothing to paste here: copy files first, and open a normal folder", 6000)
             return
-        last, done, errors = "", 0, []
-        QApplication.setOverrideCursor(Qt.WaitCursor)
+        done = self._run_transfer(files, folder, move=cut, companions=self._companions_pref())
+        if done and cut:
+            QApplication.clipboard().clear()                    # a cut can only be pasted once
+
+    def _transfer_files(self, paths: list, move: bool):
+        recent = [p for p in self._fileops_recent() if os.path.isdir(p)]
+        start = recent[0] if recent else (self.gallery.folder or "")
+        dlg = TransferDialog(self, move, len(paths), recent, start, self._companions_pref())
+        if dlg.exec() != QDialog.Accepted:
+            return
+        dest = dlg.folder()
+        self.settings.setValue("fileops/recent", push_recent(self._fileops_recent(), dest, 8))
+        self.settings.setValue("fileops/companions", dlg.include_companions())
+        self._run_transfer(paths, dest, move, dlg.include_companions())
+
+    def _fileops_recent(self) -> list:
+        v = self.settings.value("fileops/recent", [])
+        return [str(p) for p in ([v] if isinstance(v, str) else (v or []))]
+
+    def _run_transfer(self, paths: list, dest: str, move: bool, companions: bool) -> bool:
+        """Plan, do and report one copy or move. True if at least one model was transferred."""
+        title = "Move" if move else "Copy"
         try:
-            for src in files:
-                dst = self._unique_path(folder, os.path.basename(src))
-                old_cache = self.thumbs._cache_file(src)
-                try:
-                    shutil.copy2(src, dst)
-                    self.thumbs.adopt(old_cache, dst)  # a pasted copy starts with the same thumbnail
-                    last, done = dst, done + 1
-                except OSError as e:
-                    errors.append(f"{os.path.basename(src)}: {e}")
-        finally:
-            QApplication.restoreOverrideCursor()
-        self._refresh_gallery(select=last)
-        self.statusBar().showMessage(f"Pasted {done} file{'s' if done != 1 else ''}", 6000)
-        if errors:
-            QMessageBox.warning(self, "Paste", "Some files could not be copied:\n\n" + "\n".join(errors[:8]))
+            plan = fileops.plan_transfer(paths, dest, move, companions)
+        except fileops.FileOpsError as e:
+            QMessageBox.warning(self, title, str(e))
+            return False
+        caches = {b.model.src: self.thumbs._cache_file(b.model.src) for b in plan.bundles}
+        res = fileops.Result()
+        if plan.bundles:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                res = fileops.execute(plan)
+            finally:
+                QApplication.restoreOverrideCursor()
+        if res.moves:
+            n_models = sum(1 for _s, _d, mv in res.models if mv)
+            self._push_undo(f"move of {self._what([m[0] for m in res.models if m[2]]) if n_models else 'files'}",
+                            res.moves, [(s, d) for s, d, mv in res.models if mv])
+        last = ""
+        for src, dst, moved in res.models:
+            if moved:
+                self.library.rename(src, dst)                   # tags, colour and rating follow the file
+                ORIENT.set(dst, ORIENT.get(src))
+                ORIENT.set(src, "Y")
+                if self.current_path == src:
+                    self.current_path = dst
+            self.thumbs.adopt(caches.get(src), dst)             # the new file starts with the same thumbnail
+            last = dst
+        in_view = last if os.path.normcase(os.path.dirname(last)) == os.path.normcase(self.gallery.folder or "?") else ""
+        self._refresh_gallery(select=in_view)
+        n = len(res.models)
+        extra = fileops_companion_count(res)
+        msg = f"{'Moved' if move else 'Copied'} {n} model{'s' if n != 1 else ''}" if n else f"Nothing was {title.lower()}d"
+        if extra:
+            msg += f" and {extra} companion file{'s' if extra != 1 else ''}"
+        self.statusBar().showMessage(msg + f" to {os.path.basename(dest) or dest}", 8000)
+        problems = [f"{os.path.basename(p)}: {why}" for p, why in plan.skipped] + res.errors
+        if problems or plan.notes:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning if problems else QMessageBox.Information)
+            box.setWindowTitle(title)
+            box.setText("Some files were left alone:" if problems else msg)
+            lines = problems[:10] + ([f"… and {len(problems) - 10} more"] if len(problems) > 10 else []) + plan.notes[:6]
+            box.setInformativeText("\n".join(lines))
+            box.exec()
+        return bool(n)
+
+    # ----- undo (renames and moves; copies and deletes are not undone, deleted files are in the Recycle Bin)
+    MAX_UNDO = 20
+
+    def _push_undo(self, label: str, moves: list, models: list, batch: bool = False):
+        self._undo.append({"label": label, "moves": list(moves), "models": list(models), "batch": batch})
+        del self._undo[:-self.MAX_UNDO]
+        self._update_undo_action()
+
+    def _update_undo_action(self):
+        if self._undo:
+            self.act_undo.setText(f"Undo {self._undo[-1]['label']}\tCtrl+Z")
+            self.act_undo.setEnabled(True)
+        else:
+            self.act_undo.setText("Undo\tCtrl+Z")
+            self.act_undo.setEnabled(False)
+
+    def _undo_last(self):
+        if not self._undo:
+            return
+        entry = self._undo.pop()
+        self._update_undo_action()
+        caches = {d: self.thumbs._cache_file(d) for _s, d in entry["models"]}
+        if entry.get("batch"):
+            back, err = fileops.rename_many([(d, s) for s, d in entry["moves"]])
+            restored, skipped = len(back), ([] if not err else [d for _s, d in entry["moves"]])
+            if err:
+                QMessageBox.warning(self, "Undo", f"Nothing was changed.\n\n{err}")
+        else:
+            restored, skipped = fileops.undo_moves(entry["moves"])
+        last = ""
+        for src, dst in entry["models"]:
+            if os.path.isfile(src) and not os.path.exists(dst):   # this model is back where it was
+                self.library.rename(dst, src)
+                ORIENT.set(src, ORIENT.get(dst))
+                ORIENT.set(dst, "Y")
+                self.thumbs.adopt(caches.get(dst), src)
+                if self.current_path == dst:
+                    self.current_path = src
+                last = src
+        in_view = last if last and os.path.normcase(os.path.dirname(last)) == os.path.normcase(self.gallery.folder or "?") else ""
+        self._refresh_gallery(select=in_view)
+        self.statusBar().showMessage(
+            f"Undid the {entry['label']}" + (f" ({restored} file{'s' if restored != 1 else ''} put back)" if restored else ""), 8000)
+        if skipped:
+            QMessageBox.warning(
+                self, "Undo", "These could not be put back (they were changed or removed since, or the old name is "
+                              "taken):\n\n" + "\n".join(os.path.basename(p) for p in skipped[:10])
+                + (f"\n… and {len(skipped) - 10} more" if len(skipped) > 10 else ""))
 
     def _refresh_thumbnail(self, path: str):
         self.gallery.clear_thumb(path)
@@ -1002,37 +1170,46 @@ class MainWindow(QMainWindow):
         self._refresh_gallery()
         self.statusBar().showMessage(f"Refreshing {len(paths)} thumbnails…", 6000)
 
-    def _delete_file(self, path: str):
-        name = os.path.basename(path)
+    def _delete_files(self, paths: list):
+        n = len(paths)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Warning)
         box.setWindowTitle("Delete")
-        box.setText(f"Move “{name}” to the Recycle Bin / Trash?")
-        extra = {".obj": "Its .mtl material file and texture images are not deleted.",
-                 ".gltf": "Its .bin and texture files are not deleted."}.get(asset_ext(name))
+        box.setText(f"Move “{os.path.basename(paths[0])}” to the Recycle Bin / Trash?" if n == 1
+                    else f"Move {n} files to the Recycle Bin / Trash?")
+        notes = {".obj": "an OBJ's .mtl material file and textures", ".gltf": "a glTF's .bin and texture files"}
+        extra = sorted({notes[asset_ext(p)] for p in paths if asset_ext(p) in notes})
         if extra:
-            box.setInformativeText(extra)
+            box.setInformativeText("Not deleted: " + " and ".join(extra) + ".")
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
         box.setDefaultButton(QMessageBox.Cancel)
         if box.exec() != QMessageBox.Yes:
             return
-        res = QFile.moveToTrash(path)
-        if not (res[0] if isinstance(res, tuple) else bool(res)):
-            answer = QMessageBox.question(
-                self, "Delete", f"“{name}” could not be moved to the Recycle Bin / Trash.\n\n"
-                                "Delete it permanently instead?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
-            try:
-                os.remove(path)
-            except OSError as e:
-                QMessageBox.warning(self, "Delete", f"Could not delete the file.\n\n{e}")
-                return
-        if self.current_path == path:
-            self.current_path = ""
-        self.library.remove(path)
+        deleted, errors, ask_permanent = 0, [], None
+        for path in paths:
+            res = QFile.moveToTrash(path)
+            if not (res[0] if isinstance(res, tuple) else bool(res)):
+                if ask_permanent is None:
+                    ask_permanent = QMessageBox.question(
+                        self, "Delete", "Some files could not be moved to the Recycle Bin / Trash.\n\n"
+                                        "Delete them permanently instead?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+                if not ask_permanent:
+                    errors.append(os.path.basename(path))
+                    continue
+                try:
+                    os.remove(path)
+                except OSError as e:
+                    errors.append(f"{os.path.basename(path)}: {e}")
+                    continue
+            deleted += 1
+            if self.current_path == path:
+                self.current_path = ""
+            self.library.remove(path)
         self._refresh_gallery()
-        self.statusBar().showMessage(f"Deleted {name}", 6000)
+        self.statusBar().showMessage(f"Deleted {deleted} file{'s' if deleted != 1 else ''}", 6000)
+        if errors:
+            QMessageBox.warning(self, "Delete", "Could not delete:\n\n" + "\n".join(errors[:8]))
 
     # ----- library: tags, colour labels, ratings, smart folders ----------------------------------
     def _library_saved(self):

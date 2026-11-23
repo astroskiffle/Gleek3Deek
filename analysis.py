@@ -1083,7 +1083,7 @@ SHEET_CELLS = [512, 768, 1024, 1536, 2048]
 SHEET_ENV = {"enabled": True, "skybox": False, "lighting": True, "shadow": False, "gradient_bg": False,
              "sky": [0.95, 0.95, 0.95], "equator": [0.88, 0.88, 0.88], "ground": [0.76, 0.76, 0.76],
              "sun_int": 0.0, "highlight": 0.0, "ambient": 1.0, "exposure": 0.0, "tonemap": "none",
-             "sky_blur": 0.0, "yaw": 0.0, "fake_ao": False, "pano_light": 0.0}
+             "sky_blur": 0.0, "yaw": 0.0, "fake_ao": False, "pano_light": 0.0, "pbr": False}
 
 
 def sheet_views(layout: str, u, f, r):

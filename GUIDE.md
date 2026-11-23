@@ -96,7 +96,7 @@ python main.py
 | Save screenshot | `F12` (2x resolution PNG, without the gizmo) |
 | Copy screenshot | `Ctrl+C` |
 | Wireframe / points / shaded | `W` / `P` / `S` (`W` and `P` again return to shaded) |
-| Cycle MatCaps | `M` (Red Wax, Clay Matte Green, RealSkin, Glossy, RoughMetal, then normal shading) |
+| Cycle MatCaps | `M` (Frosted Glass, Goosh, RealSkin, Glossy, then normal shading) |
 | MatCap editor | `E` (or **Panels → MatCap**) |
 | Environment on/off | `L` |
 | Model info panel | `I` (or **Main ▾ → Model info**; remembered) |
@@ -125,22 +125,35 @@ python main.py
 
 ## Managing files from the gallery
 
-Right-click a thumbnail (or select it and use the keys) to:
+Select one or several thumbnails (`Ctrl` / `Shift` + click, `Ctrl+A` for all, `Ctrl+I` to invert the selection) and right-click, or use the keys:
 
-| Action | Menu | Key |
-|---|---|---|
-| Open | Open | double-click |
-| Rename | Rename… | `F2` |
-| Copy | Copy | `Ctrl+C` |
-| Paste into the current folder | Paste | `Ctrl+V` |
-| Delete | Delete | `Del` |
-| Refresh the thumbnail | Refresh thumbnail | `F5` |
+| Action | Key |
+|---|---|
+| Open | double-click |
+| Rename (one file) | `F2` |
+| Batch rename (2 or more files) | `Ctrl+F2` |
+| Cut / Copy / Paste | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
+| Copy to a folder… | `Ctrl+Shift+Y` |
+| Move to a folder… | `Ctrl+Shift+M` |
+| Undo the last rename or move | `Ctrl+Z` |
+| Delete (to the Recycle Bin / Trash) | `Del` |
+| Refresh the thumbnail | `F5` |
 
-- **Rename** asks for the new name and keeps the file's extension. Invalid names and names that already exist are refused. A Y-up/Z-up choice you made for the file moves with it.
-- **Copy and paste:** Copy places the file on the system clipboard, so you can paste it into Explorer/Finder as well, and Paste also accepts files copied from there. A pasted file that would clash with an existing one is saved as "name - Copy". Right-clicking empty space in the gallery offers Paste too.
-- **Thumbnails:** a renamed or pasted file keeps its thumbnail. **Refresh thumbnail** (or `F5` with a file selected) throws away the saved picture and renders it again. Right-click empty space, or press `F5` with nothing selected, to refresh every thumbnail in the folder.
-- **Delete** moves the file to the Recycle Bin / Trash after asking. If that isn't possible you are asked before anything is deleted permanently.
-- These actions affect only the selected file. For an OBJ or glTF, its `.mtl`, `.bin` and texture files are left alone, so rename or delete those yourself if you need to.
+**Models and the files they need.** An OBJ needs its `.mtl` file and the textures that names, a glTF needs its `.bin` and images, a Collada (`.dae`) file its images. Copying, cutting, pasting and moving take those along (**companion files**), keeping their folder layout, so the model still works afterwards. The *Copy to / Move to* window has a tick box to turn this off; the choice is remembered, and also applies to Paste. Other formats are transferred as a single file. FBX and other binary formats are not read for their textures.
+
+- **Nothing is overwritten.** A model whose name is taken at the destination gets a number ("chair (2).obj"; a copy into the same folder becomes "chair - Copy.obj"). A companion that is already there and identical is reused. If a companion of the same name is there but is a *different* file, that model is left alone and listed, because renaming the file would break the model.
+- **Shared files are copied, not moved.** If another model in the same folder uses the same `.mtl` or texture, Move leaves the original in place and copies it, so the other model keeps working.
+- **If a move fails part-way** for one model, whatever it had already moved is put back, and the other models carry on.
+- **Local drives only.** Network locations are refused.
+- **Cut and paste** works with Explorer/Finder in both directions: files cut in Explorer move when pasted here, and files cut here move when pasted in Explorer. A cut can be pasted once.
+- **Tags, colour labels, ratings and the Y-up/Z-up choice follow a moved model**, and so does its thumbnail. A copy starts with the same thumbnail but not the tags.
+- **Copy to / Move to** shows the last 8 folders you used, plus a Browse button. Both also work from the right-click menu on the selection.
+- **Undo** (`Ctrl+Z`, or **Edit → Undo**, which names what it will undo) puts back the last rename or move, up to 20 steps while the app is open. A moved model goes back with its companion files, and its tags, colours, ratings and thumbnail go back with it. Nothing is overwritten: a file that has been changed or removed since, or whose old name has been taken, is skipped and listed. Copies and deletes are not undone (deleted files are in the Recycle Bin / Trash).
+- **Batch rename** (`Ctrl+F2`, or right-click with 2 or more files selected) renames the selected files with a pattern: `#` is a number (`###` gives 001, 002 …), `[name]` is the current name, extensions are kept, and the numbers follow the gallery order. A table shows every old and new name; the Rename button stays off while any name is invalid, taken, or given to two files. Swaps and shifts work, and if anything fails nothing is renamed. It can be undone with `Ctrl+Z`.
+- **Rename** works on one file at a time: it asks for the new name and keeps the extension. Invalid names and names that already exist are refused. For OBJ and glTF, rename only the model, not its `.mtl`, `.bin` or textures, because the model refers to those by name.
+- **Delete** moves the selected files to the Recycle Bin / Trash after asking. If that isn't possible you are asked before anything is deleted permanently. Companion files are **not** deleted, because other models may use them.
+- **The open folder updates itself** within a couple of seconds when files are added, removed, renamed or changed outside the app (copied in with Explorer, say). It waits until a big copy has stopped growing, then adds the new thumbnails, and keeps your search, selection and scroll position. It looks at the folder every second or two rather than holding it open, so you can still rename or delete it in Explorer.
+- **Thumbnails:** **Refresh thumbnail** (or `F5` with a file selected) throws away the saved picture and renders it again. Right-click empty space, or press `F5` with nothing selected, to refresh every thumbnail in the folder.
 
 **Large STEP files:** thumbnails for `.step` / `.stp` files above 20 MB are skipped (the file shows the generic icon and still opens normally), because the STEP reader holds Python's global lock and would freeze the window while it loads. Set the environment variable `GLEEK_THUMB_CAD_MAX_MB` to change the limit.
 
@@ -157,7 +170,7 @@ Organise your assets without touching them. Everything is stored in one small te
 - **Rating:** right-click a thumbnail → **Rating**, or press `Ctrl+1` to `Ctrl+5` (`Ctrl+0` clears). Yellow stars (one per point, no empty stars) show over the thumbnail's corner.
 - **Colour label:** right-click → **Colour label** (red, orange, yellow, green, blue, purple, gray). The card gets a coloured border.
 - **Tags:** right-click → **Tags…** or `Ctrl+T`. Type tags separated by commas, or double-click an existing tag to add it.
-- **Several files at once:** select with `Ctrl`/`Shift`-click, then use the same menu or keys. The tag box shows the tags every selected file shares; each file keeps its own extra tags. Rename, copy and delete still act on the one current file.
+- **Several files at once:** select with `Ctrl`/`Shift`-click, then use the same menu or keys. The tag box shows the tags every selected file shares; each file keeps its own extra tags. Rename acts on the one current file (use Batch rename for several).
 - **Search:** the search box understands `tag:rock`, `-tag:old`, `tag:"hard surface"`, `#rock`, `color:red` (or `color:none`), `rating:4`, `rating:>=3` and plain words (matched against the file name and tags). Terms combine with AND.
 - **Smart folders:** type a search, then **Library ▾ → Save this search as a smart folder…**. A smart folder shows every matching file from **all** folders in one list, and updates itself as tags change. **Library ▾** also has quick **Browse by tag / colour / rating**, and **Back to the folder view**.
 - **Where the file lives:** next to the program when that folder is writable, otherwise in your user application-data folder. **Library ▾ → Library file…** shows the path and lets you choose another location (for example a synced folder). The file is saved safely (temporary file, then rename) and a `.bak` copy is kept. If it is damaged it is set aside as `.damaged-…`, never overwritten. Two copies of the app running at once merge their changes.
@@ -224,7 +237,13 @@ Load a panorama with **Load panorama…** (an equirectangular 2:1 image: `.hdr`,
 
 **Panorama light:** with a panorama loaded, the **Panorama light** slider blends the ambient light from the three colours toward the light of the whole panorama. When the panorama loads, nine numbers describing its diffuse light are worked out once (spherical harmonics); the shader then lights every surface by which part of the sky it faces, so a warm sunset on one side tints that side of the model, and the ground colour comes from the actual floor of the image. 0 keeps the three colours (the default); 1 uses the panorama fully. It follows Rotate environment and the Y-up/Z-up setting. It is soft, directional diffuse light only: no reflections and no shadows from the panorama. It needs a loaded panorama and is ignored if lighting falls back to following the camera. It works together with Fake AO, which then darkens the result in creases.
 
-**Fake AO:** tick *Fake AO* in the Environment panel and set its strength. It darkens the ambient light in two cheap ways: creases and corners (a value per vertex, worked out once per model on a background thread) and a gentle fall-off toward the ground (following the Y-up/Z-up setting and any move you make). There is no screen-space pass and no ray tracing, so it costs almost nothing per frame. It sees only local creases, not a part shadowing a distant one, and it looks best on reasonably dense meshes. It is paused while split compare or the wireframe overlay is on. It affects the ambient light only, never the sun, and works in shaded mode with environment lighting on. If a GPU rejects it, it switches itself off with a message.
+**Surface lighting:** this box chooses how models are shaded: **Off** (VTK's plain shading), **Standard** (sky, sun and shadow with a simple highlight) or **PBR materials**. Fake AO and Panorama light need Standard or PBR and are greyed out when it is Off.
+
+**PBR materials:** choose *PBR materials* in *Surface lighting* to give glTF/GLB models a physically-based look in shaded mode, using each material's **metallic** and **roughness**. Metals lose their diffuse colour and reflect the sky tinted by their base colour; rough surfaces get a wide, soft sun highlight and smooth ones a tight one (GGX highlight with Fresnel, so surfaces also gain reflection at grazing angles). The reflection is a very soft copy of the sky: with a panorama loaded it comes from the panorama (nine numbers describing the whole image, blurred more for rougher materials, following Rotate environment and Y-up/Z-up), otherwise from the Sky/Equator/Ground colours. It shows a smooth tint and gradient, not a crisp image. *Sun highlight* scales the sun's specular (0.25 is the physically plausible default, 0 turns it off). Other formats are shown as a plain non-metal whose roughness follows the file's gloss. It works with Fake AO (which also darkens the reflection in creases), but not with split compare, whose normal-shaded half keeps the classic look.
+
+*What it does not do:* the viewer does not read the metallic-roughness map per pixel. When a model has one, its **average** is used for the whole material, so a model that is part metal and part plastic in one material shows a single in-between look. Normal maps, occlusion maps and emissive maps are not applied to this look either (the albedo texture is). If your GPU rejects the shader, the option switches itself off with a message.
+
+**Fake AO:** tick *Fake AO* in the Environment panel (Surface lighting must not be Off) and set its strength. It darkens the ambient light in two cheap ways: creases and corners (a value per vertex, worked out once per model on a background thread) and a gentle fall-off toward the ground (following the Y-up/Z-up setting and any move you make). There is no screen-space pass and no ray tracing, so it costs almost nothing per frame. It sees only local creases, not a part shadowing a distant one, and it looks best on reasonably dense meshes. It is paused while split compare or the wireframe overlay is on. It affects the ambient light only, never the sun, and works in shaded mode with environment lighting on. If a GPU rejects it, it switches itself off with a message.
 
 **Exposure and tone mapping:** the **Exposure** slider brightens or darkens the lighting in stops (it doesn't change the sky image or MatCaps). **Tone mapping** can be left off, set to *Soft highlights* (Reinhard) or *Filmic* (ACES), which are cheap curves that keep bright areas from clipping. **Sky blur** softens the panorama behind the model. **Sky gradient** replaces the background with a gradient from the equator colour up to the sky colour when no panorama is showing.
 
@@ -256,7 +275,7 @@ Notes:
 Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a dockable panel (see *Side panels* below) and changes the model live. Your work appears as one extra entry at the end of the **M** cycle, and it is remembered between sessions.
 
 - **Live preview:** a small sphere at the top of the editor shows the MatCap and updates as you move the sliders or change colours, with no wait for the model.
-- **Start from:** Red Wax, Clay Matte Green or RealSkin as a starting point.
+- **Start from:** Frosted Glass, Goosh or RealSkin as a starting point.
 - **Colours:** shadow, body, light, rim and gloss.
 - **Sliders:** light direction and height, how far shadows and highlights spread, rim glow and tightness, gloss and sheen amount and tightness.
 - **Save preset… / Load preset…:** presets are small JSON files you can share. A procedural preset looks like this:
@@ -270,7 +289,7 @@ Press **E** (or **Panels → MatCap**) with a model open. The editor opens as a 
 }
 ```
 
-Any value you leave out falls back to the Red Wax default, and out-of-range values are clamped.
+Any value you leave out falls back to the editor's default value (a glossy red wax look), and out-of-range values are clamped.
 
 - **Load image MatCap…:** pick a picture of a lit sphere (PNG, JPG, TIFF, BMP or WebP), including MatCap images exported from ZBrush. The image is cropped to a square, shrunk to a 32×32 colour table and fitted with a smooth formula that is used as the material. A saved image preset stores that table inside the JSON, so it doesn't depend on the original picture.
 
@@ -472,6 +491,7 @@ Gleek3Deek/
 ├── matcap.py                 # MatCap shaders, custom MatCap parameters, editor and preview
 ├── gallery.py                # thumbnail grid, thumbnails, file icons, background loading
 ├── library.py                # tags, colour labels, ratings and smart folders (one JSON file, no windows)
+├── fileops.py                # copying and moving models with their companion files (no windows)
 ├── environment.py            # sky, lighting and tone mapping, panorama handling, Environment panel
 ├── panels.py                 # Materials, Info and Scene panels, export dialog
 ├── requirements.txt          # required packages
@@ -496,7 +516,7 @@ Gleek3Deek/
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
-The tests cover the mesh checks, measurements, UV maths, texture audit, the command-line mode and reports, compressed-GLB conversion, Fake AO and panorama light, the tags/ratings library, and an import check of every module (about 90 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
+The tests cover the mesh checks, measurements, UV maths, texture audit, the command-line mode and reports, compressed-GLB conversion, Fake AO and panorama light, the tags/ratings library, and an import check of every module (about 110 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
 
 ## About dialog
 

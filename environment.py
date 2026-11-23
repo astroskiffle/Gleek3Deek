@@ -24,7 +24,8 @@ from matcap import _vec3
 
 # ---------------------------------------------------------------------------
 # Environment: panorama sky, hemispheric ambient, one sun, blob shadow.
-# Deliberately cheap: no reflections, no roughness maths, no bounces.
+# Deliberately cheap: no ray tracing, no bounces. "PBR materials" adds a roughness/metallic look
+# (GGX sun highlight + blurred sky reflections from nine numbers) without any extra textures.
 # ---------------------------------------------------------------------------
 ENV_DEFAULTS = {
     "enabled": False, "skybox": True, "lighting": True, "shadow": True, "path": "",
@@ -32,12 +33,28 @@ ENV_DEFAULTS = {
     "sun_color": [1.0, 0.95, 0.85], "sun_az": 35.0, "sun_el": 50.0, "sun_int": 0.85,
     "highlight": 0.25, "ambient": 1.0, "yaw": 0.0, "shadow_opacity": 0.5, "shadow_size": 1.0,
     "exposure": 0.0, "tonemap": "none", "sky_blur": 0.0, "gradient_bg": False,
-    "fake_ao": False, "ao_strength": 0.6, "pano_light": 0.0,
+    "fake_ao": False, "ao_strength": 0.6, "pano_light": 0.0, "pbr": False,
 }
 
 
 ENV_FLAGS = [("enabled", "Environment on"), ("skybox", "Skybox"), ("lighting", "Lighting"),
-             ("shadow", "Blob shadow"), ("gradient_bg", "Sky gradient"), ("fake_ao", "Fake AO")]
+             ("shadow", "Blob shadow"), ("gradient_bg", "Sky gradient"), ("fake_ao", "Fake AO"),
+             ("pbr", "PBR materials")]
+# "lighting" and "pbr" stay separate saved settings, but the panel shows them as one choice
+SURFACE_MODES = [("off", "Off (plain VTK shading)"), ("standard", "Standard"), ("pbr", "PBR materials")]
+ENV_CHECKBOX_KEYS = [k for k, _l in ENV_FLAGS if k not in ("lighting", "pbr")]
+
+
+def surface_mode(env: dict) -> str:
+    """'off', 'standard' or 'pbr' from the two stored flags (PBR means nothing without lighting)."""
+    if not env.get("lighting"):
+        return "off"
+    return "pbr" if env.get("pbr") else "standard"
+
+
+def set_surface_mode(env: dict, mode: str) -> None:
+    env["lighting"] = mode != "off"
+    env["pbr"] = mode == "pbr"
 
 
 TONEMAPS = [("none", "None (clamp)"), ("reinhard", "Soft highlights (Reinhard)"),
@@ -291,11 +308,8 @@ _SH_C = np.array([0.282095, 0.488603, 0.488603, 0.488603, 1.092548, 1.092548, 0.
 _SH_BAND = np.array([1.0, 2 / 3, 2 / 3, 2 / 3, 0.25, 0.25, 0.25, 0.25, 0.25])    # cosine lobe, divided by pi
 
 
-def sh_irradiance(disp: np.ndarray) -> np.ndarray:
-    """Diffuse light from a whole panorama as nine colour coefficients (9 x 3).
-    For a unit direction n = (x, y, z) in the panorama's own frame the light is
-    K0 + K1 y + K2 z + K3 x + K4 xy + K5 yz + K6 (3zz - 1) + K7 xz + K8 (xx - yy)
-    (the constants of the spherical-harmonic basis are already folded into K)."""
+def _sh_project(disp: np.ndarray) -> np.ndarray:
+    """Project a panorama onto the nine spherical-harmonic basis functions: (9 x 3) raw coefficients."""
     ds = _block_mean(disp, max(1, disp.shape[1] // 128)).astype(np.float64)
     h, w, _ = ds.shape
     uu, vv = np.meshgrid((np.arange(w) + 0.5) / w, 1.0 - (np.arange(h) + 0.5) / h)
@@ -304,8 +318,33 @@ def sh_irradiance(disp: np.ndarray) -> np.ndarray:
     poly = np.stack([np.ones_like(x), y, z, x, x * y, y * z, 3 * z * z - 1, x * z, x * x - y * y], -1)
     dw = np.cos((0.5 - (np.arange(h) + 0.5) / h) * math.pi)[:, None] * (2 * math.pi / w) * (math.pi / h)
     basis = poly * _SH_C                                         # (h, w, 9) real spherical harmonics
-    lm = np.einsum("hwk,hwc,h->kc", basis, ds, dw[:, 0])
-    return (lm * (_SH_BAND * _SH_C)[:, None]).astype(np.float64)
+    return np.einsum("hwk,hwc,h->kc", basis, ds, dw[:, 0])
+
+
+def sh_irradiance(disp: np.ndarray) -> np.ndarray:
+    """Diffuse light from a whole panorama as nine colour coefficients (9 x 3).
+    For a unit direction n = (x, y, z) in the panorama's own frame the light is
+    K0 + K1 y + K2 z + K3 x + K4 xy + K5 yz + K6 (3zz - 1) + K7 xz + K8 (xx - yy)
+    (the constants of the spherical-harmonic basis are already folded into K)."""
+    return (_sh_project(disp) * (_SH_BAND * _SH_C)[:, None]).astype(np.float64)
+
+
+_SH_L = np.array([0, 1, 1, 1, 2, 2, 2, 2, 2])
+
+
+def sh_radiance(disp: np.ndarray) -> np.ndarray:
+    """The panorama itself (not its cosine-weighted diffuse light) in the same nine-number form as
+    sh_irradiance. Evaluated along a mirror direction it gives a very blurry reflection."""
+    return (_sh_project(disp) * _SH_C[:, None]).astype(np.float64)
+
+
+def sh_gloss(k_rad: np.ndarray, roughness: float) -> np.ndarray:
+    """Blur the radiance coefficients for a surface of this roughness (0 = mirror .. 1 = matte). Each band is
+    scaled by exp(-l(l+1) t), the response of a Gaussian lobe; at roughness 1 the result is close to the
+    diffuse light, at 0 nothing is removed (but nine numbers can only ever show a very soft sky)."""
+    r = float(min(max(roughness, 0.0), 1.0))
+    t = 0.15
+    return np.asarray(k_rad, float) * np.exp(-_SH_L * (_SH_L + 1) * t * r * r)[:, None]
 
 
 def sh_eval(k: np.ndarray, n) -> np.ndarray:
@@ -323,7 +362,8 @@ def pano_frame_matrix(up: str, yaw_deg: float) -> np.ndarray:
 def prepare_panorama(lin: np.ndarray) -> dict:
     k = tonemap_exposure(lin)
     disp = tonemap(lin, k).astype(np.float32)
-    return {"disp": disp, "info": analyze_panorama(lin, k), "sh": sh_irradiance(disp)}
+    return {"disp": disp, "info": analyze_panorama(lin, k), "sh": sh_irradiance(disp),
+            "sh_rad": sh_radiance(disp)}
 
 
 def reproject_panorama(disp: np.ndarray, up: str, yaw_deg: float, out_w: int = SKY_TEX_W) -> np.ndarray:
@@ -366,13 +406,37 @@ def blob_texture_array(n: int = 128) -> np.ndarray:
     return out
 
 
+def _sh_expr(k, v: str) -> str:
+    """GLSL for the nine-coefficient light along the panorama-frame direction v (a vec3 variable)."""
+    kk = [_vec3(k[i]) for i in range(9)]
+    return (f"{kk[0]} + {kk[1]} * {v}.y + {kk[2]} * {v}.z + {kk[3]} * {v}.x\n"
+            f"    + {kk[4]} * ({v}.x * {v}.y) + {kk[5]} * ({v}.y * {v}.z)\n"
+            f"    + {kk[6]} * (3.0 * {v}.z * {v}.z - 1.0) + {kk[7]} * ({v}.x * {v}.z)\n"
+            f"    + {kk[8]} * ({v}.x * {v}.x - {v}.y * {v}.y)")
+
+
+def _to_pano_frame(rot, src: str, dst: str) -> str:
+    """GLSL: from a view-space direction (src) to the panorama's frame (dst); needs envAxX/Y/Z."""
+    return (f"  vec3 {dst}W = vec3(dot({src}, envAxX), dot({src}, envAxY), dot({src}, envAxZ));\n"
+            f"  vec3 {dst} = vec3(dot({_vec3(rot[0])}, {dst}W), dot({_vec3(rot[1])}, {dst}W), "
+            f"dot({_vec3(rot[2])}, {dst}W));\n")
+
+
+PBR_MIN_ROUGHNESS = 0.06
+PBR_REFLECTION_GAIN = 1.8        # brightness of the colourless reflection and highlights (texture brightness unaffected)
+PBR_METAL_TINT_GAIN = 1.2        # brightness of the part of the reflection tinted by the material (metals)
+
+
 def env_shader_code(env: dict, sun_frame, view_locked: bool = False, ao: bool = False,
-                    sh=None, up_axis: str = "Y") -> str:
+                    sh=None, up_axis: str = "Y", pbr=None) -> str:
     """Hemispheric ambient + one sun, as GLSL for the 'Light::Impl' slot (literals only).
     World-up and the sun come from two VTK scene lights (lightDirectionVC0 / 1), so they stay
     fixed in the world as the camera orbits. view_locked=True is the fallback that keeps them
     fixed relative to the screen instead. ao=True multiplies the ambient light by a per-vertex 'fake AO'
-    (gkAOv: x = crease amount, y = height 0 at the bottom .. 1 at the top of the model)."""
+    (gkAOv: x = crease amount, y = height 0 at the bottom .. 1 at the top of the model).
+    sh = (diffuse coefficients, 3x3 world->panorama matrix[, radiance coefficients]).
+    pbr = (metallic, roughness) of one material; with env['pbr'] on, the surface gets a GGX sun highlight,
+    Fresnel and a blurred reflection of the sky instead of the plain Phong-like highlight."""
     amb = env["ambient"]
 
     def col(key):
@@ -386,41 +450,86 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False, ao: bool = 
     tone = {"reinhard": "  envCol = envCol * (1.0 + envCol * 0.25) / (1.0 + envCol);\n",
             "aces": ("  envCol = (envCol * (2.51 * envCol + 0.03)) / "
                      "(envCol * (2.43 * envCol + 0.59) + 0.14);\n")}.get(env.get("tonemap"), "")
-    sh_code = ""
+    use_pbr = pbr is not None and bool(env.get("pbr", False))
     mix = float(env.get("pano_light", 0.0))
-    if sh is not None and mix > 0 and not view_locked:
-        # sh = (K as 9x3, 3x3 world->panorama matrix). Light 2 points along world +X, light 0 along 'up'.
-        k, rot = np.asarray(sh[0], float), np.asarray(sh[1], float)
+    sh_diffuse = sh is not None and mix > 0 and not view_locked
+    sh_refl = use_pbr and sh is not None and len(sh) > 2 and sh[2] is not None and not view_locked
+    sh_code = ""
+    if sh_diffuse or sh_refl:
+        # Light 2 points along world +X, light 0 along 'up'.
+        rot = np.asarray(sh[1], float)
         if up_axis == "Z":
-            axes = "  vec3 envAxZ = envUp;\n  vec3 envAxX = normalize(-lightDirectionVC2);\n  vec3 envAxY = cross(envAxZ, envAxX);\n"
+            sh_code = "  vec3 envAxZ = envUp;\n  vec3 envAxX = normalize(-lightDirectionVC2);\n  vec3 envAxY = cross(envAxZ, envAxX);\n"
         else:
-            axes = "  vec3 envAxY = envUp;\n  vec3 envAxX = normalize(-lightDirectionVC2);\n  vec3 envAxZ = cross(envAxX, envAxY);\n"
-        kk = [_vec3(k[i]) for i in range(9)]
-        sh_code = (axes
-                   + "  vec3 envNW = vec3(dot(envN, envAxX), dot(envN, envAxY), dot(envN, envAxZ));\n"
-                   + f"  vec3 envNF = vec3(dot({_vec3(rot[0])}, envNW), dot({_vec3(rot[1])}, envNW), "
-                     f"dot({_vec3(rot[2])}, envNW));\n"
-                   + f"  vec3 envIrr = {kk[0]} + {kk[1]} * envNF.y + {kk[2]} * envNF.z + {kk[3]} * envNF.x\n"
-                     f"    + {kk[4]} * (envNF.x * envNF.y) + {kk[5]} * (envNF.y * envNF.z)\n"
-                     f"    + {kk[6]} * (3.0 * envNF.z * envNF.z - 1.0) + {kk[7]} * (envNF.x * envNF.z)\n"
-                     f"    + {kk[8]} * (envNF.x * envNF.x - envNF.y * envNF.y);\n"
-                   + f"  envAmb = mix(envAmb, max(envIrr, vec3(0.0)) * {amb:.4f}, {min(mix, 1.0):.4f});\n")
+            sh_code = "  vec3 envAxY = envUp;\n  vec3 envAxX = normalize(-lightDirectionVC2);\n  vec3 envAxZ = cross(envAxX, envAxY);\n"
+    if sh_diffuse:
+        k = np.asarray(sh[0], float)
+        sh_code += (_to_pano_frame(rot, "envN", "envNF")
+                    + f"  vec3 envIrr = {_sh_expr(k, 'envNF')};\n"
+                    + f"  envAmb = mix(envAmb, max(envIrr, vec3(0.0)) * {amb:.4f}, {min(mix, 1.0):.4f});\n")
     s = float(env.get("ao_strength", 0.6))
     ao_code = (f"  float envAO = (1.0 - {s:.4f} * gkAOv.x) * "
                f"(1.0 - 0.5 * {s:.4f} * (1.0 - gkAOv.y) * (1.0 - gkAOv.y));\n"
                "  envAmb *= envAO;\n") if ao else ""
-    return f"""
+    head = f"""
   vec3 envN = normalize(normalVCVSOutput);
   if (!gl_FrontFacing) envN = -envN;
   vec3 envUp = {up_src};
   vec3 envSun = {sun_src};
   float envH = dot(envN, envUp);
   vec3 envAmb = mix(mix({col('equator')}, {col('sky')}, max(envH, 0.0)), {col('ground')}, max(-envH, 0.0));
-{sh_code}{ao_code}  float envNL = max(dot(envN, envSun), 0.0);
+{sh_code}{ao_code}"""
+    if not use_pbr:
+        return head + f"""  float envNL = max(dot(envN, envSun), 0.0);
   vec3 envHalf = normalize(envSun + vec3(0.0, 0.0, 1.0));
   float envSpec = pow(max(dot(envN, envHalf), 0.0), 32.0) * step(0.001, envNL);
   vec3 envCol = diffuseColor * (envAmb + {_vec3(sun)} * envNL)
               + {_vec3(env['sun_color'])} * (envSpec * {env['highlight'] * env['sun_int']:.4f});
+  envCol *= {expo:.4f};
+{tone}  fragOutput0 = vec4(clamp(envCol, 0.0, 1.0), opacity);
+"""
+    metal = min(max(float(pbr[0]), 0.0), 1.0)
+    rough = min(max(float(pbr[1]), PBR_MIN_ROUGHNESS), 1.0)
+    if sh_refl:
+        refl = (_to_pano_frame(rot, "envRefV", "envRF")
+                + f"  vec3 envRefl = max({_sh_expr(sh_gloss(sh[2], rough), 'envRF')}, vec3(0.0)) * {amb:.4f};\n")
+    else:                                         # no panorama: reflect the three-colour sky
+        refl = (f"  float envRh = dot(envRefV, envUp);\n"
+                f"  vec3 envRefl = mix(mix({col('equator')}, {col('sky')}, max(envRh, 0.0)), "
+                f"{col('ground')}, max(-envRh, 0.0));\n"
+                f"  envRefl = mix(envRefl, {col('equator')}, {0.6 * rough * rough:.4f});\n")
+    spec_ao = "  envSpecAO = envAO;\n" if ao else ""
+    return head + f"""  float envSpecAO = 1.0;
+{spec_ao}  float envNL = max(dot(envN, envSun), 0.0);
+  float envRough = {rough:.4f};
+  float envMetal = {metal:.4f};
+  vec3 envF0 = mix(vec3(0.04), diffuseColor, envMetal);
+  vec3 envDiff = diffuseColor * (1.0 - envMetal);
+  vec3 envV = vec3(0.0, 0.0, 1.0);
+  float envNV = max(dot(envN, envV), 0.001);
+  vec3 envRefV = reflect(-envV, envN);
+{refl}  vec4 envC0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  vec4 envC1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 envRr = envRough * envC0 + envC1;
+  float envA004 = min(envRr.x * envRr.x, exp2(-9.28 * envNV)) * envRr.x + envRr.y;
+  vec2 envAB = vec2(-1.04, 1.04) * envA004 + envRr.zw;
+  vec3 envWhiteRefl = envRefl * (vec3(0.04) * envAB.x + vec3(envAB.y));
+  vec3 envTintRefl = envRefl * (max(envF0 - vec3(0.04), vec3(0.0)) * envAB.x);
+  vec3 envSpecAmb = envWhiteRefl * (envSpecAO * {PBR_REFLECTION_GAIN:.4f})
+                  + envTintRefl * (envSpecAO * {PBR_METAL_TINT_GAIN:.4f});
+  vec3 envHv = normalize(envSun + envV);
+  float envNH = max(dot(envN, envHv), 0.0);
+  float envVH = max(dot(envV, envHv), 0.0);
+  float envAl = envRough * envRough;
+  float envAl2 = envAl * envAl;
+  float envDd = envNH * envNH * (envAl2 - 1.0) + 1.0;
+  float envD = envAl2 / (3.14159265 * envDd * envDd);
+  float envK = (envRough + 1.0) * (envRough + 1.0) / 8.0;
+  float envG = (envNL / (envNL * (1.0 - envK) + envK)) * (envNV / (envNV * (1.0 - envK) + envK));
+  vec3 envFs = envF0 + (1.0 - envF0) * pow(1.0 - envVH, 5.0);
+  vec3 envSunSpec = min(envFs * (envD * envG / max(4.0 * envNL * envNV, 0.001)), vec3(8.0));
+  vec3 envCol = envDiff * (envAmb + {_vec3(sun)} * envNL) + envSpecAmb
+              + {_vec3(env['sun_color'])} * (envSunSpec * {env['sun_int'] * 4.0 * env['highlight']:.4f} * envNL);
   envCol *= {expo:.4f};
 {tone}  fragOutput0 = vec4(clamp(envCol, 0.0, 1.0), opacity);
 """
@@ -444,7 +553,9 @@ class EnvironmentPanel(QWidget):
         self._checks: dict = {}
         self._sliders: dict = {}
         self._labels: dict = {}
+        self._row_labels: dict = {}
         self._color_btns: dict = {}
+        self._has_pano = bool(pano_path)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(lambda: self.changed.emit(copy.deepcopy(self.env)))
@@ -480,7 +591,7 @@ class EnvironmentPanel(QWidget):
         root.addLayout(row)
 
         flags = QGridLayout()
-        for i, (key, label) in enumerate(ENV_FLAGS):
+        for i, (key, label) in enumerate((k, l) for k, l in ENV_FLAGS if k in ENV_CHECKBOX_KEYS):
             cb = QCheckBox(label)
             cb.toggled.connect(lambda on, k=key: self._flag(k, on))
             self._checks[key] = cb
@@ -496,6 +607,12 @@ class EnvironmentPanel(QWidget):
         root.addLayout(grid)
 
         form = QFormLayout()
+        self.mode_box = QComboBox()
+        self.mode_box.addItems([lab for _k, lab in SURFACE_MODES])
+        self.mode_box.setToolTip("Off: VTK's plain shading. Standard: sky, sun and shadows with a simple highlight. "
+                                 "PBR: also uses each material's metallic and roughness (glTF) with sky reflections.")
+        self.mode_box.currentIndexChanged.connect(self._mode_changed)
+        form.addRow("Surface lighting", self.mode_box)
         self.tone_box = QComboBox()
         self.tone_box.addItems([lab for _k, lab in TONEMAPS])
         self.tone_box.currentIndexChanged.connect(self._tone_changed)
@@ -509,7 +626,9 @@ class EnvironmentPanel(QWidget):
             holder = QHBoxLayout()
             holder.addWidget(s, 1)
             holder.addWidget(lab)
-            form.addRow(label, holder)
+            row_label = QLabel(label)
+            form.addRow(row_label, holder)
+            self._row_labels[key] = row_label
             self._sliders[key] = (s, step, dec)
             self._labels[key] = lab
         root.addLayout(form)
@@ -531,11 +650,17 @@ class EnvironmentPanel(QWidget):
             cb.blockSignals(False)
         for key in self._sliders:
             self._set_slider(key, self.env[key])
+        self.mode_box.blockSignals(True)
+        self.mode_box.setCurrentIndex([k for k, _l in SURFACE_MODES].index(surface_mode(self.env)))
+        self.mode_box.blockSignals(False)
         self.tone_box.blockSignals(True)
         self.tone_box.setCurrentIndex(max(0, [k for k, _l in TONEMAPS].index(self.env.get("tonemap", "none"))))
         self.tone_box.blockSignals(False)
         for key in self._color_btns:
             self._style_color(key)
+        if pano_path is not None:
+            self._has_pano = bool(pano_path)
+        self._sync_enabled()
         if pano_path is not None:
             self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
                                     "No panorama loaded: using the three colours below.")
@@ -544,6 +669,11 @@ class EnvironmentPanel(QWidget):
         if index > 0:
             self.builtin_requested.emit(self.preset_box.itemText(index))
         self.preset_box.setCurrentIndex(0)
+
+    def _mode_changed(self, index: int):
+        set_surface_mode(self.env, SURFACE_MODES[index][0])
+        self._sync_enabled()
+        self._touched()
 
     def _tone_changed(self, index: int):
         self.env["tonemap"] = TONEMAPS[index][0]
@@ -568,7 +698,23 @@ class EnvironmentPanel(QWidget):
 
     def _flag(self, key: str, on: bool):
         self.env[key] = bool(on)
+        self._sync_enabled()
         self._touched()
+
+    def _sync_enabled(self):
+        """Sliders that do nothing in the current state are greyed out."""
+        lit = bool(self.env.get("lighting"))
+        self._checks["fake_ao"].setEnabled(lit)
+        self._checks["fake_ao"].setToolTip("" if lit else "Needs Surface lighting (Standard or PBR)")
+        for key, on, tip in (
+                ("pano_light", self._has_pano and lit,
+                 "Needs a loaded panorama (Load panorama…)" if lit else "Needs Surface lighting (Standard or PBR)"),
+                ("ao_strength", lit, "Needs Surface lighting (Standard or PBR)")):
+            if key in self._sliders:
+                s = self._sliders[key][0]
+                for w in (s, self._labels[key], self._row_labels[key]):
+                    w.setEnabled(on)              # the dark style greys out disabled sliders and labels
+                    w.setToolTip("" if on else tip)
 
     def _slider_changed(self, key: str, value: float, dec: int):
         if key == "yaw" and self.env.get("path"):          # keep the sun glued to the image

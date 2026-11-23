@@ -2,10 +2,12 @@
  "gleek3deek_library": 1,
  "files": {
   "../../Documents/Blender/AnisotropyBarnLamp.glb": {
+   "color": "green",
    "rating": 3,
    "fp": "7726012:189253f52d866425"
   },
   "../../Documents/Blender/armadillommmm.glb": {
+   "color": "green",
    "rating": 3,
    "fp": "332056:cd6a9db5bb3747ba"
   },
@@ -14,24 +16,26 @@
    "fp": "319120:cc66d87c339bd683"
   },
   "../../Documents/Blender/CarConcept.glb": {
+   "color": "green",
    "rating": 3,
    "fp": "11062268:5ad7216f4109778e"
   },
   "../../Documents/Blender/ChronographWatchAlpha0286.glb": {
+   "color": "green",
    "rating": 4,
    "fp": "7399432:adce63ebf8de8569"
   },
-  "../../Documents/Blender/cowmoo.dae": {
+  "../../Documents/Blender/Church_ClaudeAI.glb": {
+   "color": "green",
+   "fp": "145400:f79a71956384c4bb"
+  },
+  "../../Documents/Blender/cowmood.dae": {
    "rating": 5,
    "fp": "1163840:42666230a9508be9"
   },
   "../../Documents/Blender/DamagedHelmet.glb": {
    "rating": 4,
    "fp": "3773916:b96060981ee60757"
-  },
-  "../../Documents/Blender/Demon25.obj": {
-   "color": "red",
-   "fp": "111497721:8dc91b1d28ac741f"
   },
   "../../Documents/Blender/Flamethrower.glb": {
    "color": "green",
@@ -44,14 +48,7 @@
    "color": "red",
    "fp": "4612131:28881396cbe750b2"
   },
-  "../../Documents/Blender/Girl_Statue.obj": {
-   "tags": [
-    "girl"
-   ],
-   "color": "red",
-   "fp": "6037054:8a55827864ac41a5"
-  },
-  "../../Documents/Blender/Girl_statue2.glb": {
+  "../../Documents/Blender/GirlStatue_High_01.glb": {
    "tags": [
     "girl"
    ],
@@ -59,14 +56,21 @@
    "rating": 4,
    "fp": "14676684:7ba2850666116847"
   },
-  "../../Documents/Blender/Girl_statue2_simplified.obj": {
+  "../../Documents/Blender/GirlStatue_High_02.obj": {
    "tags": [
     "girl"
    ],
    "color": "red",
    "fp": "8913580:db9cc606db0af062"
   },
-  "../../Documents/Blender/Girl_StatueUV.obj": {
+  "../../Documents/Blender/GirlStatue_Low_01.obj": {
+   "tags": [
+    "girl"
+   ],
+   "color": "red",
+   "fp": "6037054:8a55827864ac41a5"
+  },
+  "../../Documents/Blender/GirlStatue_Low_02.obj": {
    "tags": [
     "girl"
    ],
@@ -95,6 +99,10 @@
    "color": "green",
    "fp": "9564264:20b0eac95d125039"
   },
+  "../../Documents/Blender/meshy_1795310715023.glb": {
+   "color": "green",
+   "fp": "13289052:3cea7c0d10d511ff"
+  },
   "../../Documents/Blender/nefertiti.obj": {
    "tags": [
     "girl"
@@ -110,6 +118,10 @@
   "../../Documents/Blender/Sphere.mtl.obj": {
    "color": "red",
    "fp": "19454173:a5bc867671536847"
+  },
+  "../../Documents/Blender/Stormlord.glb": {
+   "color": "green",
+   "fp": "38809244:ddefc03a72254134"
   },
   "../../Documents/Blender/STTL_cow.STL": {
    "rating": 2,

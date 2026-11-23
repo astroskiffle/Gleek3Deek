@@ -78,12 +78,12 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.7.5",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
+    "author_note": "",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
@@ -1027,7 +1027,7 @@ class Viewer(QWidget):
 
     # ----- shading modes ----------------------------------------------------
     def cycle_matcap(self):
-        """M: Red Wax -> Clay Green -> RealSkin -> Glossy -> RoughMetal -> normal shading."""
+        """M: Frosted Glass -> Goosh -> RealSkin -> Glossy -> normal shading."""
         if not self.actors:
             return
         nxt = 0 if self.mode != "matcap" else self.matcap_idx + 1
@@ -1073,7 +1073,7 @@ class Viewer(QWidget):
                 mode = "surface"
         self._env_code = ""
         self._ao_mode = mode
-        if mode == "surface" and self._current_env_code():
+        if mode == "surface" and self._env_code_all():
             try:
                 self._install_env()
             except Exception:
@@ -1485,17 +1485,43 @@ class Viewer(QWidget):
     def _sun_frame_dir(self):
         return sun_dir_frame(math.radians(self.env["sun_az"]), math.radians(self.env["sun_el"]))
 
-    def _current_env_code(self) -> str:
+    def _pbr_wanted(self) -> bool:
+        return bool(self.env.get("pbr") and not getattr(self, "_pbr_broken", False))
+
+    @staticmethod
+    def _pbr_values(a):
+        """(metallic, roughness) for one actor: the glTF material if it has one, else a plain non-metal
+        whose roughness follows the Phong specular power."""
+        v = getattr(a, "_pbr", None)
+        if v:
+            return v
+        try:
+            power = float(a.GetProperty().GetSpecularPower())
+        except Exception:
+            power = 30.0
+        return (0.0, min(1.0, max(0.35, math.sqrt(2.0 / (power + 2.0)))))
+
+    def _current_env_code(self, a=None) -> str:
+        """The environment shader; with an actor, in the PBR form for that actor's material when PBR is on."""
         if not self._env_on("lighting"):
             return ""
+        pbr = self._pbr_values(a) if (a is not None and self._pbr_wanted()) else None
         sh = None
-        if self._pano is not None and self.env.get("pano_light", 0) > 0 and self._pano.get("sh") is not None:
-            sh = (self._pano["sh"], pano_frame_matrix(self.up_axis, self.env["yaw"]))
+        p = self._pano
+        if p is not None and p.get("sh") is not None and (self.env.get("pano_light", 0) > 0 or pbr is not None):
+            sh = (p["sh"], pano_frame_matrix(self.up_axis, self.env["yaw"]), p.get("sh_rad"))
         return env_shader_code(self.env, self._sun_frame_dir(), self._env_view_locked, self._ao_wanted(),
-                               sh, self.up_axis)
+                               sh, self.up_axis, pbr)
+
+    def _env_code_all(self) -> str:
+        """Every actor's environment shader joined: changes whenever any actor would need a new one."""
+        if not self.actors:
+            return self._current_env_code()
+        codes = [self._current_env_code(a) for a in self.actors]
+        return "\n//--\n".join(codes) if any(codes) else ""      # "" = no environment shader at all
 
     def _install_env(self):
-        code = self._current_env_code()
+        code = self._env_code_all()
         ao = self._ao_wanted()
         if ao:
             self._ao_update()
@@ -1503,7 +1529,9 @@ class Viewer(QWidget):
             sp = a.GetShaderProperty()
             sp.ClearAllFragmentShaderReplacements()
             self._ao_detach(a)
-            sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
+            own = self._current_env_code(a)
+            if own:                               # never install an empty replacement: it would delete the lighting
+                sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, own, False)
             if ao:
                 self._ao_attach(a)
         self._env_code = code
@@ -1609,6 +1637,7 @@ class Viewer(QWidget):
         self._ao_cav = None
         self._ao_on = False
         self._ao_broken = False
+        self._pbr_broken = False
 
     def _ao_failed(self, token: int, msg: str):
         if token == self._ao_token:
@@ -1920,7 +1949,7 @@ class Viewer(QWidget):
     def _env_refresh(self):
         """Bring sky, shadow, lights and shader in line with self.env."""
         self._sync_env_scene()
-        if self.mode == "surface" and self._current_env_code() != self._env_code:
+        if self.mode == "surface" and self._env_code_all() != self._env_code:
             self.set_mode("surface")              # reinstalls (or removes) the shader and renders
         elif self._split_visible():
             self._split_request_rebake()          # the 'normal' half follows the environment
@@ -1929,7 +1958,21 @@ class Viewer(QWidget):
             self.rw.Render()
 
     def _env_failed(self):
-        """The environment shader didn't compile: drop Fake AO first, then follow the camera instead, then switch off."""
+        """The environment shader didn't compile: drop PBR first, then Fake AO, then follow the camera instead, then switch off."""
+        if self._pbr_wanted():
+            self._pbr_broken = True
+            self.env["pbr"] = False
+            after = _log_size()
+            try:
+                self._install_env()
+                self.rw.Render()
+            except Exception:
+                pass
+            if not _shader_error_since(after):
+                self.message.emit("This GPU rejected the PBR look, so it was switched off")
+                if self._env_panel is not None:
+                    self._env_panel.set_env(self.env)
+                return
         if self._ao_wanted():
             self._ao_broken = True
             self._ao_on = True
