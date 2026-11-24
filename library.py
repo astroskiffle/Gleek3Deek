@@ -97,6 +97,22 @@ _TERM = re.compile(r'(-?)(tag|color|colour|rating):("[^"]*"|\S+)|(#)("[^"]*"|\S+
 _RATING = re.compile(r"^(>=|<=|>|<|=)?\s*(\d)(\+)?$")
 
 
+def meta_matches(meta: dict | None, kind: str, value=None) -> bool:
+    """Does a file's metadata (tags, colour, rating) fit a 'select all with ...' choice?
+    kind: 'color' (value = a colour key, or '' for no colour), 'rating_min' (value = stars), 'unrated', 'tag' (value = tag)."""
+    m = meta or {"tags": [], "color": "", "rating": 0}
+    if kind == "color":
+        return (m.get("color") or "") == (value or "")
+    if kind == "rating_min":
+        return int(m.get("rating") or 0) >= int(value or 0) and int(m.get("rating") or 0) > 0
+    if kind == "unrated":
+        return int(m.get("rating") or 0) == 0
+    if kind == "tag":
+        want = clean_tag(value).lower()
+        return any(str(t).lower() == want for t in m.get("tags") or [])
+    return False
+
+
 def parse_query(text: str) -> dict:
     """'rock tag:"hard surface" -tag:old color:red rating:>=3' -> a dict of terms. Unknown pieces are words
     (matched against the file name)."""

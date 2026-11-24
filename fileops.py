@@ -571,3 +571,47 @@ def rename_many(pairs) -> tuple:
                 pass
         return [], str(e)
     return [(a, b) for a, _t, b in temps], ""
+
+
+# ----- drag and drop ------------------------------------------------------------------------------------------
+def volume_of(path: str):
+    """What drive or disk `path` is on (works for a folder that does not exist yet: its nearest existing parent counts)."""
+    p = os.path.abspath(path)
+    drive = os.path.splitdrive(p)[0]
+    if drive:
+        return drive.lower()
+    while p and not os.path.exists(p):
+        parent = os.path.dirname(p)
+        if parent == p:
+            break
+        p = parent
+    try:
+        return os.stat(p).st_dev
+    except OSError:
+        return None
+
+
+def same_volume(a: str, b: str) -> bool:
+    va, vb = volume_of(a), volume_of(b)
+    return va is not None and va == vb
+
+
+def droppable(paths, dest: str) -> list:
+    """The dropped files that can go into `dest`: real files that are not in that folder already."""
+    out = []
+    for p in paths:
+        p = os.path.abspath(p)
+        if os.path.isfile(p) and _nc(os.path.dirname(p)) != _nc(os.path.abspath(dest)) and p not in out:
+            out.append(p)
+    return out
+
+
+def drop_is_move(paths, dest: str, ctrl: bool = False, shift: bool = False, internal: bool = True) -> bool:
+    """Move or copy for a drop. Shift forces a move and Ctrl a copy. Otherwise files dragged inside the app move when
+    they stay on the same drive and are copied to another drive; files dragged in from another program are copied
+    (that program would otherwise delete its own originals)."""
+    if shift:
+        return True
+    if ctrl or not internal:
+        return False
+    return bool(paths) and all(same_volume(p, dest) for p in paths)

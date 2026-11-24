@@ -11,9 +11,10 @@ from datetime import datetime
 from pathlib import Path
 import numpy as np
 from PySide6.QtCore import (
-    QItemSelectionModel, QObject, QRunnable, QSettings, QSize, QStandardPaths, Qt, QThreadPool, QTimer, Signal)
+    QEvent, QItemSelectionModel, QMimeData, QObject, QRunnable, QSettings, QSize, QStandardPaths, Qt, QThreadPool, QTimer, QUrl,
+    Signal)
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut)
+    QBrush, QColor, QDrag, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QPolygonF, QShortcut)
 from PySide6.QtCore import QPointF, QRectF
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QMenu, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QWidget, QWidgetAction
@@ -21,7 +22,8 @@ from PySide6.QtWidgets import QApplication, QFrame, QListWidget, QListWidgetItem
 from vtkmodules.util import numpy_support
 from vtkmodules.vtkRenderingCore import (
     vtkPolyDataMapper, vtkRenderer, vtkRenderWindow, vtkWindowToImageFilter)
-from library import COLORS, RATING_MAX, matches, parse_query, query_uses_metadata
+import fileops
+from library import COLORS, RATING_MAX, matches, meta_matches, parse_query, query_uses_metadata
 from formats import ALL_EXTS, ASSIMP, CAD, EXT_COLORS, LoadError, NATIVE, asset_ext, human_size, load_scene
 
 
@@ -486,12 +488,38 @@ class CardDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+def dropped_models(md) -> list:
+    """The model files in dragged data (from this app's gallery or from Explorer/Finder); folders and other files are left out."""
+    if md is None or not md.hasUrls():
+        return []
+    out = []
+    for u in md.urls():
+        p = u.toLocalFile() if u.isLocalFile() else ""
+        if p and os.path.isfile(p) and asset_ext(p) in ALL_EXTS and p not in out:
+            out.append(os.path.normpath(p))
+    return out
+
+
+def drop_plan(md, dest: str, mods, internal: bool):
+    """(files, move) for a drop of `md` onto the folder `dest`, or ([], False) if nothing can be dropped there."""
+    if not dest or not os.path.isdir(dest):
+        return [], False
+    files = fileops.droppable(dropped_models(md), dest)
+    if not files:
+        return [], False
+    return files, fileops.drop_is_move(files, dest, ctrl=bool(mods & Qt.ControlModifier),
+                                       shift=bool(mods & Qt.ShiftModifier), internal=internal)
+
+
 class Gallery(QListWidget):
+    DRAG_MIME = "application/x-gleek3deek-drag"      # marks a drag that started in this gallery
+    files_dropped = Signal(list, str, bool)          # files, folder they were dropped on, move (True) or copy (False)
     open_asset = Signal(str)
     open_folder = Signal(str)
     counts = Signal(int, int)          # models shown, models total
     rename_requested = Signal(str)
     batch_rename_requested = Signal(list)
+    compare_requested = Signal(list)
     copy_requested = Signal(list)      # the selected files
     cut_requested = Signal(list)
     paste_requested = Signal()
@@ -501,6 +529,9 @@ class Gallery(QListWidget):
     refresh_all_requested = Signal()
     tags_requested = Signal(list)      # files whose tags should be edited
     metadata_changed = Signal()
+    activated = Signal()               # this pane got the keyboard focus (dual pane: it becomes the active one)
+    other_pane_requested = Signal(list, bool)   # files, move (True) or copy (False) to the other pane's folder
+    notice = Signal(str)               # a short message for the status bar
     folder_changed = Signal()          # files were added, removed or changed in the open folder (outside the app too)
 
     def __init__(self):
@@ -515,12 +546,22 @@ class Gallery(QListWidget):
         self.setTextElideMode(Qt.ElideMiddle)
         self.setSpacing(4)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)   # tags/colours/ratings apply to all selected
+        self.setDragEnabled(True)                                    # drag files to a folder in the tree, a folder tile or Explorer
+        self.setAcceptDrops(True)                                    # ... or drop files in from Explorer
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.viewport().setAcceptDrops(True)                         # say so on the viewport itself, where drops arrive
+        self.viewport().installEventFilter(self)                     # and take the drag events from there directly
+        self.dual = False                                            # a second pane is showing (set by the main window)
+        self._drop_item = None                                       # the folder tile a drag is hovering over
         self.setFrameShape(QFrame.NoFrame)
         self.itemDoubleClicked.connect(self._activated)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self._context_menu)
         for key, fn in (("F2", lambda: self._emit_file(self.rename_requested)),
                         ("Ctrl+F2", self._batch_key),
+                        ("Ctrl+Alt+Y", lambda: self._other_key(False)),
+                        ("Ctrl+Alt+M", lambda: self._other_key(True)),
+                        ("Ctrl+K", self._compare_key),
                         ("Delete", lambda: self._emit_files(self.delete_requested)),
                         ("Ctrl+C", lambda: self._emit_files(self.copy_requested)),
                         ("Ctrl+X", lambda: self._emit_files(self.cut_requested)),
@@ -817,9 +858,115 @@ class Gallery(QListWidget):
         if paths:
             signal.emit(paths)
 
+    # ----- drag and drop (the file work itself is done by the main window through files_dropped)
+    def startDrag(self, supported):
+        files = self.selected_files()
+        if not files:
+            return
+        md = QMimeData()
+        md.setUrls([QUrl.fromLocalFile(p) for p in files])
+        md.setData(self.DRAG_MIME, b"1")
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        it = self.currentItem()
+        if it is not None and not it.icon().isNull():
+            pm = it.icon().pixmap(64, 64)
+            drag.setPixmap(pm)
+            drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.CopyAction | Qt.MoveAction, Qt.MoveAction)
+
+    def _drop_dest(self, pos) -> tuple:
+        """(folder to drop into, the tile to highlight or None) for a drag at `pos`."""
+        it = self.itemAt(pos)
+        if it is not None:
+            path, is_dir = it.data(Qt.UserRole)
+            if is_dir:
+                return path, it
+        return ("" if self.virtual else (self.folder or "")), None
+
+    def _set_drop_item(self, it):
+        if it is not self._drop_item:
+            self._drop_item = it
+            self.viewport().update()
+
+    def _drag_over(self, event):
+        md = event.mimeData()
+        pos = event.position().toPoint()
+        dest, it = self._drop_dest(pos)
+        internal = md.hasFormat(self.DRAG_MIME)
+        files, move = drop_plan(md, dest, event.modifiers(), internal)
+        if not files:
+            self._set_drop_item(None)
+            event.ignore()
+            return None
+        self._set_drop_item(it)
+        event.setDropAction(Qt.MoveAction if move else Qt.CopyAction)
+        event.accept()
+        return files, dest, move
+
+    def eventFilter(self, obj, ev):
+        if obj is self.viewport():
+            t = ev.type()
+            if t in (QEvent.DragEnter, QEvent.DragMove, QEvent.DragLeave, QEvent.Drop):
+                if t == QEvent.DragEnter:
+                    self.dragEnterEvent(ev)
+                elif t == QEvent.DragMove:
+                    self.dragMoveEvent(ev)
+                elif t == QEvent.DragLeave:
+                    self.dragLeaveEvent(ev)
+                else:
+                    self.dropEvent(ev)
+                return True
+        return super().eventFilter(obj, ev)
+
+    def dragEnterEvent(self, event):
+        # Always accept the entry: a drag that starts on one of the gallery's own tiles first enters over a file, where
+        # nothing can be dropped, and Qt would then stop sending the move events that find the folder tile.
+        if event.mimeData().hasUrls():
+            self._drag_over(event)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self._drag_over(event)
+
+    def dragLeaveEvent(self, event):
+        self._set_drop_item(None)
+
+    def dropEvent(self, event):
+        got = self._drag_over(event)
+        self._set_drop_item(None)
+        if got:
+            files, dest, move = got
+            QTimer.singleShot(0, lambda: self.files_dropped.emit(files, dest, move))   # after the drag has finished
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._drop_item is not None:
+            p = QPainter(self.viewport())
+            p.setPen(QPen(QColor("#4da3ff"), 2))
+            p.setBrush(QColor(77, 163, 255, 40))
+            p.drawRoundedRect(self.visualItemRect(self._drop_item).adjusted(1, 1, -1, -1), 6, 6)
+            p.end()
+
     def _in_grid_order(self, paths) -> list:
         rank = {os.path.normcase(p): i for i, p in enumerate(self._order)}
         return sorted(paths, key=lambda p: rank.get(os.path.normcase(p), len(rank)))
+
+    def focusInEvent(self, e):
+        super().focusInEvent(e)
+        self.activated.emit()
+
+    def _other_key(self, move: bool):
+        paths = self.selected_files()
+        if self.dual and paths:
+            self.other_pane_requested.emit(paths, move)
+
+    def _compare_key(self):
+        paths = self.selected_files()
+        if paths:
+            self.compare_requested.emit(self._in_grid_order(paths))     # the main window decides what can be compared
 
     def _batch_key(self):
         paths = self.selected_files()
@@ -830,6 +977,64 @@ class Gallery(QListWidget):
         paths = self._targets(self._current_file())
         if paths:
             self.transfer_requested.emit(paths, move)
+
+    # ----- select all files with a colour, rating or tag
+    def fill_select_menu(self, menu):
+        """Fill `menu` with the colours, ratings and tags of the files shown. Hold Ctrl when choosing to add to the
+        selection instead of replacing it."""
+        menu.clear()
+        metas = {p: (self._meta(p) or {"tags": [], "color": "", "rating": 0}) for p in self._items}
+        if self.library is None or not metas:
+            menu.addAction("(no files shown)").setEnabled(False)
+            return
+
+        def count(kind, value=None):
+            return sum(1 for m in metas.values() if meta_matches(m, kind, value))
+
+        cm = menu.addMenu("Colour label")
+        for k, label, hexc in COLORS:
+            n = count("color", k)
+            a = cm.addAction(f"{label}  ({n})", lambda _=False, k=k: self.select_matching("color", k, label))
+            px = QPixmap(14, 14)
+            px.fill(QColor(hexc))
+            a.setIcon(QIcon(px))
+            a.setEnabled(n > 0)
+        n = count("color", "")
+        cm.addAction(f"No colour  ({n})", lambda _=False: self.select_matching("color", "", "no colour")).setEnabled(n > 0)
+        rm = menu.addMenu("Rating")
+        for s in range(RATING_MAX, 0, -1):
+            n = count("rating_min", s)
+            label = f"{s} stars" if s == RATING_MAX else f"{s} stars or more"
+            rm.addAction(f"{label}  ({n})", lambda _=False, s=s, label=label: self.select_matching("rating_min", s, label)
+                         ).setEnabled(n > 0)
+        n = count("unrated")
+        rm.addAction(f"Unrated  ({n})", lambda _=False: self.select_matching("unrated", None, "unrated")).setEnabled(n > 0)
+        tags: dict = {}
+        for m in metas.values():
+            for t in m.get("tags") or []:
+                tags.setdefault(t.lower(), [t, 0])[1] += 1
+        tm = menu.addMenu("Tag")
+        if not tags:
+            tm.addAction("(no tags on these files)").setEnabled(False)
+        for t, n in sorted(tags.values(), key=lambda v: (-v[1], v[0].lower()))[:40]:
+            tm.addAction(f"{t}  ({n})", lambda _=False, t=t: self.select_matching("tag", t, f"tag “{t}”"))
+        menu.addSeparator()
+        menu.addAction("Invert selection\tCtrl+I", self.invert_selection)
+
+    def select_matching(self, kind: str, value, label: str):
+        add = bool(QApplication.keyboardModifiers() & Qt.ControlModifier)
+        hits = [p for p in self._order if p in self._items
+                and meta_matches(self._meta(p) or {"tags": [], "color": "", "rating": 0}, kind, value)]
+        if not add:
+            self.clearSelection()
+        for p in hits:
+            self._items[p].setSelected(True)
+        if hits:
+            self.setCurrentItem(self._items[hits[0]], QItemSelectionModel.NoUpdate)
+            self.scrollToItem(self._items[hits[0]])
+        self.setFocus()
+        self.notice.emit(f"Selected {len(hits)} file{'s' if len(hits) != 1 else ''} with {label}"
+                         + (" (added to the selection)" if add else "  (hold Ctrl to add to the selection instead)"))
 
     def invert_selection(self):
         """Select what is not selected (files only; folders stay as they are)."""
@@ -881,11 +1086,24 @@ class Gallery(QListWidget):
                 if n >= 2:
                     menu.addAction(f"Batch rename {n} files…\tCtrl+F2",
                                    lambda _=False, f=files: self.batch_rename_requested.emit(self._in_grid_order(f)))
+                if n == 2:
+                    menu.addAction("Compare side by side\tCtrl+K",
+                                   lambda _=False, f=files: self.compare_requested.emit(self._in_grid_order(f)))
+                elif n == 1 and self.dual:
+                    menu.addAction("Compare with the selected file in the other pane\tCtrl+K",
+                                   lambda _=False, f=files: self.compare_requested.emit(list(f)))
                 menu.addAction("Cut\tCtrl+X", lambda _=False, f=files: self.cut_requested.emit(f))
                 menu.addAction("Copy\tCtrl+C", lambda _=False, f=files: self.copy_requested.emit(f))
+                if self.dual:
+                    menu.addAction("Copy to the other pane\tCtrl+Alt+Y",
+                                   lambda _=False, f=files: self.other_pane_requested.emit(f, False))
+                    menu.addAction("Move to the other pane\tCtrl+Alt+M",
+                                   lambda _=False, f=files: self.other_pane_requested.emit(f, True))
                 menu.addAction("Copy to…\tCtrl+Shift+Y", lambda _=False, f=files: self.transfer_requested.emit(f, False))
                 menu.addAction("Move to…\tCtrl+Shift+M", lambda _=False, f=files: self.transfer_requested.emit(f, True))
                 menu.addAction("Refresh thumbnail\tF5", lambda _=False: self.refresh_thumb_requested.emit(path))
+        if self.library is not None and self._items:
+            self.fill_select_menu(menu.addMenu("Select all with…"))
         mime = QApplication.clipboard().mimeData()
         paste = menu.addAction("Paste\tCtrl+V", lambda _=False: self.paste_requested.emit())
         paste.setEnabled(bool(mime is not None and mime.hasUrls()))

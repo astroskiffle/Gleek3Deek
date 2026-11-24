@@ -660,9 +660,12 @@ class Viewer(QWidget):
     analysis_progress = Signal(str, str)  # ("uv" | "mesh", text) while an analysis runs in the background
     measure_changed = Signal()            # measurement results, units, points or section changed
     lod_changed = Signal()                # LOD generation progress, results or shown level changed
+    compare_requested = Signal()          # start or stop the side-by-side compare
 
-    def __init__(self):
+    def __init__(self, lean: bool = False):
         super().__init__()
+        self._lean = lean                          # the second pane of a compare: only step and close buttons
+        self._followed = None                      # what follow() last copied
         self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
         self.mode = "surface"
         self.actors: list = []
@@ -832,6 +835,10 @@ class Viewer(QWidget):
         x.setObjectName("hudClose")
         h.addWidget(x)
 
+        if lean:
+            for b in self.hud.findChildren(QToolButton):
+                if b.text() not in ("‹", "›", "✕"):
+                    b.hide()
         self.info_panel = InfoPanel(self.stage)
         self.info_panel.hide()
         self.overlay = Overlay(self.stage)
@@ -929,6 +936,10 @@ class Viewer(QWidget):
         self.act_info.setChecked(self.info_on)
         self.act_info.toggled.connect(self.set_info_visible)
         menu.addAction(self.act_info)
+        menu.addAction("Compare side by side\tK", lambda _=False: self.compare_requested.emit())
+        self.act_link = QAction("Link the two cameras when comparing\tShift+K", menu, checkable=True)
+        self.act_link.setChecked(str(self.settings.value("compare_link", "true")).lower() in ("1", "true"))
+        menu.addAction(self.act_link)
         menu.addAction("Export / convert…\tCtrl+E", lambda _=False: self.open_export_dialog())
         menu.addAction("About " + ABOUT["app_name"] + "\tF1", lambda _=False: self.about_requested.emit())
         menu.addSeparator()
@@ -1107,6 +1118,63 @@ class Viewer(QWidget):
                                       "version is being used")
                     return
             self._matcap_failed()
+
+    # ----- side-by-side compare: this viewer is the second pane and copies the look of the first --------
+    @staticmethod
+    def _look_key(src) -> tuple:
+        cam = src.renderer.GetActiveCamera()
+        try:
+            custom = json.dumps(src.custom, sort_keys=True, default=str)
+        except Exception:
+            custom = repr(src.custom)
+        return (src.mode, src.matcap_idx, custom, json.dumps(src.env, sort_keys=True, default=str), src.bg_idx,
+                str(src.settings.value("bg_custom", "")), src.grid_on, src.edges_on, src.axes_on, src.transparent,
+                round(float(src.fov), 3), bool(cam.GetParallelProjection()), bool(src.info_on))
+
+    def follow(self, src, force: bool = False):
+        """Copy how `src` is shown (shading, MatCap, environment, background, grid, edges, transparency, lens) onto
+        this model. Does nothing if that has not changed since the last call."""
+        key = self._look_key(src)
+        if not self.actors or (key == self._followed and not force):
+            return
+        self._followed = key
+        if self.info_on != bool(src.info_on):                 # the model info panel is shown or hidden on both sides
+            self.info_on = bool(src.info_on)
+            self.act_info.blockSignals(True)
+            self.act_info.setChecked(self.info_on)
+            self.act_info.blockSignals(False)
+            self._update_info()
+        old_mode, old_idx, old_custom = self.mode, self.matcap_idx, self.custom
+        self.custom, self._custom_parts = src.custom, src._custom_parts
+        self.matcap_idx = src.matcap_idx
+        self.env = copy.deepcopy(src.env)
+        self.grid_on, self.edges_on, self.axes_on = src.grid_on, src.edges_on, src.axes_on
+        for flag, on in ((self.act_grid, src.grid_on), (self.act_edges, src.edges_on), (self.act_axes, src.axes_on)):
+            flag.blockSignals(True)
+            flag.setChecked(bool(on))
+            flag.blockSignals(False)
+        self._sync_env_action()
+        self._sync_axes()
+        self.set_background(src.bg_idx, announce=False)
+        self.transparent = src.transparent
+        self._sync_transp_action(self.transparent)
+        if self.actors:
+            self._apply_transparency()
+        want_ortho = bool(src.renderer.GetActiveCamera().GetParallelProjection())
+        if want_ortho != bool(self.renderer.GetActiveCamera().GetParallelProjection()):
+            self.act_ortho.blockSignals(True)
+            self.act_ortho.setChecked(want_ortho)
+            self.act_ortho.blockSignals(False)
+            self.set_ortho(want_ortho)
+        if abs(float(src.fov) - float(self.fov)) > 1e-6 and not want_ortho:
+            self.set_fov(src.fov)
+        self._sync_ground()
+        self._apply_edges()
+        self._env_refresh()                       # sky, lights, shadow and the shader of the normal view
+        if src.mode != old_mode or self.matcap_idx != old_idx or (src.mode == "matcap" and self.custom is not old_custom):
+            self.set_mode(src.mode, force=True)
+        else:
+            self.rw.Render()
 
     def _matcaps(self) -> list:
         """(name, impl, decl, fallback) for every MatCap in the M cycle."""

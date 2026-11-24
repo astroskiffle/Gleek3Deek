@@ -22,8 +22,8 @@ from pathlib import Path
 from PySide6.QtCore import (
     QByteArray, QDir, QEasingCurve, QEvent, QFile, QMimeData, QObject, QSettings, QStandardPaths, Qt,
     QThreadPool, QTimer, QUrl, QVariantAnimation, Signal)
-from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QShortcut
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtCore import QPointF, QRectF, QSize
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QTextBrowser, QComboBox, QDialog, QFileDialog, QInputDialog, QLineEdit, QMenu, QMessageBox,
@@ -38,10 +38,11 @@ import vtkmodules.vtkInteractionStyle  # noqa: F401  (registers styles)
 import vtkmodules.vtkRenderingFreeType  # noqa: F401  (text for the axes gizmo)
 from formats import ALL_EXTS, asset_ext
 import fileops
+from compare import CameraLink, neighbour
 from panels import BatchRenameDialog, TagsDialog, TransferDialog
 from library import (
     COLORS, Library, parse_query, push_recent, query_is_empty, resolve_library_path, split_tags)
-from gallery import Gallery, LoadTask, ORIENT, SORTS, ThumbnailManager, _setting_int, scan_assets
+from gallery import Gallery, LoadTask, drop_plan, ORIENT, SORTS, ThumbnailManager, _setting_int, scan_assets
 
 from viewer import ABOUT, APP_NAME, Viewer
 
@@ -160,6 +161,11 @@ QLineEdit:focus, QComboBox:focus { border-color:#3d6fa5; }
 QLineEdit#addressBar[bad="true"] { border-color:#c0504d; color:#f0b4b2; }
 QToolButton#upBtn { background:#1b2028; border:1px solid #2f3947; border-radius:6px; padding:3px 6px; }
 QToolButton#upBtn:hover { background:#252d38; }
+QToolButton#upBtn:disabled { background:#161a20; border-color:#232932; }
+QToolButton#paneBtn { background:#1b2028; border:1px solid #2f3947; border-radius:6px; padding:3px 7px; }
+QToolButton#paneBtn:hover { background:#252d38; }
+QToolButton#paneBtn:checked { background:#2f7de1; border-color:#4da3ff; }
+QToolButton#paneBtn:disabled { background:#161a20; border-color:#232932; }
 QComboBox QAbstractItemView { background:#1b2028; selection-background-color:#34506f; border:1px solid #2f3947; }
 QSlider::groove:horizontal { height:4px; background:#2c3542; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-5px 0; background:#6aa8e8; border-radius:6px; }
@@ -167,6 +173,9 @@ QSlider::groove:horizontal:disabled { background:#1b2028; }
 QSlider::handle:horizontal:disabled { background:#3a424e; }
 QLabel:disabled { color:#5c6672; }
 #barLabel { color:#7c8794; background:transparent; }
+QFrame#pane { border:1px solid transparent; }
+QFrame#pane[active="true"] { border:1px solid #4da3ff; }
+QLabel#paneTitle { color:#9aa6b2; background:#0e1116; padding:3px 8px; border:none; }
 #drawerBtn { background:#10141a; border:none; border-left:1px solid #1c232c; color:#aeb8c4; }
 #drawerBtn:hover { background:#27486b; }
 QDockWidget { color:#d5dbe3; }
@@ -293,6 +302,161 @@ class TabDragOut(QObject):
                 pass
 
 
+def _draw_tool_icon(p: QPainter, kind: str):
+    """The line drawings for the toolbar buttons, on a 22 x 22 grid."""
+    if kind == "split":
+        p.drawRoundedRect(QRectF(3, 4.5, 16, 13), 2, 2)
+        p.drawLine(QPointF(11, 4.5), QPointF(11, 17.5))
+    elif kind == "swap":
+        p.drawLine(QPointF(4, 8), QPointF(18, 8))
+        p.drawPolyline([QPointF(15, 5), QPointF(18, 8), QPointF(15, 11)])
+        p.drawLine(QPointF(18, 14), QPointF(4, 14))
+        p.drawPolyline([QPointF(7, 11), QPointF(4, 14), QPointF(7, 17)])
+    else:                                                        # "copy" or "move": a file square, an arrow, a target square
+        pen = p.pen()
+        if kind == "move":
+            dashed = QPen(pen)
+            dashed.setStyle(Qt.DashLine)
+            p.setPen(dashed)                                    # a dashed square: the file leaves its place
+        p.drawRoundedRect(QRectF(1.5, 7, 6, 8), 1, 1)
+        p.setPen(pen)
+        p.drawLine(QPointF(9.5, 11), QPointF(13.5, 11))
+        p.drawPolyline([QPointF(11.5, 9), QPointF(13.5, 11), QPointF(11.5, 13)])
+        p.drawRoundedRect(QRectF(14.5, 7, 6, 8), 1, 1)
+
+
+_ICON_CACHE: dict = {}
+
+
+def tool_icon(kind: str, flip: bool = False) -> QIcon:
+    """A toolbar icon drawn in code (grey, white when the button is checked, dim when disabled). flip points it left."""
+    key = (kind, flip)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+    icon, size = QIcon(), 22
+    for color, mode, state in (("#c9d1da", QIcon.Normal, QIcon.Off), ("#ffffff", QIcon.Normal, QIcon.On),
+                               ("#4d5662", QIcon.Disabled, QIcon.Off), ("#4d5662", QIcon.Disabled, QIcon.On)):
+        pm = QPixmap(size * 2, size * 2)
+        pm.setDevicePixelRatio(2)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(color), 1.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        if flip:
+            p.translate(size, 0)
+            p.scale(-1, 1)
+        _draw_tool_icon(p, kind)
+        p.end()
+        icon.addPixmap(pm, mode, state)
+    _ICON_CACHE[key] = icon
+    return icon
+
+
+class Pane(QFrame):
+    """One gallery with a thin title line above it. In dual-pane mode the active pane has a blue outline."""
+
+    def __init__(self, gallery):
+        super().__init__()
+        self.setObjectName("pane")
+        self.gallery = gallery
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.title = QLabel("")
+        self.title.setObjectName("paneTitle")
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.title.hide()
+        lay.addWidget(self.title)
+        lay.addWidget(gallery, 1)
+
+    def show_title(self, on: bool, text: str = ""):
+        self.title.setVisible(on)
+        self.title.setText(text)
+        self.title.setToolTip(text)
+
+    def set_active(self, on: bool):
+        self.setProperty("active", bool(on))
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
+class FolderTree(QTreeView):
+    """The folder tree. Model files can be dropped on a folder (from the gallery or from Explorer)."""
+    files_dropped = Signal(list, str, bool)          # files, folder, move (True) or copy (False)
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self._drop_idx = None
+
+    def _folder_at(self, pos):
+        idx = self.indexAt(pos)
+        if idx.isValid():
+            path = self.model().filePath(idx)
+            if os.path.isdir(path):
+                return idx, path
+        return None, ""
+
+    def _over(self, event):
+        md = event.mimeData()
+        pos = event.position().toPoint()
+        idx, dest = self._folder_at(pos)
+        internal = md.hasFormat(Gallery.DRAG_MIME)
+        files, move = drop_plan(md, dest, event.modifiers(), internal)
+        bar = self.verticalScrollBar()                         # near the top or bottom edge: scroll
+        if pos.y() < 24:
+            bar.setValue(bar.value() - 24)
+        elif pos.y() > self.viewport().height() - 24:
+            bar.setValue(bar.value() + 24)
+        if not files:
+            self._set_drop(None)
+            event.ignore()
+            return None
+        self._set_drop(idx)
+        event.setDropAction(Qt.MoveAction if move else Qt.CopyAction)
+        event.accept()
+        return files, dest, move
+
+    def _set_drop(self, idx):
+        key = None if idx is None else idx.sibling(idx.row(), 0)
+        if key != self._drop_idx:
+            self._drop_idx = key
+            self.viewport().update()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            self._over(event)
+            event.accept()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        self._over(event)
+
+    def dragLeaveEvent(self, event):
+        self._set_drop(None)
+
+    def dropEvent(self, event):
+        got = self._over(event)
+        self._set_drop(None)
+        if got:
+            files, dest, move = got
+            QTimer.singleShot(0, lambda: self.files_dropped.emit(files, dest, move))
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self._drop_idx is not None and self._drop_idx.isValid():
+            p = QPainter(self.viewport())
+            p.setPen(QPen(QColor("#4da3ff"), 2))
+            p.setBrush(QColor(77, 163, 255, 40))
+            p.drawRect(self.visualRect(self._drop_idx).adjusted(1, 1, -1, -1))
+            p.end()
+
+
 class FavouriteDelegate(QStyledItemDelegate):
     """Paints a small yellow star over the icon of favourite folders in the tree (the model itself is untouched)."""
 
@@ -357,7 +521,7 @@ class MainWindow(QMainWindow):
         self.fs.setNameFilters([f"*{e}" for e in sorted(ALL_EXTS)])
         self.fs.setNameFilterDisables(False)  # hide non-3D files
         self.fs.setRootPath("")
-        self.tree = QTreeView()
+        self.tree = FolderTree()
         self.tree.setModel(self.fs)
         self.fav_delegate = FavouriteDelegate(self.tree)
         self.tree.setItemDelegate(self.fav_delegate)
@@ -388,24 +552,13 @@ class MainWindow(QMainWindow):
         lp.addWidget(self.tree, 1)
 
         # ---- right: gallery page (toolbar + grid) and viewer, stacked
-        self.gallery = Gallery()
-        self.gallery.open_asset.connect(self.open_asset)
-        self.gallery.open_folder.connect(self.goto_folder)
-        self.gallery.rename_requested.connect(self._rename_file)
-        self.gallery.batch_rename_requested.connect(self._batch_rename)
-        self.gallery.copy_requested.connect(self._copy_files)
-        self.gallery.cut_requested.connect(self._cut_files)
-        self.gallery.paste_requested.connect(self._paste_files)
-        self.gallery.transfer_requested.connect(self._transfer_files)
-        self.gallery.delete_requested.connect(self._delete_files)
-        self.gallery.folder_changed.connect(self._folder_changed)
-        self.gallery.refresh_thumb_requested.connect(self._refresh_thumbnail)
-        self.gallery.refresh_all_requested.connect(self._refresh_all_thumbnails)
-        self.gallery.set_library(self.library)
-        self.gallery.tags_requested.connect(self._edit_tags)
-        self.gallery.metadata_changed.connect(self._library_saved)
+        self._galleries: list = []                   # the panes: one gallery, or two in dual-pane mode
+        self._panes: list = []
+        self._active = 0
+        first = self._make_gallery()
+        self.tree.files_dropped.connect(self._files_dropped)
         self.thumbs = ThumbnailManager()
-        self.thumbs.ready.connect(self.gallery.set_thumb)
+        self.thumbs.ready.connect(self._thumb_ready)
 
         self.gallery_page = QWidget()
         gl = QVBoxLayout(self.gallery_page)
@@ -426,6 +579,18 @@ class MainWindow(QMainWindow):
         self.up_btn.setArrowType(Qt.ArrowType.UpArrow)
         self.up_btn.setToolTip("Go to the parent folder  (Alt+Up)")
         self.up_btn.clicked.connect(self._go_up)
+        self.back_btn = QToolButton()
+        self.back_btn.setObjectName("upBtn")
+        self.back_btn.setArrowType(Qt.ArrowType.LeftArrow)
+        self.back_btn.setToolTip("Back to the previous folder  (Alt+Left)")
+        self.back_btn.clicked.connect(lambda: self._history_go(-1))
+        self.fwd_btn = QToolButton()
+        self.fwd_btn.setObjectName("upBtn")
+        self.fwd_btn.setArrowType(Qt.ArrowType.RightArrow)
+        self.fwd_btn.setToolTip("Forward to the next folder  (Alt+Right)")
+        self.fwd_btn.clicked.connect(lambda: self._history_go(1))
+        self.back_btn.setEnabled(False)
+        self.fwd_btn.setEnabled(False)
         self.address = QLineEdit()
         self.address.setObjectName("addressBar")
         self.address.setPlaceholderText("Type a folder path and press Enter…")
@@ -447,7 +612,7 @@ class MainWindow(QMainWindow):
         self.library_menu = QMenu(self.library_btn)
         self.library_menu.aboutToShow.connect(self._build_library_menu)
         self.library_btn.setMenu(self.library_menu)
-        self.search.textChanged.connect(self.gallery.set_filter)
+        self.search.textChanged.connect(lambda t: self.gallery.set_filter(t))
         self.sort_box = QComboBox()
         self.sort_box.addItems([s[0] for s in SORTS])
         self.sort_box.setCurrentIndex(min(_setting_int(self.settings, "sort_idx", 0), len(SORTS) - 1))
@@ -455,7 +620,6 @@ class MainWindow(QMainWindow):
         self.sort_box.currentIndexChanged.connect(self._sort_changed)
         self.count_label = QLabel("")
         self.count_label.setObjectName("barLabel")
-        self.gallery.counts.connect(self._counts_changed)
         size_label = QLabel("Size")
         size_label.setObjectName("barLabel")
         self.size_slider = QSlider(Qt.Horizontal)
@@ -466,8 +630,29 @@ class MainWindow(QMainWindow):
         self.size_slider.setValue(max(64, min(card, 192)))
         self.gallery.set_card_size(self.size_slider.value())
         self.size_slider.valueChanged.connect(self._size_changed)
+        row1.addWidget(self.back_btn)
+        row1.addWidget(self.fwd_btn)
         row1.addWidget(self.up_btn)
         row1.addWidget(self.address, 1)
+        self.dual_btn = QToolButton()
+        self.swap_btn = QToolButton()
+        self.copy_btn = QToolButton()
+        self.move_btn = QToolButton()
+        for b in (self.dual_btn, self.swap_btn, self.copy_btn, self.move_btn):
+            b.setObjectName("paneBtn")
+            b.setIconSize(QSize(22, 22))
+            row1.addWidget(b)
+        self.dual_btn.setCheckable(True)
+        self.dual_btn.setIcon(tool_icon("split"))
+        self.dual_btn.setToolTip("Two folders side by side  (F3)\nF6 switches between the panes.")
+        self.dual_btn.toggled.connect(self._set_dual)
+        self.swap_btn.setIcon(tool_icon("swap"))
+        self.swap_btn.setToolTip("Swap the two panes  (left <-> right)")
+        self.swap_btn.clicked.connect(self._swap_panes)
+        self.copy_btn.clicked.connect(lambda: self._pane_button(False))
+        self.move_btn.clicked.connect(lambda: self._pane_button(True))
+        for b in (self.swap_btn, self.copy_btn, self.move_btn):
+            b.hide()
         row2.addWidget(self.search, 1)
         row2.addWidget(self.sort_box)
         row2.addSpacing(30)                    # room between the sort box and Library
@@ -477,7 +662,12 @@ class MainWindow(QMainWindow):
         row2.addWidget(size_label)
         row2.addWidget(self.size_slider)
         gl.addWidget(bar)
-        gl.addWidget(self.gallery)
+        self.pane_split = QSplitter(Qt.Horizontal)
+        self.pane_split.setChildrenCollapsible(False)
+        self.pane_split.setHandleWidth(5)
+        self._panes.append(Pane(first))
+        self.pane_split.addWidget(self._panes[0])
+        gl.addWidget(self.pane_split, 1)
 
         self.viewer = Viewer()
         self.viewer.closed.connect(self.close_viewer)
@@ -486,6 +676,15 @@ class MainWindow(QMainWindow):
         self.viewer.orientation_changed.connect(self.thumbs.refresh)
         self.viewer.about_requested.connect(self.show_about)
         self.viewer.panel_requested.connect(self._show_panel)
+        self.viewer2 = None                          # the second pane of a side-by-side compare (made when first needed)
+        self._link = None
+        self._cmp_path = ""
+        self._cmp_token = 10 ** 9                    # load numbers of the second pane, apart from the first's
+        self._cmp_timer = QTimer(self)
+        self._cmp_timer.setInterval(250)
+        self._cmp_timer.timeout.connect(self._cmp_follow)
+        self.viewer.compare_requested.connect(self._toggle_compare)
+        self.viewer.act_link.toggled.connect(self._set_link)
         self.stack = QStackedWidget()
         self.stack.addWidget(self.gallery_page)
         self.stack.addWidget(self.viewer)
@@ -520,6 +719,7 @@ class MainWindow(QMainWindow):
             ("A", v.act_axes.toggle), ("C", v.act_ortho.toggle), ("U", v.toggle_up_axis),
             ("T", v.toggle_transparency),
             ("F12", v.save_screenshot), ("Shift+F12", v.open_reference_sheet_dialog), ("Ctrl+C", v.copy_screenshot),
+            ("K", self._toggle_compare), ("Shift+K", v.act_link.toggle),
             ("Left", lambda: self._step(-1)), ("Right", lambda: self._step(1)),
             ("E", v.open_matcap_editor),
             ("L", v.toggle_environment), ("Shift+L", v.open_environment_panel),
@@ -535,6 +735,10 @@ class MainWindow(QMainWindow):
         for n in (1, 2, 3):                        # saved camera views
             bindings.append((f"Ctrl+Shift+{n}", lambda n=n: v.save_bookmark(n)))
             bindings.append((f"Alt+{n}", lambda n=n: v.go_bookmark(n)))
+        QShortcut(QKeySequence("F3"), self, activated=self.dual_btn.toggle)
+        QShortcut(QKeySequence("F6"), self, activated=self._switch_pane)
+        QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: self._history_go(-1))
+        QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: self._history_go(1))
         QShortcut(QKeySequence("Alt+D"), self, activated=self._focus_address)
         QShortcut(QKeySequence("Alt+Up"), self, activated=self._go_up)
         self._viewer_shortcuts = [QShortcut(QKeySequence(k), self, activated=fn)
@@ -545,16 +749,255 @@ class MainWindow(QMainWindow):
 
         self.statusBar().setStyleSheet("color:#7c8794;")
         self._restore(start)
+        if str(self.settings.value("dual_on", "false")).lower() in ("1", "true"):
+            self.dual_btn.setChecked(True)
         self._drawer_animate_ok = True               # animate from now on, not while starting up
 
     # ----- toolbar slots
+    # ----- panes: the gallery is one pane, or two side by side (dual pane). `self.gallery` is always the active one,
+    #       so everything that works on "the gallery" works on the pane you last clicked.
+    @property
+    def gallery(self):
+        return self._galleries[self._active]
+
+    def _make_gallery(self):
+        g = Gallery()
+        g.open_asset.connect(self.open_asset)
+        g.open_folder.connect(self.goto_folder)
+        g.rename_requested.connect(self._rename_file)
+        g.files_dropped.connect(self._files_dropped)
+        g.notice.connect(lambda t: self.statusBar().showMessage(t, 8000))
+        g.batch_rename_requested.connect(self._batch_rename)
+        g.copy_requested.connect(self._copy_files)
+        g.cut_requested.connect(self._cut_files)
+        g.paste_requested.connect(self._paste_files)
+        g.transfer_requested.connect(self._transfer_files)
+        g.delete_requested.connect(self._delete_files)
+        g.folder_changed.connect(lambda g=g: self._folder_changed(g))
+        g.refresh_thumb_requested.connect(self._refresh_thumbnail)
+        g.refresh_all_requested.connect(self._refresh_all_thumbnails)
+        g.set_library(self.library)
+        g.tags_requested.connect(self._edit_tags)
+        g.metadata_changed.connect(self._metadata_changed)
+        g.compare_requested.connect(self._compare_files)
+        g.counts.connect(lambda s, t, g=g: self._pane_counts(g, s, t))
+        g.activated.connect(lambda g=g: self._activate(g))
+        g.itemSelectionChanged.connect(self._update_pane_buttons)
+        g.other_pane_requested.connect(lambda f, mv, g=g: self._to_other_pane(g, f, mv))
+        self._galleries.append(g)
+        return g
+
+    def _request_thumbs(self, paths: list, g=None):
+        """Ask for the thumbnails a pane is missing. The thumbnail manager drops its queue whenever it is asked again, so
+        with two panes the wishes of both are put together (the active pane first) instead of one cancelling the other."""
+        g = g or self.gallery
+        g._want = list(paths)
+        wanted, seen = [], set()
+        for pane in [self.gallery] + [x for x in self._galleries if x is not self.gallery]:
+            for p in getattr(pane, "_want", []):
+                if p not in seen and p not in pane._thumbs:
+                    seen.add(p)
+                    wanted.append(p)
+        self.thumbs.request_batch(wanted)
+
+    def _thumb_ready(self, path: str, pm):
+        for g in self._galleries:
+            g.set_thumb(path, pm)
+
+    def _pane_of(self, g):
+        return self._panes[self._galleries.index(g)] if g in self._galleries and len(self._panes) > self._galleries.index(g) else None
+
+    def _dual_on(self) -> bool:
+        btn = getattr(self, "dual_btn", None)
+        return len(self._galleries) > 1 and btn is not None and btn.isChecked()
+
+    def _pane_title_text(self, g) -> str:
+        return f"Smart folder: {g.virtual}" if g.virtual else os.path.normpath(g.folder or "")
+
+    def _pane_counts(self, g, shown: int, total: int):
+        g._counts = (shown, total)
+        if g is self.gallery and hasattr(self, "count_label"):
+            self._counts_changed(shown, total)
+        pane = self._pane_of(g)
+        if pane is not None and self._dual_on():
+            pane.show_title(True, self._pane_title_text(g))
+        if len(self._galleries) > 1 and g is self._galleries[1] and g.folder and not g.virtual:
+            self.settings.setValue("dual_folder2", g.folder)
+
+    def _activate(self, g):
+        """A pane got the focus: it becomes the one the tree, address bar, search box and keys work on."""
+        if g is self.gallery or g not in self._galleries:
+            return
+        self._active = self._galleries.index(g)
+        self._sync_chrome()
+
+    def _sync_chrome(self):
+        """Make the tree, address bar, search box and count show the active pane."""
+        g = self.gallery
+        dual = self._dual_on()
+        for i, p in enumerate(self._panes):
+            p.set_active(dual and i == self._active)
+        self.search.blockSignals(True)
+        self.search.setText(g._filter)
+        self.search.blockSignals(False)
+        if g.virtual:
+            self.address.setText("")
+            self.address.setPlaceholderText(f"Smart folder: {g.virtual}   ({getattr(g, 'vquery', '')})")
+        else:
+            self.address.setPlaceholderText("Type a folder path and press Enter…")
+            self.address.setText(os.path.normpath(g.folder) if g.folder else "")
+            if g.folder and os.path.isdir(g.folder):
+                idx = self.fs.index(g.folder)
+                self._tree_sync = True                 # show the folder in the tree without loading it again
+                try:
+                    self.tree.setCurrentIndex(idx)
+                finally:
+                    self._tree_sync = False
+                self.tree.scrollTo(idx, QAbstractItemView.PositionAtCenter)
+                self.settings.setValue("last_dir", g.folder)
+        self._address_error(False)
+        shown, total = getattr(g, "_counts", (0, 0))
+        self._counts_changed(shown, total)
+        self._update_nav()
+        self._update_pane_buttons()
+
+    def _set_dual(self, on: bool):
+        if on and len(self._galleries) < 2:
+            g2 = self._make_gallery()
+            g2.set_sort(self.sort_box.currentIndex())
+            g2.set_card_size(self.size_slider.value())
+            self._panes.append(Pane(g2))
+            self.pane_split.addWidget(self._panes[1])
+            start = str(self.settings.value("dual_folder2", "") or "")
+            if not os.path.isdir(start):
+                start = self.gallery.folder or str(self.settings.value("last_dir", str(Path.home())))
+            self._request_thumbs(g2.populate(start), g2)
+            g2._hist, g2._hpos = [start], 0
+        for g in self._galleries:
+            g.dual = bool(on) and len(self._galleries) > 1
+        if len(self._panes) > 1:
+            self._panes[1].setVisible(bool(on))
+        if not on:
+            self._active = 0
+        self.settings.setValue("dual_on", bool(on))
+        if self.dual_btn.isChecked() != bool(on):
+            self.dual_btn.blockSignals(True)
+            self.dual_btn.setChecked(bool(on))
+            self.dual_btn.blockSignals(False)
+        for g, p in zip(self._galleries, self._panes):
+            p.show_title(bool(on), self._pane_title_text(g))
+        if on:
+            self.pane_split.setSizes([1000, 1000])
+        self._sync_chrome()
+
+    # ----- the pane buttons (swap, copy / move to the other pane) and folder history (back / forward)
+    _hist_nav = False
+
+    def _update_pane_buttons(self):
+        if not hasattr(self, "copy_btn"):
+            return
+        dual = self._dual_on()
+        for b in (self.swap_btn, self.copy_btn, self.move_btn):
+            b.setVisible(dual)
+        if not dual:
+            return
+        on_left = self.pane_split.indexOf(self._panes[self._active]) == 0
+        other = self._galleries[1 - self._active]
+        usable = not other.virtual and bool(other.folder) and os.path.isdir(other.folder)
+        picked = bool(self.gallery.selected_files())
+        side = "right" if on_left else "left"
+        for b, kind, verb, key in ((self.copy_btn, "copy", "Copy", "Ctrl+Alt+Y"), (self.move_btn, "move", "Move", "Ctrl+Alt+M")):
+            b.setIcon(tool_icon(kind, flip=not on_left))
+            b.setEnabled(picked and usable)
+            why = "" if picked else "\n(select one or more files first)"
+            if picked and not usable:
+                why = "\n(the other pane is not showing a normal folder)"
+            b.setToolTip(f"{verb} the selected files to the {side} pane  ({key}){why}")
+
+    def _pane_button(self, move: bool):
+        self._to_other_pane(self.gallery, self.gallery.selected_files(), move)
+
+    def _swap_panes(self):
+        if len(self._panes) < 2:
+            return
+        self.pane_split.insertWidget(0, self._panes[1] if self.pane_split.indexOf(self._panes[0]) == 0 else self._panes[0])
+        self.pane_split.setSizes([1000, 1000])
+        self._update_pane_buttons()
+
+    def _visit(self, path: str):
+        """Remember a folder the active pane opened, for the back and forward buttons."""
+        if self._hist_nav:
+            return
+        g = self.gallery
+        if not hasattr(g, "_hist"):
+            g._hist, g._hpos = [], -1
+        if g._hpos >= 0 and os.path.normcase(g._hist[g._hpos]) == os.path.normcase(path):
+            return
+        del g._hist[g._hpos + 1:]
+        g._hist.append(path)
+        if len(g._hist) > 100:
+            del g._hist[0]
+        g._hpos = len(g._hist) - 1
+        self._update_nav()
+
+    def _update_nav(self):
+        g = self.gallery
+        hist, pos = getattr(g, "_hist", []), getattr(g, "_hpos", -1)
+        self.back_btn.setEnabled(pos > 0)
+        self.fwd_btn.setEnabled(0 <= pos < len(hist) - 1)
+
+    def _history_go(self, delta: int):
+        if self.stack.currentWidget() is not self.gallery_page:
+            return
+        g = self.gallery
+        hist, pos = getattr(g, "_hist", []), getattr(g, "_hpos", -1)
+        i = pos + delta
+        while 0 <= i < len(hist) and not os.path.isdir(hist[i]):     # skip folders that have gone
+            i += delta
+        if not 0 <= i < len(hist):
+            self.statusBar().showMessage("No more folders in that direction", 4000)
+            return
+        g._hpos = i
+        self._hist_nav = True
+        try:
+            self.goto_folder(hist[i])
+        finally:
+            self._hist_nav = False
+        self._update_nav()
+
+    def _switch_pane(self):
+        if self._dual_on() and self.stack.currentWidget() is self.gallery_page:
+            other = self._galleries[1 - self._active]
+            other.setFocus()                           # focus-in makes it the active pane
+
+    def _to_other_pane(self, g, paths: list, move: bool):
+        if len(self._galleries) < 2 or not self._dual_on():
+            return
+        other = self._galleries[1 - self._galleries.index(g)]
+        if other.virtual or not other.folder or not os.path.isdir(other.folder):
+            self.statusBar().showMessage("The other pane is not showing a normal folder, so there is nowhere to put the files", 6000)
+            return
+        files = fileops.droppable(paths, other.folder)
+        if not files:
+            self.statusBar().showMessage("Those files are already in the other pane's folder", 6000)
+            return
+        self._run_transfer(files, other.folder, move, self._companions_pref())
+
+    def _metadata_changed(self):
+        self._library_saved()
+        for g in self._galleries:
+            if g is not self.gallery:
+                g._rebuild()                           # the other pane may show the same files
+
     def _sort_changed(self, idx: int):
         self.settings.setValue("sort_idx", idx)
-        self.gallery.set_sort(idx)
+        for g in self._galleries:
+            g.set_sort(idx)
 
     def _size_changed(self, px: int):
         self.settings.setValue("card_px", px)
-        self.gallery.set_card_size(px)
+        for g in self._galleries:
+            g.set_card_size(px)
 
     def _counts_changed(self, shown: int, total: int):
         self.count_label.setText(f"{total} models" if shown == total else f"{shown} of {total} models")
@@ -580,6 +1023,9 @@ class MainWindow(QMainWindow):
         self.act_undo.setShortcut(QKeySequence("Ctrl+Z"))
         self.act_undo.triggered.connect(self._undo_last)
         self._update_undo_action()
+        em.addSeparator()
+        self.select_menu = em.addMenu("Select all with…")
+        self.select_menu.aboutToShow.connect(lambda: self.gallery.fill_select_menu(self.select_menu))
         gm = mb.addMenu("&Go")
         self.go_menu = gm
         gm.addAction("Parent folder\tAlt+Up", self._go_up)
@@ -920,15 +1366,21 @@ class MainWindow(QMainWindow):
         ext = asset_ext(name)
         return (name[:-len(ext)] if ext else name), ext
 
-    def _folder_changed(self):
+    def _folder_changed(self, g=None):
         """Files appeared, vanished or changed in the open folder (copied in with Explorer, say)."""
-        need = self.gallery.rescan()
+        g = g or self.gallery
+        need = g.rescan()
         if need:
-            self.thumbs.request_batch(need)
+            self._request_thumbs(need, g)
 
     def _refresh_gallery(self, select: str = ""):
+        for g in self._galleries:                      # the other pane may show the same folder
+            if g is not self.gallery and not g.virtual and g.folder and g.isVisible():
+                need = g.rescan()
+                if need:
+                    self._request_thumbs(need, g)
         if self.gallery.virtual:
-            self._show_query(self._virtual_query, self.gallery.virtual, select=select)
+            self._show_query(getattr(self.gallery, "vquery", self._virtual_query), self.gallery.virtual, select=select)
             return
         folder = self.gallery.folder
         if not folder:
@@ -936,7 +1388,7 @@ class MainWindow(QMainWindow):
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
-        self.thumbs.request_batch(self.gallery.populate(folder))
+        self._request_thumbs(self.gallery.populate(folder))
         if select:
             self.gallery.select_path(select)
 
@@ -1056,6 +1508,11 @@ class MainWindow(QMainWindow):
         self.settings.setValue("fileops/companions", dlg.include_companions())
         self._run_transfer(paths, dest, move, dlg.include_companions())
 
+    def _files_dropped(self, paths: list, dest: str, move: bool):
+        """Model files were dropped on a folder (in the tree, as a tile in the gallery, or the open folder)."""
+        self.settings.setValue("fileops/recent", push_recent(self._fileops_recent(), dest, 8))
+        self._run_transfer(paths, dest, move, self._companions_pref())
+
     def _fileops_recent(self) -> list:
         v = self.settings.value("fileops/recent", [])
         return [str(p) for p in ([v] if isinstance(v, str) else (v or []))]
@@ -1088,6 +1545,8 @@ class MainWindow(QMainWindow):
                 ORIENT.set(src, "Y")
                 if self.current_path == src:
                     self.current_path = dst
+            if not moved:
+                ORIENT.set(dst, ORIENT.get(src))                # a copy is oriented like the original
             self.thumbs.adopt(caches.get(src), dst)             # the new file starts with the same thumbnail
             last = dst
         in_view = last if os.path.normcase(os.path.dirname(last)) == os.path.normcase(self.gallery.folder or "?") else ""
@@ -1159,7 +1618,8 @@ class MainWindow(QMainWindow):
                 + (f"\n… and {len(skipped) - 10} more" if len(skipped) > 10 else ""))
 
     def _refresh_thumbnail(self, path: str):
-        self.gallery.clear_thumb(path)
+        for g in self._galleries:
+            g.clear_thumb(path)
         self.thumbs.refresh(path, force=True)
         self.statusBar().showMessage(f"Refreshing the thumbnail for {os.path.basename(path)}…", 6000)
 
@@ -1229,18 +1689,20 @@ class MainWindow(QMainWindow):
         removed = [t for t in shared if t.lower() not in typed_l]
         added = [t for t in typed if t.lower() not in common]
         if lib.change_tags(paths, removed, added):
-            self.gallery._rebuild()
+            for g in self._galleries:
+                g._rebuild()
             self.statusBar().showMessage(f"Tags updated for {len(paths)} file{'s' if len(paths) != 1 else ''}", 6000)
         self._library_saved()
 
     def _show_query(self, query: str, title: str, select: str = ""):
         """A smart-folder view: every library file that matches the saved search, from any folder."""
         self._virtual_query = query
+        self.gallery.vquery = query
         paths = self.library.find(query)
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
-        self.thumbs.request_batch(self.gallery.populate_paths(paths, title))
+        self._request_thumbs(self.gallery.populate_paths(paths, title))
         self.address.setText("")
         self.address.setPlaceholderText(f"Smart folder: {title}   ({query})")
         self._address_error(False)
@@ -1257,7 +1719,7 @@ class MainWindow(QMainWindow):
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
-        self.thumbs.request_batch(self.gallery.populate(folder))
+        self._request_thumbs(self.gallery.populate(folder))
 
     def _build_library_menu(self):
         m, lib = self.library_menu, self.library
@@ -1328,7 +1790,8 @@ class MainWindow(QMainWindow):
         if self.library.move_to(new):
             self.settings.setValue("library_path", new)
             self._refresh_favourites()
-            self.gallery._rebuild()
+            for g in self._galleries:
+                g._rebuild()
             self.statusBar().showMessage(f"Library file: {new}", 8000)
         else:
             self.library.move_to(old)
@@ -1411,9 +1874,12 @@ class MainWindow(QMainWindow):
         self.tree.expand(idx)
 
     def _tree_changed(self, cur, _prev):
+        if getattr(self, "_tree_sync", False):
+            return
         path = self.fs.filePath(cur)
         if os.path.isdir(path):
             self.settings.setValue("last_dir", path)
+            self._visit(path)
             self._note_recent(path)
             self.address.setText(os.path.normpath(path))
             self.address.setPlaceholderText("Type a folder path and press Enter…")
@@ -1421,7 +1887,7 @@ class MainWindow(QMainWindow):
             self.search.blockSignals(True)
             self.search.clear()
             self.search.blockSignals(False)
-            self.thumbs.request_batch(self.gallery.populate(path))
+            self._request_thumbs(self.gallery.populate(path))
             self.statusBar().showMessage(path)
             if self.stack.currentWidget() is self.viewer:
                 self.close_viewer()
@@ -1543,7 +2009,7 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.viewer)
         self._sync_shortcuts()
         self.viewer.show_loading(name)
-        self.setWindowTitle(f"{name} — {APP_NAME}")
+        self._set_title()
         task = LoadTask(self.token, path)
         task.signals.done.connect(self._on_loaded)
         task.signals.failed.connect(self._on_failed)
@@ -1564,6 +2030,8 @@ class MainWindow(QMainWindow):
             nxt = paths[(paths.index(self.current_path) + delta) % len(paths)]
         else:
             nxt = paths[0] if delta > 0 else paths[-1]
+        if self._comparing():
+            nxt = neighbour(paths, self.current_path, delta, avoid=self._cmp_path) or nxt   # not the one beside it
         self.open_asset(nxt)
         self.gallery.select_path(nxt)
 
@@ -1571,10 +2039,149 @@ class MainWindow(QMainWindow):
         self._tasks.pop(token, None)
         if token != self.token or self.stack.currentWidget() is not self.viewer:
             return
+        if self._link is not None:
+            self._link.paused = True                  # the new model's own front view should not drag the other pane
         try:
             self.viewer.show_model(actors, os.path.basename(path), path)
         except Exception as e:
             self.viewer.show_error(f"Render failed:\n{e}")
+        finally:
+            if self._link is not None:
+                self._link.paused = False
+                self._link.sync()
+
+    # ----- side-by-side compare: a second viewer beside the first that copies its look (see compare.py)
+    def _comparing(self) -> bool:
+        return bool(self._cmp_path) and self.viewer2 is not None
+
+    def _set_title(self):
+        name = os.path.basename(self.current_path)
+        if self._comparing():
+            name += "  ↔  " + os.path.basename(self._cmp_path)
+        self.setWindowTitle(f"{name} — {APP_NAME}")
+
+    def _toggle_compare(self):
+        if self.stack.currentWidget() is not self.viewer or not self.current_path:
+            return
+        if self._comparing():
+            self.stop_compare()
+            return
+        other = neighbour(self.gallery.asset_paths(), self.current_path, 1, avoid=self.current_path)
+        if not other:
+            self.statusBar().showMessage("There is no other model in this folder to compare with", 6000)
+            return
+        self.start_compare(other)
+
+    def _compare_files(self, paths: list):
+        """Ctrl+K in the gallery: two selected files, or (dual pane) one selected file in each pane, which may be in
+        different folders or on different drives."""
+        if len(paths) == 1 and self._dual_on():
+            other = self._galleries[1 - self._active]
+            picked = other.selected_files()
+            if len(picked) == 1:
+                pair = [paths[0], picked[0]]
+                if self.pane_split.indexOf(self._panes[self._active]) > self.pane_split.indexOf(self._panes[1 - self._active]):
+                    pair.reverse()                        # the file in the left pane is shown on the left
+                paths = pair
+        if len(paths) != 2:
+            self.statusBar().showMessage("To compare, select two files, or (dual pane, F3) one file in each pane", 7000)
+            return
+        if os.path.normcase(paths[0]) == os.path.normcase(paths[1]):
+            self.statusBar().showMessage("That is the same file on both sides", 5000)
+            return
+        self.open_asset(paths[0])
+        self.start_compare(paths[1])
+
+    def start_compare(self, path: str):
+        if self.viewer2 is None:
+            v2 = Viewer(lean=True)
+            v2.closed.connect(self.stop_compare)
+            v2.step.connect(self._step2)
+            v2.message.connect(lambda m: self.statusBar().showMessage(m, 6000))
+            self.viewer.view_split.insertWidget(1, v2)
+            self.viewer.view_split.setStretchFactor(1, 3)
+            self.viewer2 = v2
+        self.viewer2.show()
+        self.viewer.view_split.setSizes([1000, 1000, 0])
+        if self._link is None and self.viewer.act_link.isChecked():
+            self._link = CameraLink(self.viewer, self.viewer2)
+        self._cmp_timer.start()
+        self._load_compare(path)
+
+    def _load_compare(self, path: str):
+        self._cmp_path = path
+        self._cmp_token += 1
+        self.viewer2.show_loading(os.path.basename(path))
+        self._set_title()
+        task = LoadTask(self._cmp_token, path)
+        task.signals.done.connect(self._on_cloaded)
+        task.signals.failed.connect(self._on_cfailed)
+        self._tasks[self._cmp_token] = task
+        self.pool.start(task)
+
+    def _on_cloaded(self, token: int, actors, path: str):
+        self._tasks.pop(token, None)
+        if token != self._cmp_token or not self._comparing():
+            return
+        if self._link is not None:
+            self._link.paused = True
+        try:
+            self.viewer2.show_model(actors, os.path.basename(path), path)
+            self.viewer2.follow(self.viewer, force=True)
+        except Exception as e:
+            self.viewer2.show_error(f"Render failed:\n{e}")
+        finally:
+            if self._link is not None:
+                self._link.paused = False
+                self._link.sync()
+
+    def _on_cfailed(self, token: int, msg: str):
+        self._tasks.pop(token, None)
+        if token == self._cmp_token and self._comparing():
+            self.viewer2.show_error(msg)
+
+    def _step2(self, delta: int):
+        if not self._comparing():
+            return
+        shown = next((g.asset_paths() for g in self._galleries if self._cmp_path in g.asset_paths()), None)
+        if shown is None:
+            shown = scan_assets(os.path.dirname(self._cmp_path))
+        nxt = neighbour(shown, self._cmp_path, delta, avoid=self.current_path)       # step through the folder that model is in
+        if nxt:
+            self._load_compare(nxt)
+
+    def _cmp_follow(self):
+        if not self._comparing():
+            return
+        try:
+            self.viewer2.follow(self.viewer)
+        except Exception as e:                        # don't repeat an error four times a second
+            self._cmp_timer.stop()
+            self.statusBar().showMessage(f"The right-hand view could not follow the left one: {e}", 8000)
+
+    def _set_link(self, on: bool):
+        self.settings.setValue("compare_link", "true" if on else "false")
+        if self._link is not None:
+            self._link.detach()
+            self._link = None
+        if on and self._comparing():
+            self._link = CameraLink(self.viewer, self.viewer2)
+            self._link.sync()
+        self.statusBar().showMessage("The two cameras move together" if on else "The two cameras move separately", 5000)
+
+    def stop_compare(self):
+        if self.viewer2 is None or not self._cmp_path:
+            return
+        self._cmp_timer.stop()
+        if self._link is not None:
+            self._link.detach()
+            self._link = None
+        self._cmp_path = ""
+        self._cmp_token += 1                          # a load still running is ignored
+        self.viewer2.clear_scene()
+        self.viewer2.hide()
+        if self.stack.currentWidget() is self.viewer and self.current_path:
+            self._set_title()
 
     def _on_failed(self, token: int, msg: str):
         self._tasks.pop(token, None)
@@ -1583,6 +2190,7 @@ class MainWindow(QMainWindow):
 
     def close_viewer(self):
         self.token += 1                  # invalidate in-flight loads
+        self.stop_compare()
         self.viewer.clear_scene()
         self.stack.setCurrentWidget(self.gallery_page)
         self._sync_shortcuts()
@@ -1595,6 +2203,8 @@ class MainWindow(QMainWindow):
         self._save_layout()
         self.thumbs.shutdown()
         self.viewer.shutdown()
+        if self.viewer2 is not None:
+            self.viewer2.shutdown()
         super().closeEvent(e)
 
 

@@ -19,6 +19,7 @@ The full details behind the [README](README.md): controls, every panel and tool,
   - [Environment (sky, lighting, shadow)](#environment-sky-lighting-shadow)
   - [MatCap editor and presets](#matcap-editor-and-presets)
   - [Split compare (MatCap vs normal shading)](#split-compare-matcap-vs-normal-shading)
+  - [Compare two models side by side](#compare-two-models-side-by-side)
   - [Model info panel](#model-info-panel)
 - **Inspecting**
   - [UV inspection](#uv-inspection)
@@ -108,6 +109,8 @@ python main.py
 | Measure between points (Measure tab) | `Shift+R` |
 | Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
 | Split style: vertical, horizontal, diagonal | `Shift+D` |
+| Compare two models side by side (start / stop) | `K` (in the gallery: `Ctrl+K` with 2 files selected, or one file in each pane) |
+| Link or unlink the two cameras while comparing | `Shift+K` |
 | Materials & parts panel | `Shift+M` (or **Panels → Materials**) |
 | Ground grid on/off | `G` |
 | Fit the model in view (keeps your angle) | `F` |
@@ -130,6 +133,9 @@ Select one or several thumbnails (`Ctrl` / `Shift` + click, `Ctrl+A` for all, `C
 | Action | Key |
 |---|---|
 | Open | double-click |
+| Dual pane on / off, switch pane | `F3`, `F6` |
+| Back / forward through the folders you opened (per pane) | `Alt+Left`, `Alt+Right` |
+| Copy / move the selection to the other pane | `Ctrl+Alt+Y`, `Ctrl+Alt+M` |
 | Rename (one file) | `F2` |
 | Batch rename (2 or more files) | `Ctrl+F2` |
 | Cut / Copy / Paste | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` |
@@ -146,6 +152,7 @@ Select one or several thumbnails (`Ctrl` / `Shift` + click, `Ctrl+A` for all, `C
 - **If a move fails part-way** for one model, whatever it had already moved is put back, and the other models carry on.
 - **Local drives only.** Network locations are refused.
 - **Cut and paste** works with Explorer/Finder in both directions: files cut in Explorer move when pasted here, and files cut here move when pasted in Explorer. A cut can be pasted once.
+- **Drag and drop:** drag the selected files onto a folder in the tree, onto a folder tile in the gallery, or out to Explorer/Finder. Inside the app, files dragged within the same drive are **moved** and files dragged to another drive are **copied**; hold `Ctrl` to force a copy or `Shift` to force a move. A blue outline shows the folder that will receive them. Model files dragged in from Explorer onto the gallery (the open folder, or a folder tile) or onto the tree are always **copied** unless you hold `Shift`. Dropped models bring their companion files like any other copy or move, and a move can be undone with `Ctrl+Z`. Only model files are accepted, not folders, and dropping a file on the folder it is already in does nothing.
 - **Tags, colour labels, ratings and the Y-up/Z-up choice follow a moved model**, and so does its thumbnail. A copy starts with the same thumbnail but not the tags.
 - **Copy to / Move to** shows the last 8 folders you used, plus a Browse button. Both also work from the right-click menu on the selection.
 - **Undo** (`Ctrl+Z`, or **Edit → Undo**, which names what it will undo) puts back the last rename or move, up to 20 steps while the app is open. A moved model goes back with its companion files, and its tags, colours, ratings and thumbnail go back with it. Nothing is overwritten: a file that has been changed or removed since, or whose old name has been taken, is skipped and listed. Copies and deletes are not undone (deleted files are in the Recycle Bin / Trash).
@@ -170,6 +177,9 @@ Organise your assets without touching them. Everything is stored in one small te
 - **Rating:** right-click a thumbnail → **Rating**, or press `Ctrl+1` to `Ctrl+5` (`Ctrl+0` clears). Yellow stars (one per point, no empty stars) show over the thumbnail's corner.
 - **Colour label:** right-click → **Colour label** (red, orange, yellow, green, blue, purple, gray). The card gets a coloured border.
 - **Tags:** right-click → **Tags…** or `Ctrl+T`. Type tags separated by commas, or double-click an existing tag to add it.
+- **Select all with…** (right-click in the gallery, or **Edit → Select all with…**) selects every file shown that has a colour label, a rating (5 stars, 4 or more, … or unrated) or a tag. Each choice shows how many files it would select, and only tags on the files currently shown are listed. It replaces the selection; hold `Ctrl` when choosing to add to it instead. Then tag, rate, move, copy, rename or compare them as usual. It works on the files shown, so a search or smart folder narrows what it can select.
+- **Back and forward** buttons (and `Alt+Left` / `Alt+Right`) next to the up arrow step through the folders you have opened, like a browser. Each pane keeps its own history, and folders that have gone are skipped.
+- **Dual pane** (`F3`, or the split-panel button at the right of the address bar) shows two folders side by side, each with its own folder, search, sorting result and selection. The pane with the blue outline is the active one: the folder tree, address bar, search box, `Ctrl+V`, keys and menus all work on it, and clicking in a pane makes it active (`F6` switches). Open a folder in a pane by clicking it in the tree while that pane is active. To move files between the panes, drag them across, use the **copy** and **move** buttons beside the split button (they point at the other pane and are greyed out until files are selected), or right-click → **Copy to the other pane** / **Move to the other pane** (`Ctrl+Alt+Y` / `Ctrl+Alt+M`). The **swap** button exchanges the left and right panes. Those three buttons only appear while dual pane is on. Copies and moves bring companion files, can be undone, and both panes update. Sort order and card size apply to both panes. The folder of the second pane and whether dual pane was on are remembered. Opening a model and `←` `→` step through the pane it was opened from.
 - **Several files at once:** select with `Ctrl`/`Shift`-click, then use the same menu or keys. The tag box shows the tags every selected file shares; each file keeps its own extra tags. Rename acts on the one current file (use Batch rename for several).
 - **Search:** the search box understands `tag:rock`, `-tag:old`, `tag:"hard surface"`, `#rock`, `color:red` (or `color:none`), `rating:4`, `rating:>=3` and plain words (matched against the file name and tags). Terms combine with AND.
 - **Smart folders:** type a search, then **Library ▾ → Save this search as a smart folder…**. A smart folder shows every matching file from **all** folders in one list, and updates itself as tags change. **Library ▾** also has quick **Browse by tag / colour / rating**, and **Back to the folder view**.
@@ -310,6 +320,18 @@ Press **D** with a model open. The viewport is split by a line: the MatCap on on
 - The split shows while a MatCap is active (`M`). Cycling back to normal shading hides it and it returns with the next MatCap.
 - The MatCap shader is re-baked with the new position shortly after you move the line, so with image MatCaps the shading can trail the line slightly while you drag.
 - Screenshots at 2x/4x do not include the split (they show the full MatCap); set the screenshot scale to 1x to capture it.
+
+## Compare two models side by side
+
+Two models next to each other, each in its own view. This is separate from *Split compare* above, which compares two looks of one model.
+
+- **Start:** select exactly two files in the gallery and press `Ctrl+K` (or right-click → *Compare side by side*). To compare models from **different folders or drives**, turn on dual pane (`F3`), open each folder in a pane, select one file in each and press `Ctrl+K` (or right-click → *Compare with the selected file in the other pane*); the file in the left pane is shown on the left. With a model already open, press `K` and the next model in the folder appears on the right (use the right view's `‹` `›` to pick another).
+- **Change what is on either side:** the `‹` `›` buttons of each view step through the folder (the model on the other side is skipped). Double-click or `←` `→` change the left model as usual.
+- **Same look on both sides:** the right view copies the left one's shading (Wire, Points, Shaded, MatCap), environment and lighting, background, grid, edges, transparency and lens. Change them on the left; the right follows within a fraction of a second.
+- **Linked cameras:** orbiting, zooming or panning either view moves the other by the same relative amount. Each camera is described relative to its own model (its size, centre and up direction), so a small model and a big one, or a Y-up and a Z-up one, still line up. Turn it off with `Shift+K` (or *Main ▾ → Link the two cameras*) to move them separately; the choice is remembered. Opening another model resets both views to the front view.
+- **Model info** shows for each model, so triangle counts and texture sizes can be read side by side.
+- **Stop:** press `K` again, or the `✕` on the right-hand view. `Esc` closes the viewer, comparison included.
+- The right-hand view has only the step and close buttons; use the left view's controls and keys for everything else. Measure, UV, section and the analysis panels work on the left model only.
 
 ## Model info panel
 
@@ -492,6 +514,7 @@ Gleek3Deek/
 ├── gallery.py                # thumbnail grid, thumbnails, file icons, background loading
 ├── library.py                # tags, colour labels, ratings and smart folders (one JSON file, no windows)
 ├── fileops.py                # copying and moving models with their companion files (no windows)
+├── compare.py                # camera maths for side-by-side compare (no windows)
 ├── environment.py            # sky, lighting and tone mapping, panorama handling, Environment panel
 ├── panels.py                 # Materials, Info and Scene panels, export dialog
 ├── requirements.txt          # required packages
