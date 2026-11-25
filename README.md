@@ -1,11 +1,19 @@
 # Gleek3Deek
 
-<img src="images/france.jpg" alt="Gleek3Deek" width="700">
-The ultra-fast, self-hosted 3D asset browser and viewer built specifically for digital sculptors and 3D generalists. Spend less time digging through folders and more time creating, with a fast, minimalist 3D asset manager, viewer and auditor. Browse a folder of models as a thumbnail gallery, open any of them in an interactive 3D viewer, and find out what's wrong with it, all in a small native app. No Electron, no web view: just Python, Qt and VTK.
+**A fast, minimalist 3D asset manager, viewer and auditor.** Browse a folder of models as a thumbnail gallery, open any of them in an interactive 3D viewer, and find out what's wrong with it, all in a small native app. No Electron, no web view: just Python, Qt and VTK.
+
+[![Tests](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml/badge.svg)](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
+![Gleek3Deek screenshot](docs/screenshot.png)
+-->
+
+> **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
 ## Why Gleek3Deek?
 
-You have a folder full of models from a dozen sources and you want to *see* them, sort them and trust them, without opening a heavyweight 3D package, or uploading them to a website solution where your content might get fed to AI. Gleek3Deek gives you a visual library, a viewer that opens instantly, and checks that tell you whether a model is ready to use.
+You have a folder full of models from a dozen sources and you want to *see* them, sort them and trust them, without opening a heavyweight 3D package for each one. Gleek3Deek gives you a visual library, a viewer that opens instantly, and checks that tell you whether a model is ready to use.
 
 ## Highlights
 
@@ -18,26 +26,13 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Opens instantly** on double-click, with the camera fitted to the model. Previous/next browsing with the arrow keys.
 - **Material views:** albedo, normals, texture inspector with channel previews, and a parts list to hide or isolate pieces.
 - **MatCap shading** with five ZBrush-style procedural materials, a live MatCap editor and **split compare** against normal shading.
-- **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image) and **Fake AO**, tuned to stay fast on low-end machines.
-
-<img src="images/ground.jpg" alt="Gleek3Deek" width="700">
-
+- **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image), **PBR materials** (metallic/roughness look; glossy surfaces reflect the loaded panorama) and **Fake AO**, tuned to stay fast on low-end machines.
 - **Scene tools:** ground grid, field of view, saved camera views, orthographic mode, auto-orbit, screenshots up to 4× with a transparent background.
 
 ### Inspect
-- **Compare Models** Load 2 models into a split viewport with the compare function
-
-<img src="images/compare_2.jpg" alt="Gleek3Deek" width="700">
-
 - **UV inspection** with a layout view that flags overlaps, flipped and out-of-bounds UVs.
-
-<img src="images/heatmap.jpg" alt="Gleek3Deek" width="700">
-
 - **Texture audit and mesh diagnostics:** oversized or non-power-of-two textures, holes, non-manifold edges, flipped faces and more.
 - **Measurements and cross-section** for checking real-world scale.
-
-<img src="images/Cutaway3.jpg" alt="Gleek3Deek" width="700">
-
 - **LOD preview** to see how a model looks at a fraction of its faces.
 
 ### Convert and automate
@@ -71,6 +66,7 @@ On first launch the script creates a private `.venv`, installs the dependencies 
 | Double-click | Open a model in the viewer |
 | `M` | Cycle MatCap materials |
 | `D` | Split compare (MatCap vs normal shading) |
+| `K` | Compare two models side by side |
 | `Shift+W` | Edges over shaded |
 | `Ctrl+1`…`5` / `Ctrl+0` | Rate the selected files / clear the rating |
 | `Ctrl+T` | Edit tags |
@@ -89,4 +85,4 @@ Issues and pull requests are welcome. When reporting a model that won't open, pl
 
 ## License
 
-Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://qt.io) (LGPL), [VTK](https://vtk.org) (BSD), [NumPy](https://numpy.org) (BSD) and, optionally, [assimp-py](https://pypi.org) / [Assimp](https://github.com) (BSD), [DracoPy](https://pypi.org) / [Draco](https://github.com) (Apache-2.0), [meshoptimizer](https://pypi.org) / [meshoptimizer](https://github.com) (MIT) and [CadQuery](https://github.com) (Apache-2.0), each under its own license.
+Gleek3Deek is released under the MIT License (see `LICENSE`). It depends on [PySide6](https://doc.qt.io/qtforpython/) (LGPL), [VTK](https://vtk.org/) (BSD), [NumPy](https://numpy.org/) (BSD) and, optionally, [assimp-py](https://pypi.org/project/assimp-py/) / [Assimp](https://github.com/assimp/assimp) (BSD), [DracoPy](https://pypi.org/project/DracoPy/) / [Draco](https://github.com/google/draco) (Apache-2.0), [meshoptimizer](https://pypi.org/project/meshoptimizer/) / [meshoptimizer](https://github.com/zeux/meshoptimizer) (MIT) and [CadQuery](https://github.com/CadQuery/cadquery) (Apache-2.0), each under its own license.
