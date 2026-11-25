@@ -5,9 +5,8 @@
 [![Tests](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml/badge.svg)](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-<!-- Add a screenshot: put an image in a /docs folder and uncomment the line below
-![Gleek3Deek screenshot](docs/screenshot.png)
--->
+
+![Gleek3Deek screenshot](images/compare_2.jpg)
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
 
