@@ -194,3 +194,113 @@ def test_surface_mode_combines_the_two_saved_flags():
     assert surface_mode(clean_env({})) == "standard" or surface_mode(clean_env({})) == "off"
     assert "lighting" not in ENV_CHECKBOX_KEYS and "pbr" not in ENV_CHECKBOX_KEYS and "fake_ao" in ENV_CHECKBOX_KEYS
     assert clean_env({"lighting": False, "pbr": True})["pbr"] is True      # saved settings keep both flags
+
+
+def test_panorama_reflection_lookup_only_when_asked_and_when_smooth():
+    base = dict(sh=SHC, pbr=(1.0, 0.2))
+    assert "gkRefl" not in code(**base)
+    c = code(tex_refl=True, **base)
+    assert "textureLod(gkRefl" in c and "envRtex" in c
+    assert "textureLod(gkRefl, envRuv, 1.0000)" in c                   # lod follows the roughness
+    assert "textureLod" not in code(tex_refl=True, sh=SHC, pbr=(1.0, 0.97))   # very rough: the soft sky alone
+    assert "gkRefl" not in code(tex_refl=True, pbr=(1.0, 0.2))             # no panorama data: nothing to look up
+
+
+def test_reflection_map_is_small_and_in_the_panorama_frame():
+    from environment import REFL_TEX_W, reflection_map
+    disp = np.zeros((64, 128, 3), np.float32)
+    disp[:32] = (0.2, 0.4, 0.9)                                              # blue sky above, black below
+    m = reflection_map(disp)
+    assert m.shape == (REFL_TEX_W // 2, REFL_TEX_W, 3) and m.dtype == np.uint8
+    assert m[10, 100, 2] > 200 and m[-10, 100, 2] < 20
+
+
+def test_per_pixel_material_map_replaces_the_fixed_roughness_and_metal():
+    c = code(sh=SHC, pbr=(0.5, 0.5), tex_refl=True, mr=(1.0, 0.8))
+    assert "texture(materialTex, tcoordVCVSOutput)" in c
+    assert "envMR.g" in c and "envMR.b" in c and "float envRough = 0.5" not in c
+    assert "textureLod(gkRefl, envRuv, 5.0000 * envRough)" in c          # the blur level follows the pixel's roughness
+    assert "materialTex" not in code(sh=SHC, pbr=(0.5, 0.5), tex_refl=True)
+    assert "materialTex" not in code(pbr=(0.5, 0.5))
+
+
+def test_phongify_turns_the_srgb_flag_off_on_the_colour_map_so_it_is_not_darkened():
+    import formats
+
+    class Tex:
+        srgb = True
+
+        def UseSRGBColorSpaceOff(self):
+            self.srgb = False
+
+    class Prop:
+        def __init__(self, tex):
+            self.tex = tex
+
+        def GetInterpolation(self):
+            return 3
+
+        def GetMetallic(self):
+            return 0.0
+
+        def GetRoughness(self):
+            return 0.5
+
+        def GetTexture(self, name):
+            return self.tex if name == "albedoTex" else None
+
+        def SetInterpolationToPhong(self):
+            pass
+
+        def SetSpecular(self, v):
+            pass
+
+        def GetAmbient(self):
+            return 0.0
+
+        def SetAmbient(self, v):
+            pass
+
+    class Actor:
+        def __init__(self, tex):
+            self.p, self.tex = Prop(tex), None
+
+        def GetProperty(self):
+            return self.p
+
+        def SetTexture(self, t):
+            self.tex = t
+
+    tex = Tex()
+    a = Actor(tex)
+    formats._phongify(a)
+    assert a.tex is tex and tex.srgb is False
+
+
+def test_reflection_map_only_goes_on_actors_that_have_their_own_texture_or_no_uvs():
+    class PD:
+        def __init__(self, uv): self.uv = uv
+        def GetPointData(self): return self
+        def GetTCoords(self): return self.uv
+    class Mapper:
+        def __init__(self, uv): self.pd = PD(uv)
+        def GetInput(self): return self.pd
+    class Actor:
+        def __init__(self, tex, uv): self.tex, self.m = tex, Mapper(uv)
+        def GetTexture(self): return self.tex
+        def GetMapper(self): return self.m
+    assert formats.takes_reflection_map(Actor(object(), object()))     # has a colour texture
+    assert formats.takes_reflection_map(Actor(None, None))             # no UVs: nothing to multiply
+    assert not formats.takes_reflection_map(Actor(None, object()))     # UVs, no texture: would paint the panorama
+
+
+def test_ground_floor_texture_is_one_colour_fading_to_nothing_at_the_rim():
+    from environment import floor_texture_array, clean_env, ENV_CHECKBOX_KEYS
+    t = floor_texture_array([0.5, 0.25, 1.0], 64)
+    assert t.shape == (64, 64, 4) and t.dtype == np.uint8
+    assert tuple(t[32, 32, :3]) == (128, 64, 255) and t[32, 32, 3] == 255      # solid colour in the middle
+    assert t[0, 0, 3] == 0 and t[0, 32, 3] < 8                                  # nothing at the rim
+    assert (t[..., :3] == t[32, 32, :3]).all()                                  # the colour is the same everywhere
+    assert "floor" in ENV_CHECKBOX_KEYS
+    e = clean_env({"floor": 1, "floor_size": 99})
+    assert e["floor"] is True and e["floor_size"] == 3.0 and clean_env({})["floor"] is False
