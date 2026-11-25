@@ -28,6 +28,10 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Scene tools:** ground grid, field of view, saved camera views, orthographic mode, auto-orbit, screenshots up to 4× with a transparent background.
 
 ### Inspect
+- **Compare 2 Models** Load 2 models into a split viewport with the compare function
+
+<img src="images/compare_2.jpg" alt="Gleek3Deek" width="700">
+
 - **UV inspection** with a layout view that flags overlaps, flipped and out-of-bounds UVs.
 
 <img src="images/heatmap.jpg" alt="Gleek3Deek" width="700">
