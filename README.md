@@ -22,7 +22,7 @@ You have a folder full of models from a dozen sources and you want to *see* them
 
 - **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image) and **Fake AO**, tuned to stay fast on low-end machines.
 
-<img src="images/AmOcc.jpg" alt="Gleek3Deek" width="700">
+<img src="images/ground.jpg" alt="Gleek3Deek" width="700">
 
 - **Scene tools:** ground grid, field of view, saved camera views, orthographic mode, auto-orbit, screenshots up to 4× with a transparent background.
 
