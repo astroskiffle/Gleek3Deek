@@ -78,12 +78,12 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.7.8",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
     "author_alias": "Astroskiffle",
-    "author_note": "",                  # optional extra line, e.g. a website or contact address
+    "author_note": "https://github.com/astroskiffle",                  # optional extra line, e.g. a website or contact address
     # --- legal
     "legal_heading": "Legal",
     "copyright": "Copyright (c) 2026 Mark Billson (Astroskiffle)",
@@ -684,6 +684,8 @@ class Viewer(QWidget):
         self._env_lights_added = False
         self._pano, self._pano_path, self._sky_key = None, "", None
         self._sky_tex = self._skybox = None
+        self._refl_tex, self._refl_for, self._refl_broken = None, None, False   # PBR panorama reflections
+        self._mr_broken = False                                                 # per-pixel metallic-roughness maps
         self._sky_added = False
         self._blob = self._blob_src = None
         self._blob_added = False
@@ -1578,8 +1580,47 @@ class Viewer(QWidget):
         p = self._pano
         if p is not None and p.get("sh") is not None and (self.env.get("pano_light", 0) > 0 or pbr is not None):
             sh = (p["sh"], pano_frame_matrix(self.up_axis, self.env["yaw"]), p.get("sh_rad"))
+        tex = bool(pbr is not None and sh is not None and self._refl_wanted())
+        mr = self._mr_of(a) if pbr is not None else None
         return env_shader_code(self.env, self._sun_frame_dir(), self._env_view_locked, self._ao_wanted(),
-                               sh, self.up_axis, pbr)
+                               sh, self.up_axis, pbr, tex, mr)
+
+    def _mr_of(self, a):
+        """(metallic, roughness) factors when this actor's metallic-roughness map can be read per pixel, else None."""
+        mr = getattr(a, "_pbr_map", None)
+        if mr is None or getattr(self, "_mr_broken", False) or self._env_view_locked:
+            return None
+        pd = _mapper_data(a.GetMapper())
+        try:
+            if pd is None or pd.GetPointData().GetTCoords() is None or a.GetProperty().GetTexture("materialTex") is None:
+                return None
+        except Exception:
+            return None
+        return mr
+
+    # ----- panorama reflections: a small mipmapped copy of the panorama, attached to each actor as 'gkRefl' -----
+    REFL_NAME = "gkRefl"
+
+    def _refl_wanted(self) -> bool:
+        p = self._pano
+        return bool(self._pbr_wanted() and p is not None and p.get("refl") is not None
+                    and not self._env_view_locked and not getattr(self, "_refl_broken", False))
+
+    def _sync_refl_tex(self):
+        """Build (or refresh) the reflection texture when a panorama is loaded. About 0.5 MB, built once per panorama."""
+        p = self._pano
+        if p is None or p.get("refl") is None:
+            return
+        if getattr(self, "_refl_for", None) is p and self._refl_tex is not None:
+            return
+        if self._refl_tex is None:
+            self._refl_tex = vtkTexture()
+            self._refl_tex.InterpolateOn()
+            self._refl_tex.MipmapOn()
+            self._refl_tex.SetColorModeToDirectScalars()
+        self._refl_tex.SetInputData(numpy_to_vtk_image(p["refl"]))
+        self._refl_tex.Modified()
+        self._refl_for = p
 
     def _env_code_all(self) -> str:
         """Every actor's environment shader joined: changes whenever any actor would need a new one."""
@@ -1593,10 +1634,20 @@ class Viewer(QWidget):
         ao = self._ao_wanted()
         if ao:
             self._ao_update()
+        refl = bool(code) and self._refl_wanted()
+        if refl:
+            self._sync_refl_tex()
         for a in self.actors:
             sp = a.GetShaderProperty()
             sp.ClearAllFragmentShaderReplacements()
             self._ao_detach(a)
+            try:
+                if refl and self._refl_tex is not None:
+                    a.GetProperty().SetTexture(self.REFL_NAME, self._refl_tex)
+                else:
+                    a.GetProperty().RemoveTexture(self.REFL_NAME)
+            except Exception:
+                pass
             own = self._current_env_code(a)
             if own:                               # never install an empty replacement: it would delete the lighting
                 sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, own, False)
@@ -1769,6 +1820,12 @@ class Viewer(QWidget):
             self._env_lights_added = False
 
     def _ensure_pano(self):
+        before = self._pano_path
+        self._ensure_pano_inner()
+        if self._pano_path != before and self._env_panel is not None:
+            self._env_panel.set_pano_path(self._pano_path)       # keep the panel's name and greyed sliders right
+
+    def _ensure_pano_inner(self):
         path = self.env.get("path") or ""
         if not path and self._pano_path:
             self._pano, self._pano_path, self._sky_key = None, "", None
@@ -2026,7 +2083,29 @@ class Viewer(QWidget):
             self.rw.Render()
 
     def _env_failed(self):
-        """The environment shader didn't compile: drop PBR first, then Fake AO, then follow the camera instead, then switch off."""
+        """The environment shader didn't compile: drop the panorama reflections first, then PBR, then Fake AO, then follow the camera instead, then switch off."""
+        if self._pbr_wanted() and not self._mr_broken and any(self._mr_of(a) for a in self.actors):
+            self._mr_broken = True
+            after = _log_size()
+            try:
+                self._install_env()
+                self.rw.Render()
+            except Exception:
+                pass
+            if not _shader_error_since(after):
+                self.message.emit("This GPU rejected the per-pixel material maps, so PBR uses one value per material")
+                return
+        if self._refl_wanted():
+            self._refl_broken = True
+            after = _log_size()
+            try:
+                self._install_env()
+                self.rw.Render()
+            except Exception:
+                pass
+            if not _shader_error_since(after):
+                self.message.emit("This GPU rejected the panorama reflections, so PBR uses the soft sky instead")
+                return
         if self._pbr_wanted():
             self._pbr_broken = True
             self.env["pbr"] = False

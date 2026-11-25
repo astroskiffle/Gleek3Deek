@@ -359,11 +359,23 @@ def pano_frame_matrix(up: str, yaw_deg: float) -> np.ndarray:
     return np.stack(cols, 1)
 
 
+REFL_TEX_W = 512                 # the reflection map: 512 x 256, mipmapped (about 0.5 MB on the GPU)
+REFL_MAX_LOD = 5.0               # the blurriest mip used for rough surfaces: 16 x 8 texels
+REFL_SH_FROM = 0.55              # from this roughness the nine-number reflection is blended in ...
+REFL_SH_TO = 0.95                # ... and fully used from here (a plain mip chain is too blocky that blurry)
+
+
+def reflection_map(disp: np.ndarray) -> np.ndarray:
+    """The panorama in its own frame (y up, no yaw) as a small uint8 equirectangular image for the PBR
+    reflection lookup. Only the direction is turned in the shader, so rotating the environment is free."""
+    return reproject_panorama(disp, "Y", 0.0, REFL_TEX_W)
+
+
 def prepare_panorama(lin: np.ndarray) -> dict:
     k = tonemap_exposure(lin)
     disp = tonemap(lin, k).astype(np.float32)
     return {"disp": disp, "info": analyze_panorama(lin, k), "sh": sh_irradiance(disp),
-            "sh_rad": sh_radiance(disp)}
+            "sh_rad": sh_radiance(disp), "refl": reflection_map(disp)}
 
 
 def reproject_panorama(disp: np.ndarray, up: str, yaw_deg: float, out_w: int = SKY_TEX_W) -> np.ndarray:
@@ -428,7 +440,7 @@ PBR_METAL_TINT_GAIN = 1.2        # brightness of the part of the reflection tint
 
 
 def env_shader_code(env: dict, sun_frame, view_locked: bool = False, ao: bool = False,
-                    sh=None, up_axis: str = "Y", pbr=None) -> str:
+                    sh=None, up_axis: str = "Y", pbr=None, tex_refl: bool = False, mr=None) -> str:
     """Hemispheric ambient + one sun, as GLSL for the 'Light::Impl' slot (literals only).
     World-up and the sun come from two VTK scene lights (lightDirectionVC0 / 1), so they stay
     fixed in the world as the camera orbits. view_locked=True is the fallback that keeps them
@@ -436,7 +448,11 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False, ao: bool = 
     (gkAOv: x = crease amount, y = height 0 at the bottom .. 1 at the top of the model).
     sh = (diffuse coefficients, 3x3 world->panorama matrix[, radiance coefficients]).
     pbr = (metallic, roughness) of one material; with env['pbr'] on, the surface gets a GGX sun highlight,
-    Fresnel and a blurred reflection of the sky instead of the plain Phong-like highlight."""
+    Fresnel and a blurred reflection of the sky instead of the plain Phong-like highlight.
+    tex_refl = the actor carries the small reflection map as a texture named 'gkRefl' (VTK declares the sampler):
+    smooth surfaces then reflect the real panorama, and rough ones fade to the nine-number blur.
+    mr = (metallic factor, roughness factor) of a material whose metallic-roughness map ('materialTex', green =
+    roughness, blue = metallic) is read per pixel instead of using the map's average (needs texture coordinates)."""
     amb = env["ambient"]
 
     def col(key):
@@ -490,19 +506,44 @@ def env_shader_code(env: dict, sun_frame, view_locked: bool = False, ao: bool = 
 """
     metal = min(max(float(pbr[0]), 0.0), 1.0)
     rough = min(max(float(pbr[1]), PBR_MIN_ROUGHNESS), 1.0)
-    if sh_refl:
+    pix = mr is not None
+    t_blend = min(max((rough - REFL_SH_FROM) / (REFL_SH_TO - REFL_SH_FROM), 0.0), 1.0)
+    t_blend = t_blend * t_blend * (3.0 - 2.0 * t_blend)
+    if pix and sh_refl and tex_refl:               # roughness changes per pixel: blend and blur level in the shader
+        sh_part = f"max({_sh_expr(sh_gloss(sh[2], 1.0), 'envRF')}, vec3(0.0))"
+        refl = (_to_pano_frame(rot, "envRefV", "envRF")
+                + "  vec2 envRuv = vec2(0.5 + atan(envRF.z, envRF.x) * 0.15915494, "
+                  "0.5 + asin(clamp(envRF.y, -1.0, 1.0)) * 0.31830989);\n"
+                + f"  vec3 envRtex = textureLod(gkRefl, envRuv, {REFL_MAX_LOD:.4f} * envRough).rgb;\n"
+                + f"  vec3 envRefl = mix(envRtex, {sh_part}, smoothstep({REFL_SH_FROM:.4f}, {REFL_SH_TO:.4f}, envRough)) "
+                  f"* {amb:.4f};\n")
+    elif sh_refl and tex_refl and t_blend < 0.999:
+        sh_part = f"max({_sh_expr(sh_gloss(sh[2], rough), 'envRF')}, vec3(0.0))"
+        refl = (_to_pano_frame(rot, "envRefV", "envRF")
+                + "  vec2 envRuv = vec2(0.5 + atan(envRF.z, envRF.x) * 0.15915494, "
+                  "0.5 + asin(clamp(envRF.y, -1.0, 1.0)) * 0.31830989);\n"
+                + f"  vec3 envRtex = textureLod(gkRefl, envRuv, {REFL_MAX_LOD * rough:.4f}).rgb;\n"
+                + (f"  vec3 envRefl = mix(envRtex, {sh_part}, {t_blend:.4f}) * {amb:.4f};\n" if t_blend > 0.001
+                   else f"  vec3 envRefl = envRtex * {amb:.4f};\n"))
+    elif sh_refl:
         refl = (_to_pano_frame(rot, "envRefV", "envRF")
                 + f"  vec3 envRefl = max({_sh_expr(sh_gloss(sh[2], rough), 'envRF')}, vec3(0.0)) * {amb:.4f};\n")
     else:                                         # no panorama: reflect the three-colour sky
         refl = (f"  float envRh = dot(envRefV, envUp);\n"
                 f"  vec3 envRefl = mix(mix({col('equator')}, {col('sky')}, max(envRh, 0.0)), "
                 f"{col('ground')}, max(-envRh, 0.0));\n"
-                f"  envRefl = mix(envRefl, {col('equator')}, {0.6 * rough * rough:.4f});\n")
+                + (f"  envRefl = mix(envRefl, {col('equator')}, 0.6 * envRough * envRough);\n" if pix else
+                   f"  envRefl = mix(envRefl, {col('equator')}, {0.6 * rough * rough:.4f});\n"))
     spec_ao = "  envSpecAO = envAO;\n" if ao else ""
+    if pix:
+        rough_metal = ("  vec3 envMR = texture(materialTex, tcoordVCVSOutput).rgb;\n"
+                       f"  float envRough = clamp({min(max(float(mr[1]), 0.0), 1.0):.4f} * envMR.g, {PBR_MIN_ROUGHNESS:.4f}, 1.0);\n"
+                       f"  float envMetal = clamp({min(max(float(mr[0]), 0.0), 1.0):.4f} * envMR.b, 0.0, 1.0);")
+    else:
+        rough_metal = f"  float envRough = {rough:.4f};\n  float envMetal = {metal:.4f};"
     return head + f"""  float envSpecAO = 1.0;
 {spec_ao}  float envNL = max(dot(envN, envSun), 0.0);
-  float envRough = {rough:.4f};
-  float envMetal = {metal:.4f};
+{rough_metal}
   vec3 envF0 = mix(vec3(0.04), diffuseColor, envMetal);
   vec3 envDiff = diffuseColor * (1.0 - envMetal);
   vec3 envV = vec3(0.0, 0.0, 1.0);
@@ -664,6 +705,14 @@ class EnvironmentPanel(QWidget):
         if pano_path is not None:
             self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
                                     "No panorama loaded: using the three colours below.")
+
+    def set_pano_path(self, pano_path: str):
+        """Update only the panorama name and what depends on it (the panorama can load after the panel was built,
+        for example when it is restored from the saved settings)."""
+        self._has_pano = bool(pano_path)
+        self._sync_enabled()
+        self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
+                                "No panorama loaded: using the three colours below.")
 
     def _builtin_chosen(self, index: int):
         if index > 0:

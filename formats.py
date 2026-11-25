@@ -1030,8 +1030,17 @@ def _phongify(a: vtkActor):
     p = a.GetProperty()
     if p.GetInterpolation() == 3:                 # VTK_PBR
         a._pbr = pbr_factors(p)
+        if p.GetTexture("materialTex") is not None:           # the viewer can read this map per pixel
+            try:
+                a._pbr_map = (float(p.GetMetallic()), float(p.GetRoughness()))
+            except Exception:
+                pass
         tex = p.GetTexture("albedoTex")
         if tex is not None:
+            try:                                      # glTF colour maps are flagged sRGB for VTK's own PBR, which converts
+                tex.UseSRGBColorSpaceOff()            # back for the screen; plain Phong does not, so the image came out dark
+            except Exception:
+                pass
             a.SetTexture(tex)
         p.SetInterpolationToPhong()
         p.SetSpecular(0.2)
