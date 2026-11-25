@@ -18,9 +18,6 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Opens instantly** on double-click, with the camera fitted to the model. Previous/next browsing with the arrow keys.
 - **Material views:** albedo, normals, texture inspector with channel previews, and a parts list to hide or isolate pieces.
 - **MatCap shading** with five ZBrush-style procedural materials, a live MatCap editor and **split compare** against normal shading.
-
-<img src="images/matcap_laliqueGlassGirl.jpg" alt="Gleek3Deek" width="700">
-
 - **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image) and **Fake AO**, tuned to stay fast on low-end machines.
 
 <img src="images/ground.jpg" alt="Gleek3Deek" width="700">
