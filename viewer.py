@@ -52,7 +52,7 @@ except Exception:  # pragma: no cover
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
-from formats import _face_count, _log_size, _mapper_data, _shader_error_since, human_size
+from formats import _face_count, _log_size, _mapper_data, _shader_error_since, human_size, takes_reflection_map
 from analysis import (
     EXPORT_FORMATS, LOD_LEVELS, SHEET_BACKGROUNDS, SHEET_CELLS, SHEET_ENV, SHEET_LAYOUTS, UNITS,
     UV_COLOR_OK, UV_HEAT_DEFAULTS, UV_ISLAND_TESTS, UV_TESTS, _HEAT_STOPS, _STRETCH_STOPS, angle_at,
@@ -63,7 +63,7 @@ from analysis import (
     write_mesh)
 from panels import ExportDialog, InfoPanel, MaterialsPanel, ScenePanel, VIEW_CHANNELS, _rgb_to_qimage
 from environment import (
-    ENV_BUILTIN_PRESETS, ENV_DEFAULTS, EnvironmentPanel, SKY_TEX_W, blob_texture_array, clean_env,
+    ENV_BUILTIN_PRESETS, ENV_DEFAULTS, EnvironmentPanel, SKY_TEX_W, blob_texture_array, clean_env, floor_texture_array,
     dir_to_azel, env_shader_code, frame_to_world, numpy_to_vtk_image, pano_frame_matrix,
     prepare_panorama, read_panorama, reproject_panorama, sun_dir_frame)
 from gallery import ORIENT, _setting_int
@@ -78,7 +78,7 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.7.8",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.7.8.5",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
@@ -689,6 +689,8 @@ class Viewer(QWidget):
         self._sky_added = False
         self._blob = self._blob_src = None
         self._blob_added = False
+        self._floor = self._floor_src = self._floor_tex = None      # the ground floor disc
+        self._floor_added, self._floor_key = False, None
         self._bg_from_env = False
         self._light_drag = None
         self._preset_idx = -1
@@ -991,6 +993,7 @@ class Viewer(QWidget):
         self.actors = []
         self.overlay.hide()
         self._remove_shadow()
+        self._remove_floor()
         self._remove_ground()
         self._remove_outline()
         self._sync_env_lights()
@@ -1509,13 +1512,13 @@ class Viewer(QWidget):
                  "top": (u, -f), "bottom": (-u, f), "iso": (f + r + u, u)}
         d, up = views.get(name, views["front"])
         d = d / np.linalg.norm(d)
-        self.renderer.ResetCamera()                      # recentre on the model
+        self._reset_camera()                             # recentre on the model
         cam = self.renderer.GetActiveCamera()
         fp = np.array(cam.GetFocalPoint())
         dist = cam.GetDistance()
         cam.SetPosition(*(fp + d * dist))
         cam.SetViewUp(*up)
-        self.renderer.ResetCamera()
+        self._reset_camera()
         cam.Zoom(1.05)
         self.renderer.ResetCameraClippingRange()
         self.rw.Render()
@@ -1580,7 +1583,7 @@ class Viewer(QWidget):
         p = self._pano
         if p is not None and p.get("sh") is not None and (self.env.get("pano_light", 0) > 0 or pbr is not None):
             sh = (p["sh"], pano_frame_matrix(self.up_axis, self.env["yaw"]), p.get("sh_rad"))
-        tex = bool(pbr is not None and sh is not None and self._refl_wanted())
+        tex = bool(pbr is not None and sh is not None and self._refl_wanted() and self._takes_refl(a))
         mr = self._mr_of(a) if pbr is not None else None
         return env_shader_code(self.env, self._sun_frame_dir(), self._env_view_locked, self._ao_wanted(),
                                sh, self.up_axis, pbr, tex, mr)
@@ -1605,6 +1608,10 @@ class Viewer(QWidget):
         p = self._pano
         return bool(self._pbr_wanted() and p is not None and p.get("refl") is not None
                     and not self._env_view_locked and not getattr(self, "_refl_broken", False))
+
+    @staticmethod
+    def _takes_refl(a) -> bool:
+        return a is None or takes_reflection_map(a)
 
     def _sync_refl_tex(self):
         """Build (or refresh) the reflection texture when a panorama is loaded. About 0.5 MB, built once per panorama."""
@@ -1642,7 +1649,7 @@ class Viewer(QWidget):
             sp.ClearAllFragmentShaderReplacements()
             self._ao_detach(a)
             try:
-                if refl and self._refl_tex is not None:
+                if refl and self._refl_tex is not None and self._takes_refl(a):
                     a.GetProperty().SetTexture(self.REFL_NAME, self._refl_tex)
                 else:
                     a.GetProperty().RemoveTexture(self.REFL_NAME)
@@ -1923,6 +1930,80 @@ class Viewer(QWidget):
             self.renderer.AddActor(self._blob)
             self._blob_added = True
 
+    # ----- ground floor: a flat disc in the panorama's average floor colour, fading out at the rim -----
+    def _reset_camera(self):
+        """ResetCamera frames the model only: the big floor disc is left out of the framing (it still counts for the
+        clipping range, so it is not cut off)."""
+        f = self._floor if self._floor_added else None
+        if f is not None:
+            f.VisibilityOff()
+        try:
+            self.renderer.ResetCamera()
+        finally:
+            if f is not None:
+                f.VisibilityOn()
+
+    def _remove_floor(self):
+        if self._floor_added:
+            self.renderer.RemoveActor(self._floor)
+            self._floor_added = False
+
+    def _floor_color(self):
+        info = (self._pano or {}).get("info") or {}
+        c = info.get("floor") if self._pano is not None else None
+        return [float(x) for x in (c if c is not None else self.env["ground"])]
+
+    def _sync_floor(self):
+        if not (self._env_on("floor") and self.actors):
+            self._remove_floor()
+            return
+        lo, hi = self._model_bounds()
+        ext = np.maximum(hi - lo, 1e-9)
+        z_up = self.up_axis == "Z"
+        h0, h1, vax = (0, 1, 2) if z_up else (0, 2, 1)
+        big = float(ext.max())
+        r = 3.0 * big * float(self.env.get("floor_size", 1.0))
+        c0, c1 = (lo[h0] + hi[h0]) / 2, (lo[h1] + hi[h1]) / 2
+        g = lo[vax] - 0.006 * big                        # below the grid and the shadow blob
+        if self._floor is None:
+            self._floor_src = vtkPlaneSource()
+            m = vtkPolyDataMapper()
+            m.SetInputConnection(self._floor_src.GetOutputPort())
+            self._floor_tex = vtkTexture()
+            self._floor_tex.SetColorModeToDirectScalars()
+            self._floor_tex.InterpolateOn()
+            self._floor_tex.RepeatOff()
+            self._floor_tex.EdgeClampOn()
+            self._floor = vtkActor()
+            self._floor.SetMapper(m)
+            self._floor.SetTexture(self._floor_tex)
+            self._floor.GetProperty().LightingOff()
+            self._floor.GetProperty().BackfaceCullingOn()    # invisible from below
+            self._floor.SetPickable(False)
+        col = tuple(round(x, 3) for x in self._floor_color())
+        if col != self._floor_key:
+            self._floor_tex.SetInputData(numpy_to_vtk_image(floor_texture_array(col)))
+            self._floor_tex.Modified()
+            self._floor_key = col
+        if z_up:
+            o, p1, p2 = (c0 - r, c1 - r, g), (c0 + r, c1 - r, g), (c0 - r, c1 + r, g)
+        else:
+            o, p1, p2 = (c0 - r, g, c1 - r), (c0 - r, g, c1 + r), (c0 + r, g, c1 - r)
+        self._floor_src.SetOrigin(*o)
+        self._floor_src.SetPoint1(*p1)
+        self._floor_src.SetPoint2(*p2)
+        self._floor_src.Update()
+        if not self._floor_added:
+            # translucent props draw in the order they were added: the floor goes first, under the grid and the shadow
+            again = [(a, f) for a, f in ((self._grid, "_grid_added"), (self._blob, "_blob_added"))
+                     if a is not None and getattr(self, f)]
+            for a, _f in again:
+                self.renderer.RemoveActor(a)
+            self.renderer.AddActor(self._floor)
+            self._floor_added = True
+            for a, _f in again:
+                self.renderer.AddActor(a)
+
     def _sync_background(self):
         """A colour-only environment can tint the background with a sky gradient."""
         if self._env_on("gradient_bg") and not self._sky_added:
@@ -2067,6 +2148,7 @@ class Viewer(QWidget):
             self._ensure_pano()
         self._sync_skybox()
         self._sync_background()
+        self._sync_floor()
         self._sync_shadow()
         self._sync_ground()
         self._sync_env_lights()
@@ -2358,7 +2440,7 @@ class Viewer(QWidget):
         """F: re-centre and re-fit the model without changing the viewing direction."""
         if not self.actors:
             return
-        self.renderer.ResetCamera()
+        self._reset_camera()
         self.renderer.GetActiveCamera().Zoom(1.05)
         self.renderer.ResetCameraClippingRange()
         self.rw.Render()
@@ -2439,8 +2521,9 @@ class Viewer(QWidget):
         if self._ao_live():
             self._ao_refresh_arrays()
         self._sync_ground()
+        self._sync_floor()
         self._sync_shadow()
-        self.renderer.ResetCamera()
+        self._reset_camera()
         self.renderer.ResetCameraClippingRange()
         self.rw.Render()
 
@@ -2606,6 +2689,7 @@ class Viewer(QWidget):
     def _after_visibility(self):
         self._section_sync_vis()
         self._sync_ground()
+        self._sync_floor()
         self._sync_shadow()
         self._update_info()
         self.rw.Render()

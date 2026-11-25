@@ -34,11 +34,12 @@ ENV_DEFAULTS = {
     "highlight": 0.25, "ambient": 1.0, "yaw": 0.0, "shadow_opacity": 0.5, "shadow_size": 1.0,
     "exposure": 0.0, "tonemap": "none", "sky_blur": 0.0, "gradient_bg": False,
     "fake_ao": False, "ao_strength": 0.6, "pano_light": 0.0, "pbr": False,
+    "floor": False, "floor_size": 1.0,
 }
 
 
 ENV_FLAGS = [("enabled", "Environment on"), ("skybox", "Skybox"), ("lighting", "Lighting"),
-             ("shadow", "Blob shadow"), ("gradient_bg", "Sky gradient"), ("fake_ao", "Fake AO"),
+             ("shadow", "Blob shadow"), ("floor", "Ground floor"), ("gradient_bg", "Sky gradient"), ("fake_ao", "Fake AO"),
              ("pbr", "PBR materials")]
 # "lighting" and "pbr" stay separate saved settings, but the panel shows them as one choice
 SURFACE_MODES = [("off", "Off (plain VTK shading)"), ("standard", "Standard"), ("pbr", "PBR materials")]
@@ -74,6 +75,7 @@ ENV_SLIDERS = [
     ("yaw", "Rotate environment °", -180, 180, 1, 0),
     ("shadow_opacity", "Shadow opacity", 0.0, 1.0, 0.01, 2),
     ("shadow_size", "Shadow size", 0.5, 2.0, 0.05, 2),
+    ("floor_size", "Floor size", 0.25, 3.0, 0.05, 2),
     ("exposure", "Exposure (stops)", -3.0, 3.0, 0.1, 1),
     ("sky_blur", "Sky blur", 0.0, 1.0, 0.01, 2),
     ("ao_strength", "Fake AO strength", 0.0, 1.0, 0.01, 2),
@@ -299,7 +301,7 @@ def analyze_panorama(lin: np.ndarray, k) -> dict:
     col = 0.8 * col + 0.2
     mean_lum = float((lum * cosw[:, None]).sum() / (cosw.sum() * w))
     ratio = lmax / max(mean_lum, 1e-6)
-    return {"sky": band(30, 90), "equator": band(-15, 15), "ground": band(-90, -30),
+    return {"sky": band(30, 90), "equator": band(-15, 15), "ground": band(-90, -30), "floor": band(-45, -8),
             "sun_dir": sun, "sun_color": [float(x) for x in col],
             "sun_int": float(np.clip(0.35 + 0.13 * math.log2(max(ratio, 1.0)), 0.35, 1.2))}
 
@@ -415,6 +417,18 @@ def blob_texture_array(n: int = 128) -> np.ndarray:
     alpha = (1.0 - np.clip(r, 0.0, 1.0)) ** 2
     out = np.zeros((n, n, 4), np.uint8)
     out[..., 3] = (alpha * 255).astype(np.uint8)
+    return out
+
+
+def floor_texture_array(color, n: int = 256) -> np.ndarray:
+    """The ground floor: one flat colour (0..1 RGB), solid in the middle and fading smoothly to nothing at the rim."""
+    u = np.linspace(-1.0, 1.0, n)
+    r = np.hypot(*np.meshgrid(u, u))
+    t = np.clip((r - 0.25) / 0.75, 0.0, 1.0)
+    alpha = 1.0 - t * t * (3.0 - 2.0 * t)                  # smoothstep: no visible ring where the fade starts
+    out = np.empty((n, n, 4), np.uint8)
+    out[..., :3] = (np.clip(np.asarray(color, float), 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    out[..., 3] = (alpha * 255.0 + 0.5).astype(np.uint8)
     return out
 
 
@@ -755,6 +769,10 @@ class EnvironmentPanel(QWidget):
         lit = bool(self.env.get("lighting"))
         self._checks["fake_ao"].setEnabled(lit)
         self._checks["fake_ao"].setToolTip("" if lit else "Needs Surface lighting (Standard or PBR)")
+        fl = bool(self.env.get("floor"))
+        for w in (self._sliders["floor_size"][0], self._labels["floor_size"], self._row_labels["floor_size"]):
+            w.setEnabled(fl)
+            w.setToolTip("" if fl else "Needs Ground floor ticked")
         for key, on, tip in (
                 ("pano_light", self._has_pano and lit,
                  "Needs a loaded panorama (Load panorama…)" if lit else "Needs Surface lighting (Standard or PBR)"),

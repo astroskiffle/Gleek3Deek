@@ -1024,6 +1024,20 @@ def pbr_factors(p):
     return (min(max(metal, 0.0), 1.0), min(max(rough, 0.0), 1.0))
 
 
+def takes_reflection_map(a) -> bool:
+    """True if the viewer may attach its panorama reflection map to this actor as a named texture.
+    VTK multiplies the colour by an actor's first texture when the mesh has texture coordinates; with no colour texture
+    of its own that would be the reflection map, painting the panorama across the surface by UV (a plain OBJ or a glTF
+    material with only a colour factor). Such actors keep the soft sky reflection instead."""
+    try:
+        if a.GetTexture() is not None:
+            return True
+        pd = _mapper_data(a.GetMapper())
+        return pd is None or pd.GetPointData().GetTCoords() is None
+    except Exception:
+        return False
+
+
 def _phongify(a: vtkActor):
     """PBR needs image-based lighting to look right; use Phong but keep the albedo texture.
     The metallic and roughness values are kept on the actor (a._pbr) for the viewer's PBR option."""
