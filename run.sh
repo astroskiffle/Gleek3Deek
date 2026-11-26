@@ -25,4 +25,10 @@ if [ ! -f ".venv/.gleek_installed" ]; then
     touch .venv/.gleek_installed
 fi
 
+# On a Wayland desktop (the Ubuntu default) Qt's Wayland backend often fails with VTK's OpenGL window, so use X11
+# unless the user has chosen a platform themselves.
+if [ "$(uname -s)" = "Linux" ] && [ -z "${QT_QPA_PLATFORM:-}" ] && [ "${XDG_SESSION_TYPE:-}" = "wayland" ]; then
+    export QT_QPA_PLATFORM=xcb
+fi
+
 exec python main.py "$@"
