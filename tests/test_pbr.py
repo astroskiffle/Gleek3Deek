@@ -304,3 +304,14 @@ def test_ground_floor_texture_is_one_colour_fading_to_nothing_at_the_rim():
     assert "floor" in ENV_CHECKBOX_KEYS
     e = clean_env({"floor": 1, "floor_size": 99})
     assert e["floor"] is True and e["floor_size"] == 3.0 and clean_env({})["floor"] is False
+
+
+def test_panorama_thumbnail_is_a_small_smooth_rgb_preview():
+    from environment import panorama_thumbnail
+    disp = np.zeros((512, 1024, 3), np.float32)
+    disp[:256] = [1.0, 0.5, 0.0]                  # top half orange, bottom half black
+    t = panorama_thumbnail(disp, 64)
+    assert t.shape == (32, 64, 3) and t.dtype == np.uint8
+    assert tuple(t[2, 10]) == (255, 128, 0) and tuple(t[30, 10]) == (0, 0, 0)
+    odd = panorama_thumbnail(np.ones((37, 101, 3), np.float32), 64)         # sizes that do not divide evenly
+    assert odd.shape == (32, 64, 3) and (odd == 255).all()
