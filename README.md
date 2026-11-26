@@ -60,7 +60,7 @@ Go to the **[Releases](https://github.com/astroskiffle/Gleek3Deek/releases)** pa
 You need **Python 3.10 – 3.12**.
 
 **Windows:** double-click `run.bat`  
-**macOS / Linux:** `./run.sh`
+**macOS / Linux:** `./run.sh` (on a Wayland desktop the script switches Qt to X11 for you; to force a platform yourself, set `QT_QPA_PLATFORM`)
 
 On first launch the script creates a private `.venv`, installs the dependencies and starts the app. You can also pass a folder or a model file, for example `./run.sh path/to/models`. Manual install steps are in the [guide](GUIDE.md#quick-start-from-source).
 
