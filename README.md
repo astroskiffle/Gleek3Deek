@@ -30,6 +30,9 @@ You have a folder full of models from a dozen sources and you want to *see* them
 
 ### Inspect
 - **UV inspection** with a layout view that flags overlaps, flipped and out-of-bounds UVs.
+
+![Gleek3Deek uv](images/test_uv.jpg)
+
 - **Texture audit and mesh diagnostics:** oversized or non-power-of-two textures, holes, non-manifold edges, flipped faces and more.
 - **Measurements and cross-section** for checking real-world scale.
 - **LOD preview** to see how a model looks at a fraction of its faces.
