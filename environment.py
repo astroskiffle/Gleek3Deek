@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QFileDialog, QFormLayout, QGridLayout, QMessageBox, QPushButton,
     QSlider)
@@ -411,6 +411,21 @@ def numpy_to_vtk_image(arr: np.ndarray):
     return img
 
 
+PANO_THUMB_W = 224
+
+
+def panorama_thumbnail(disp: np.ndarray, w: int = PANO_THUMB_W) -> np.ndarray:
+    """A small uint8 RGB preview (w x w/2) of the tone-mapped panorama: averages blocks of pixels, so it stays smooth."""
+    h, wd = disp.shape[:2]
+    oh = max(1, w // 2)
+    ys = np.linspace(0, h, oh + 1).astype(int)
+    xs = np.linspace(0, wd, w + 1).astype(int)
+    out = np.empty((oh, w, 3), np.float32)
+    rows = np.add.reduceat(disp[..., :3].astype(np.float32), ys[:-1], axis=0) / np.maximum(np.diff(ys), 1)[:, None, None]
+    out[:] = np.add.reduceat(rows, xs[:-1], axis=1) / np.maximum(np.diff(xs), 1)[None, :, None]
+    return np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)
+
+
 def blob_texture_array(n: int = 128) -> np.ndarray:
     u = np.linspace(-1.0, 1.0, n)
     r = np.hypot(*np.meshgrid(u, u))
@@ -599,8 +614,9 @@ class EnvironmentPanel(QWidget):
     preset_loaded = Signal(object, str, str)      # env, missing panorama name, preset name
     builtin_requested = Signal(str)
 
-    def __init__(self, parent, env: dict, pano_path: str = ""):
+    def __init__(self, parent, env: dict, pano_path: str = "", preview=None):
         super().__init__(parent)
+        self._preview = preview                 # () -> small RGB array of the loaded panorama, or None
         self.setWindowTitle("Environment")
         self.setMinimumWidth(300)
         self.settings = QSettings("Gleek3Deek", "Gleek3Deek")
@@ -633,6 +649,11 @@ class EnvironmentPanel(QWidget):
             b.clicked.connect(fn)
             row.addWidget(b)
         root.addLayout(row)
+        self.pano_thumb = QLabel("")
+        self.pano_thumb.setFixedSize(PANO_THUMB_W, PANO_THUMB_W // 2)
+        self.pano_thumb.setStyleSheet("border:1px solid #2a3140; background:#10141a;")
+        self.pano_thumb.hide()
+        root.addWidget(self.pano_thumb, 0, Qt.AlignLeft)
         self.pano_label = QLabel("")
         self.pano_label.setObjectName("barLabel")
         self.pano_label.setWordWrap(True)
@@ -719,6 +740,25 @@ class EnvironmentPanel(QWidget):
         if pano_path is not None:
             self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
                                     "No panorama loaded: using the three colours below.")
+            self._refresh_thumb(pano_path)
+
+    def _refresh_thumb(self, pano_path: str):
+        """Show a small preview of the loaded panorama above its file name (hidden when there is none)."""
+        arr = None
+        if pano_path and self._preview is not None:
+            try:
+                arr = self._preview()
+            except Exception:
+                arr = None
+        if arr is None:
+            self.pano_thumb.hide()
+            self.pano_thumb.setToolTip("")
+            return
+        arr = np.ascontiguousarray(arr)
+        h, w = arr.shape[:2]
+        self.pano_thumb.setPixmap(QPixmap.fromImage(QImage(arr.data, w, h, 3 * w, QImage.Format_RGB888).copy()))
+        self.pano_thumb.setToolTip(str(pano_path))
+        self.pano_thumb.show()
 
     def set_pano_path(self, pano_path: str):
         """Update only the panorama name and what depends on it (the panorama can load after the panel was built,
@@ -727,6 +767,7 @@ class EnvironmentPanel(QWidget):
         self._sync_enabled()
         self.pano_label.setText(f"Panorama: {Path(pano_path).name}" if pano_path else
                                 "No panorama loaded: using the three colours below.")
+        self._refresh_thumb(pano_path)
 
     def _builtin_chosen(self, index: int):
         if index > 0:
