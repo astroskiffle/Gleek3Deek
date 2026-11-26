@@ -24,6 +24,9 @@ You have a folder full of models from a dozen sources and you want to *see* them
 ### View
 - **Opens instantly** on double-click, with the camera fitted to the model. Previous/next browsing with the arrow keys.
 - **Material views:** albedo, normals, texture inspector with channel previews, and a parts list to hide or isolate pieces.
+
+![Gleek3Deek environmental](images/environmental.jpg)
+
 - **MatCap shading** with five ZBrush-style procedural materials, a live MatCap editor and **split compare** against normal shading.
 - **Environment lighting:** panorama sky, sun, soft shadow, **panorama irradiance** (diffuse light from the sky image), **PBR materials** (metallic/roughness look; glossy surfaces reflect the loaded panorama) and **Fake AO**, tuned to stay fast on low-end machines.
 - **Scene tools:** ground grid, field of view, saved camera views, orthographic mode, auto-orbit, screenshots up to 4× with a transparent background.
