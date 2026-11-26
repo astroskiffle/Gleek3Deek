@@ -468,7 +468,7 @@ def _fit_long_side(arr, target: int):
                      Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_RGB888)
     ow, oh = img.width(), img.height()
     buf = np.frombuffer(img.constBits(), np.uint8).reshape(oh, img.bytesPerLine())[:, :3 * ow]
-    return np.ascontiguousarray(buf.reshape(oh, ow, 3))
+    return buf.reshape(oh, ow, 3).copy()          # copy: buf views the QImage's memory, freed on return
 
 
 class ControlMapsDialog(QDialog):
@@ -4057,14 +4057,23 @@ class Viewer(QWidget):
             vm = cam.GetViewTransformMatrix()
             near, far = depth_range(corners, [[vm.GetElement(r, c) for c in range(4)] for r in range(4)])
 
+            use_cut = {id(a): bool(opt.get("cutout", True)) and _tex_has_alpha(a) for a in self.actors}
+
             def run(code, bg):
-                for a in self.actors:
-                    sp = a.GetShaderProperty()
-                    sp.ClearAllFragmentShaderReplacements()
-                    sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
-                    sp.AddFragmentShaderReplacement("//VTK::TCoord::Impl", True,
-                                                    cutout_code(bool(opt.get("cutout", True)) and _tex_has_alpha(a)), False)
-                arr, _s = self._grab_pass(bg, scale)
+                for attempt in (0, 1):
+                    pos = _log_size()
+                    for a in self.actors:
+                        sp = a.GetShaderProperty()
+                        sp.ClearAllFragmentShaderReplacements()
+                        sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
+                        sp.AddFragmentShaderReplacement("//VTK::TCoord::Impl", True,
+                                                        cutout_code(use_cut[id(a)]), False)
+                    arr, _s = self._grab_pass(bg, scale)
+                    # a texture VTK did not declare as texture_0 (PBR / property textures) -> retry without cut-outs
+                    if attempt == 0 and any(use_cut.values()) and _shader_error_since(pos):
+                        use_cut.update({k: False for k in use_cut})
+                        continue
+                    break
                 if arr is None:
                     raise RuntimeError("the viewport could not be captured")
                 return _fit_long_side(arr, target)

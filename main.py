@@ -2231,6 +2231,9 @@ def _install_crash_handler():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "render":
+        from render_cli import run as render_run          # image output without the interface
+        sys.exit(render_run(sys.argv[2:]))
     if any(a.startswith("-") and not a.startswith("-psn") for a in sys.argv[1:]):
         from cli import run                       # any option selects the read-only command-line mode
         sys.exit(run(sys.argv[1:]))
