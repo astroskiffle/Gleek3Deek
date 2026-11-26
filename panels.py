@@ -12,11 +12,28 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QScrollArea, QDoubleSpinBox, QFileDialog, QMessageBox, QSpinBox
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QMenu
+from PySide6.QtCore import Signal
 from formats import _cells, human_size
 from analysis import (
     EXPORT_FORMATS, LOD_LEVELS, MESH_TESTS, UNITS, UV_HEAT_DEFAULTS, UV_HEAT_MODES, UV_ISLAND_TESTS,
     UV_ISLAND_MAX_TRIS, UV_TESTS, _fmt_len, collect_textures, fmt_num, material_summary, texture_channel_rgb, texture_facts,
     texture_fingerprint, texture_to_array, unit_scale)
+
+
+class PartsList(QListWidget):
+    """The parts list: Shift/Ctrl-click select several parts; Space (or Enter) shows or hides all the selected ones."""
+    toggle_selected = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter) and self.selectedItems():
+            self.toggle_selected.emit()
+            return
+        super().keyPressEvent(e)
 
 
 class InfoPanel(QFrame):
@@ -71,7 +88,8 @@ class InfoPanel(QFrame):
 
 
 class ExportDialog(QDialog):
-    def __init__(self, parent, name: str, tris: int, fmt_idx: int, simplify: bool, keep_pct: int):
+    def __init__(self, parent, name: str, tris: int, fmt_idx: int, simplify: bool, keep_pct: int,
+                 materials: bool = True):
         super().__init__(parent)
         self.setWindowTitle("Export / convert")
         self.setModal(True)
@@ -88,9 +106,14 @@ class ExportDialog(QDialog):
         self.fmt.setCurrentIndex(max(0, min(fmt_idx, len(EXPORT_FORMATS) - 1)))
         form.addRow("Format", self.fmt)
         root.addLayout(form)
+        self.mats = QCheckBox("Write materials and textures (.mtl and PNG images)")
+        self.mats.setChecked(materials)
+        root.addWidget(self.mats)
+        self.fmt.currentIndexChanged.connect(self._refresh)
         self.simp = QCheckBox("Simplify mesh (reduce the number of faces)")
         self.simp.setChecked(simplify)
         self.simp.toggled.connect(self._refresh)
+        self.mats.toggled.connect(self._refresh)
         root.addWidget(self.simp)
         row = QHBoxLayout()
         self.slider = QSlider(Qt.Horizontal)
@@ -106,8 +129,7 @@ class ExportDialog(QDialog):
         self.warn.setObjectName("barLabel")
         self.warn.setWordWrap(True)
         root.addWidget(self.warn)
-        note = QLabel("Exports the geometry as it is shown, including its placement; hidden parts are left out. "
-                      "Materials and textures are not written; vertex colours are kept in PLY files.")
+        self.note = note = QLabel("")
         note.setObjectName("barLabel")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -125,9 +147,38 @@ class ExportDialog(QDialog):
 
     def _refresh(self, *_):
         on, pct = self.simp.isChecked(), self.slider.value()
-        self.slider.setEnabled(on)
+        self.slider.setEnabled(on and EXPORT_FORMATS[self.fmt.currentIndex()][2] != "glb")
         self.keep_label.setText(f"Keep {pct}%  (about {int(self.tris * pct / 100):,} triangles)"
                                 if on else "Keeps every face")
+        kind = EXPORT_FORMATS[self.fmt.currentIndex()][2]
+        is_glb = kind == "glb"
+        is_obj = kind == "obj"
+        self.simp.setEnabled(not is_glb)
+        if is_glb and self.simp.isChecked():
+            self.simp.setChecked(False)
+            return
+        on = on and not is_glb
+        is_ply = EXPORT_FORMATS[self.fmt.currentIndex()][2] == "ply"
+        self.mats.setEnabled((is_obj or is_glb) and not on)
+        self.mats.setText("Write materials and textures (embedded in the file)" if is_glb
+                          else "Write materials and textures (.mtl and PNG images)")
+        if is_glb:
+            txt = ("GLB keeps each part as its own mesh with UVs, normals and vertex colours, and embeds "
+                   "the textures (Base Color, Metallic-Roughness, Normal, Emissive). Polygons are split into "
+                   "triangles and loose edges are left out. Vertex groups are not stored, because the viewer "
+                   "does not load skinning data.")
+        elif is_obj and not on:
+            txt = ("OBJ keeps each part as its own object, with quads and n-gons, UVs, normals and vertex colours. "
+                   + ("The .mtl file and a textures folder (Base Color, Roughness, Metallic, Normal, Emissive) "
+                      "are written beside it. " if self.mats.isChecked() else "")
+                   + "Vertex groups cannot be stored in OBJ.")
+        elif is_obj:
+            txt = "Simplifying merges everything into one triangle mesh, so parts, materials and UVs seams are not kept."
+        elif is_ply:
+            txt = "PLY keeps vertex colours and the face layout without simplifying. Materials are not stored in PLY."
+        else:
+            txt = "STL stores triangle geometry only (no colours, UVs or materials)."
+        self.note.setText("Exports the geometry as it is shown, including its placement; hidden parts are left out. " + txt)
         msgs = []
         if on and self.tris > 500_000:
             msgs.append("This is a large model, so simplifying may take a while.")
@@ -138,6 +189,9 @@ class ExportDialog(QDialog):
     def values(self):
         """(format index, fraction of faces to keep or None)."""
         return self.fmt.currentIndex(), (self.slider.value() / 100.0 if self.simp.isChecked() else None)
+
+    def write_materials(self) -> bool:
+        return self.mats.isEnabled() and self.mats.isChecked()
 
 
 SHOT_SCALES = [1, 2, 4]
@@ -335,18 +389,25 @@ class MaterialsPanel(QWidget):
         root.addWidget(self.tabs, 1)
         pw = QWidget()
         pl = QVBoxLayout(pw)
-        self.parts = QListWidget()
+        self.parts = PartsList()
         self.parts.itemChanged.connect(self._part_toggled)
-        self.parts.currentRowChanged.connect(viewer.highlight_part)
+        self.parts.itemSelectionChanged.connect(lambda: viewer.highlight_parts(self._selected_rows()))
+        self.parts.toggle_selected.connect(self._toggle_selected)
+        self.parts.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.parts.customContextMenuRequested.connect(self._parts_menu)
         pl.addWidget(self.parts, 1)
-        row = QHBoxLayout()
-        for text, fn in (("Show all", self._show_all), ("Invert", self._invert), ("Isolate selected", self._isolate)):
-            b = QPushButton(text)
-            b.clicked.connect(fn)
-            row.addWidget(b)
-        pl.addLayout(row)
-        hint = QLabel("Untick a part to hide it. Selecting a part outlines it in the view. "
-                      "Hidden parts are left out of exports.")
+        for buttons in ((("Show all", self._show_all), ("Invert", self._invert), ("Isolate selected", self._isolate)),
+                        (("Show selected", lambda: self._set_selected(True)),
+                         ("Hide selected", lambda: self._set_selected(False)))):
+            row = QHBoxLayout()
+            for text, fn in buttons:
+                b = QPushButton(text)
+                b.clicked.connect(fn)
+                row.addWidget(b)
+            pl.addLayout(row)
+        hint = QLabel("Untick a part to hide it. Click a part to outline it in the view; Shift-click or Ctrl-click "
+                      "selects several (Ctrl+A selects all), and Space or the buttons show or hide the whole "
+                      "selection. Hidden parts are left out of exports.")
         hint.setObjectName("barLabel")
         hint.setWordWrap(True)
         pl.addWidget(hint)
@@ -909,8 +970,43 @@ class MaterialsPanel(QWidget):
         else:
             self.lod_table.setText("")
 
+    def _selected_rows(self) -> list:
+        return sorted(self.parts.row(i) for i in self.parts.selectedItems())
+
     def _part_toggled(self, item):
-        self.viewer.set_part_visible(self.parts.row(item), item.checkState() == Qt.Checked)
+        on = item.checkState() == Qt.Checked
+        rows = self._selected_rows()
+        if len(rows) > 1 and self.parts.row(item) in rows:     # ticking one of several selected parts ticks them all
+            self._set_selected(on)
+            return
+        self.viewer.set_part_visible(self.parts.row(item), on)
+
+    def _set_selected(self, on: bool):
+        rows = self._selected_rows()
+        if not rows:
+            self.viewer.message.emit("Select one or more parts first (Shift-click or Ctrl-click)")
+            return
+        self.parts.blockSignals(True)
+        for r in rows:
+            self.parts.item(r).setCheckState(Qt.Checked if on else Qt.Unchecked)
+        self.parts.blockSignals(False)
+        self.viewer.set_parts_visible(rows, on)
+
+    def _toggle_selected(self):
+        """Space: if every selected part is showing, hide them; otherwise show them all."""
+        rows = self._selected_rows()
+        self._set_selected(not all(self.parts.item(r).checkState() == Qt.Checked for r in rows))
+
+    def _parts_menu(self, pos):
+        if not self.parts.count():
+            return
+        menu = QMenu(self.parts)
+        menu.addAction("Select all", self.parts.selectAll)
+        menu.addSeparator()
+        menu.addAction("Show selected", lambda: self._set_selected(True))
+        menu.addAction("Hide selected", lambda: self._set_selected(False))
+        menu.addAction("Isolate selected", self._isolate)
+        menu.exec(self.parts.viewport().mapToGlobal(pos))
 
     def _show_all(self):
         self.viewer.show_all_parts()
@@ -921,13 +1017,14 @@ class MaterialsPanel(QWidget):
         self.refresh()
 
     def _isolate(self):
-        row = self.parts.currentRow()
-        if row < 0:
+        rows = self._selected_rows()
+        if not rows:
             self.viewer.message.emit("Select a part first")
             return
-        self.viewer.isolate_part(row)
+        self.viewer.isolate_parts(rows)
         self.refresh()
-        self.parts.setCurrentRow(row)
+        for r in rows:
+            self.parts.item(r).setSelected(True)
 
     def _open_texture(self, item):
         row = self.tex_list.row(item)

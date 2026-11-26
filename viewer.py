@@ -44,6 +44,7 @@ try:                                          # 2D overlay props for the split-c
     from vtkmodules.vtkRenderingCore import vtkActor2D, vtkPolyDataMapper2D
 except Exception:  # pragma: no cover
     vtkActor2D = vtkPolyDataMapper2D = None
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtkmodules.vtkFiltersSources import vtkLineSource, vtkOutlineSource, vtkPlaneSource, vtkSphereSource
 try:                                          # 3D text for measurement labels
     from vtkmodules.vtkRenderingCore import vtkBillboardTextActor3D
@@ -54,16 +55,17 @@ from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 from formats import _face_count, _log_size, _mapper_data, _shader_error_since, human_size, takes_reflection_map
 from analysis import (
-    EXPORT_FORMATS, LOD_LEVELS, SHEET_BACKGROUNDS, SHEET_CELLS, SHEET_ENV, SHEET_LAYOUTS, UNITS,
+    CANNY_SENSITIVITY, CONTROL_MAPS, CONTROL_SIZES, LINE_DETAIL, EXPORT_FORMATS, LOD_LEVELS, SHEET_BACKGROUNDS, SHEET_CELLS, SHEET_ENV, SHEET_LAYOUTS, UNITS,
     UV_COLOR_OK, UV_HEAT_DEFAULTS, UV_ISLAND_TESTS, UV_TESTS, _HEAT_STOPS, _STRETCH_STOPS, angle_at,
-    build_export_polydata, collect_model_info, export_default_name, fmt_num, lod_decimate,
+    NORMAL_PASS_SHADER, background_mask, build_export_polydata, canny_from_passes, collect_model_info, combine_lines, control_scale, cutout_code, depth_range, depth_shader, export_default_name, fmt_num, lod_decimate,
     measure_model, Cancelled, cavity_part, mesh_part_analysis, mesh_totals, run_parts, sheet_framing,
     sheet_views, snapshot_export_parts, texture_channel_rgb, texture_to_array, unit_scale,
     uv_collect_part, uv_heat_density, uv_heat_stretch, uv_poly_colors, weighted_median, world_parts,
     write_mesh)
+from exporters import snapshot_export_scene, write_glb_scene, write_obj_scene
 from panels import ExportDialog, InfoPanel, MaterialsPanel, ScenePanel, VIEW_CHANNELS, _rgb_to_qimage
 from environment import (
-    ENV_BUILTIN_PRESETS, ENV_DEFAULTS, EnvironmentPanel, SKY_TEX_W, blob_texture_array, clean_env, floor_texture_array,
+    ENV_BUILTIN_PRESETS, ENV_DEFAULTS, EnvironmentPanel, SKY_TEX_W, blob_texture_array, clean_env, floor_texture_array, panorama_thumbnail,
     dir_to_azel, env_shader_code, frame_to_world, numpy_to_vtk_image, pano_frame_matrix,
     prepare_panorama, read_panorama, reproject_panorama, sun_dir_frame)
 from gallery import ORIENT, _setting_int
@@ -78,7 +80,7 @@ APP_NAME = "Gleek3Deek"
 ABOUT = {
     "app_name": APP_NAME,
     "tagline": "A fast, minimal 3D asset viewer and manager.",
-    "version": "0.7.8.5",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
+    "version": "0.7.9",                      # leave empty to hide; set e.g. "0.4.0" when you are ready
     # --- who made it
     "author_heading": "Created by",
     "author_name": "Mark Billson",
@@ -230,14 +232,30 @@ class _ExportSignals(QObject):
 
 
 class ExportTask(QRunnable):
-    def __init__(self, parts, path, kind, binary, keep):
+    def __init__(self, parts, path, kind, binary, keep, scene=None, write_materials=True):
         super().__init__()
         self.parts, self.path, self.kind, self.binary, self.keep = parts, path, kind, binary, keep
+        self.scene, self.write_materials = scene, write_materials     # (parts, materials) for the full OBJ writer
         self.signals = _ExportSignals()
 
     def run(self):
         try:
-            mesh, n_in, n_out = build_export_polydata(self.parts, self.keep, normals=(self.kind == "obj"))
+            if self.scene is not None:
+                sp, sm = self.scene
+                writer = write_glb_scene if self.kind == "glb" else write_obj_scene
+                st = writer(sp, sm, self.path, self.write_materials)
+                size = human_size(os.path.getsize(self.path))
+                bits = [f"{st['objects']} objects", f"{st['faces']:,} faces"]
+                if st["materials"]:
+                    bits.append(f"{st['materials']} materials, {st['textures']} textures")
+                if st["uvs"]:
+                    bits.append("UVs")
+                if st["colors"]:
+                    bits.append("vertex colours")
+                self.signals.done.emit(f"Exported {', '.join(bits)} to {self.path}  [{size}]")
+                return
+            mesh, n_in, n_out = build_export_polydata(self.parts, self.keep, normals=(self.kind == "obj"),
+                                                      keep_layout=(self.kind == "ply"))
             write_mesh(mesh, self.path, self.kind, self.binary)
             size = human_size(os.path.getsize(self.path))
             change = f" (from {n_in:,})" if n_out != n_in else ""
@@ -424,6 +442,99 @@ class ReferenceSheetDialog(QDialog):
         return {"layout": self.layout_box.currentData(), "bg": self.bg_box.currentData(),
                 "cell": int(self.cell_box.currentData()), "labels": self.labels_cb.isChecked(),
                 "single": self.single_cb.isChecked()}
+
+
+def _tex_has_alpha(a) -> bool:
+    """True when the actor's base texture carries an alpha channel (the viewer shows it as texture_0)."""
+    try:
+        tex = a.GetTexture()
+        img = tex.GetInput() if tex is not None else None
+        sc = img.GetPointData().GetScalars() if img is not None else None
+        return sc is not None and sc.GetNumberOfComponents() in (2, 4)
+    except Exception:
+        return False
+
+
+def _fit_long_side(arr, target: int):
+    """Resample an RGB uint8 array so its long side is `target` px (0 = leave it). Smooth, aspect kept."""
+    if not target:
+        return arr
+    h, w, _ = arr.shape
+    if max(h, w) == target:
+        return arr
+    img = QImage(np.ascontiguousarray(arr).data, w, h, 3 * w, QImage.Format_RGB888)
+    img = img.scaled(target if w >= h else max(1, round(w * target / h)),
+                     target if h > w else max(1, round(h * target / w)),
+                     Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_RGB888)
+    ow, oh = img.width(), img.height()
+    buf = np.frombuffer(img.constBits(), np.uint8).reshape(oh, img.bytesPerLine())[:, :3 * ow]
+    return np.ascontiguousarray(buf.reshape(oh, ow, 3))
+
+
+class ControlMapsDialog(QDialog):
+    """Options for the depth / normal / Canny maps used as ControlNet-style inputs by image generators."""
+
+    def __init__(self, parent, settings: QSettings):
+        super().__init__(parent)
+        self.setWindowTitle("Control maps for AI image tools")
+        self.setMinimumWidth(520)
+        lay = QVBoxLayout(self)
+        intro = QLabel("Saves depth, normal and edge images of the current view, at the same size and angle as a "
+                       "screenshot (F12), for ControlNet-style inputs in Stable Diffusion, ComfyUI and similar tools. "
+                       "They are calculated from the 3D model, not guessed by an AI, so they are exact. The viewer "
+                       "temporarily switches to flat, unlit output and then puts everything back.")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        saved = str(settings.value("ctl_maps", "depth,normal,canny")).split(",")
+        self.boxes = {}
+        for key, label in CONTROL_MAPS:
+            cb = QCheckBox(label)
+            cb.setChecked(key in saved)
+            self.boxes[key] = cb
+            lay.addWidget(cb)
+        form = QFormLayout()
+        self.canny_box = QComboBox()
+        for key, label, _v in CANNY_SENSITIVITY:
+            self.canny_box.addItem(label, key)
+        self.canny_box.setCurrentIndex(max(0, self.canny_box.findData(str(settings.value("ctl_canny", "mid")))))
+        form.addRow("Canny lines", self.canny_box)
+        self.line_box = QComboBox()
+        for key, label, _v in LINE_DETAIL:
+            self.line_box.addItem(label, key)
+        self.line_box.setCurrentIndex(max(0, self.line_box.findData(str(settings.value("ctl_lines", "mid")))))
+        form.addRow("Line map detail", self.line_box)
+        self.cut_cb = QCheckBox("Keep cut-outs: skip see-through texture pixels (leaves, fences, decals)")
+        self.cut_cb.setChecked(str(settings.value("ctl_cutout", "true")).lower() in ("1", "true"))
+        form.addRow("", self.cut_cb)
+        self.size_box = QComboBox()
+        for c in CONTROL_SIZES:
+            self.size_box.addItem("Same as a screenshot (F12)" if c == 0 else f"{c} px on the long side", c)
+        try:
+            self.size_box.setCurrentIndex(max(0, self.size_box.findData(int(settings.value("ctl_size", 0)))))
+        except Exception:
+            pass
+        form.addRow("Output size", self.size_box)
+        lay.addLayout(form)
+        self.note = QLabel("Your camera, zoom and field of view are used exactly as set in the viewer. Choosing a "
+                           "size keeps the same framing and only changes the resolution; use the same view for your "
+                           "F12 screenshot so everything lines up.")
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color:#8a96a6;")
+        lay.addWidget(self.note)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        cancel = QPushButton("Cancel")
+        ok = QPushButton("Render and save…")
+        ok.setDefault(True)
+        cancel.clicked.connect(self.reject)
+        ok.clicked.connect(self.accept)
+        row.addWidget(cancel)
+        row.addWidget(ok)
+        lay.addLayout(row)
+
+    def values(self) -> dict:
+        return {"maps": [k for k, cb in self.boxes.items() if cb.isChecked()], "canny": self.canny_box.currentData(),
+                "lines": self.line_box.currentData(), "size": int(self.size_box.currentData()), "cutout": self.cut_cb.isChecked()}
 
 
 class UVLayoutView(QWidget):
@@ -691,6 +802,7 @@ class Viewer(QWidget):
         self._blob_added = False
         self._floor = self._floor_src = self._floor_tex = None      # the ground floor disc
         self._floor_added, self._floor_key = False, None
+        self._thumb, self._thumb_key = None, None                   # cached Environment-panel preview
         self._bg_from_env = False
         self._light_drag = None
         self._preset_idx = -1
@@ -948,6 +1060,7 @@ class Viewer(QWidget):
         menu.addAction("About " + ABOUT["app_name"] + "\tF1", lambda _=False: self.about_requested.emit())
         menu.addSeparator()
         menu.addAction("Reference sheet for AI 3D tools…\tShift+F12", lambda _=False: self.open_reference_sheet_dialog())
+        menu.addAction("Control maps for AI image tools…\tCtrl+F12", lambda _=False: self.open_control_maps_dialog())
         menu.addAction("Save screenshot…\tF12", lambda _=False: self.save_screenshot())
         menu.addAction("Copy screenshot\tCtrl+C", lambda _=False: self.copy_screenshot())
 
@@ -1826,6 +1939,14 @@ class Viewer(QWidget):
             self.renderer.AutomaticLightCreationOn()
             self._env_lights_added = False
 
+    def _pano_preview(self):
+        """A small preview of the loaded panorama for the Environment panel (cached per file)."""
+        if self._pano is None:
+            return None
+        if self._thumb_key != self._pano_path:
+            self._thumb, self._thumb_key = panorama_thumbnail(self._pano["disp"]), self._pano_path
+        return self._thumb
+
     def _ensure_pano(self):
         before = self._pano_path
         self._ensure_pano_inner()
@@ -2333,7 +2454,7 @@ class Viewer(QWidget):
 
     def environment_panel(self):
         if self._env_panel is None:
-            self._env_panel = EnvironmentPanel(None, self.env, self._pano_path)
+            self._env_panel = EnvironmentPanel(None, self.env, self._pano_path, self._pano_preview)
             self._env_panel.changed.connect(self.apply_environment)
             self._env_panel.load_requested.connect(self.load_panorama)
             self._env_panel.fit_requested.connect(self.fit_to_panorama)
@@ -2394,10 +2515,13 @@ class Viewer(QWidget):
         dlg = ExportDialog(self.window(), info["name"], info["tris"],
                            _setting_int(self.settings, "export_fmt", 0),
                            str(self.settings.value("export_simplify", "false")).lower() in ("1", "true"),
-                           _setting_int(self.settings, "export_keep", 50))
+                           _setting_int(self.settings, "export_keep", 50),
+                           str(self.settings.value("export_mats", "true")).lower() in ("1", "true"))
         if dlg.exec() != QDialog.Accepted:
             return
         idx, keep = dlg.values()
+        want_mats = dlg.write_materials()
+        self.settings.setValue("export_mats", "true" if want_mats else "false")
         self.settings.setValue("export_fmt", idx)
         self.settings.setValue("export_simplify", "true" if keep is not None else "false")
         if keep is not None:
@@ -2419,7 +2543,14 @@ class Viewer(QWidget):
         if not parts:
             self.message.emit("There is no mesh data to export")
             return
-        task = ExportTask(parts, fn, kind, binary, keep)
+        scene = None
+        if kind in ("obj", "glb") and keep is None:         # full scene writer: objects, UVs, colours, materials
+            try:
+                scene = snapshot_export_scene(self.actors)
+            except Exception as e:
+                self.message.emit(f"Could not read the scene for export: {e}")
+                return
+        task = ExportTask(parts, fn, kind, binary, keep, scene, want_mats)
         task.signals.done.connect(self._export_done)
         task.signals.failed.connect(self._export_failed)
         self._export_task = task                  # keeps the task and its signals alive
@@ -2671,9 +2802,19 @@ class Viewer(QWidget):
             self.actors[idx].SetVisibility(bool(on))
             self._after_visibility()
 
+    def set_parts_visible(self, idxs, on: bool):
+        for i in idxs:
+            if 0 <= i < len(self.actors):
+                self.actors[i].SetVisibility(bool(on))
+        self._after_visibility()
+
     def isolate_part(self, idx: int):
+        self.isolate_parts([idx])
+
+    def isolate_parts(self, idxs):
+        keep = set(idxs)
         for i, a in enumerate(self.actors):
-            a.SetVisibility(i == idx)
+            a.SetVisibility(i in keep)
         self._after_visibility()
 
     def show_all_parts(self):
@@ -2701,13 +2842,18 @@ class Viewer(QWidget):
 
     def highlight_part(self, idx):
         """Outline one part with a bounding box (None clears it)."""
-        if idx is None or not (0 <= idx < len(self.actors)):
+        self.highlight_parts([] if idx is None else [idx])
+
+    def highlight_parts(self, idxs):
+        """Outline each of the given parts with its own bounding box (an empty list clears the outlines)."""
+        idxs = [i for i in (idxs or []) if 0 <= i < len(self.actors)]
+        if not idxs:
             if self._outline_added:
                 self._remove_outline()
                 self.rw.Render()
             return
         if self._outline is None:
-            self._outline_src = vtkOutlineSource()
+            self._outline_src = vtkAppendPolyData()
             m = vtkPolyDataMapper()
             m.SetInputConnection(self._outline_src.GetOutputPort())
             self._outline = vtkActor()
@@ -2718,7 +2864,13 @@ class Viewer(QWidget):
             prop.LightingOff()
             self._outline.UseBoundsOff()
             self._outline.SetPickable(False)
-        self._outline_src.SetBounds(*self.actors[idx].GetBounds())
+        self._outline_src.RemoveAllInputs()
+        for i in idxs:
+            box = vtkOutlineSource()
+            box.SetBounds(*self.actors[i].GetBounds())
+            box.Update()
+            self._outline_src.AddInputData(box.GetOutput())
+        self._outline_src.Update()
         if not self._outline_added:
             self.renderer.AddActor(self._outline)
             self._outline_added = True
@@ -3773,6 +3925,202 @@ class Viewer(QWidget):
                 p.drawText(i * cell + cell // 40, cell - cell // 40, _caption)
         p.end()
         return sheet, cells
+
+    # ----- control maps (depth / normal / Canny) ----------------------------
+    def open_control_maps_dialog(self):
+        if not self.actors:
+            self.message.emit("Open a model first")
+            return
+        if not [a for a in self.actors if a.GetVisibility()]:
+            self.message.emit("All parts are hidden, so there is nothing to capture")
+            return
+        dlg = ControlMapsDialog(self.window(), self.settings)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        opt = dlg.values()
+        if not opt["maps"]:
+            self.message.emit("No control map was ticked")
+            return
+        self.settings.setValue("ctl_maps", ",".join(opt["maps"]))
+        self.settings.setValue("ctl_canny", opt["canny"])
+        self.settings.setValue("ctl_size", opt["size"])
+        self.settings.setValue("ctl_lines", opt["lines"])
+        self.settings.setValue("ctl_cutout", "true" if opt["cutout"] else "false")
+        pics = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation) or str(Path.home())
+        stem0 = Path(self.path).stem if self.path else "model"
+        base, _ = QFileDialog.getSaveFileName(
+            self, "Save control maps (the map name is added to this file name)",
+            os.path.join(pics, f"{stem0}.png"), "PNG image (*.png)")
+        if not base:
+            return
+        folder, stem = os.path.dirname(base), Path(base).stem
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            maps = self.render_control_maps(opt)
+        except Exception as e:
+            maps = {}
+            self.message.emit(f"Could not render the control maps: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+        saved = []
+        for key, arr in maps.items():
+            h, w, _ = arr.shape
+            img = QImage(np.ascontiguousarray(arr).data, w, h, 3 * w, QImage.Format_RGB888).copy()
+            fn, n = os.path.join(folder, f"{stem}_{key}.png"), 2
+            while os.path.exists(fn):                     # never overwrite an earlier set
+                fn = os.path.join(folder, f"{stem}_{key}_{n}.png")
+                n += 1
+            if img.save(fn, "PNG"):
+                saved.append(os.path.basename(fn))
+        if saved:
+            self.message.emit("Saved " + ", ".join(saved))
+
+    def _feature_line_actors(self, angle: float, scale: int = 1):
+        """White line actors for the sharp edges (creases past `angle` degrees and open borders) of every visible part.
+        The mesh is welded by position first, because imported meshes are split at every UV seam and hard normal."""
+        from vtkmodules.vtkFiltersCore import vtkCleanPolyData, vtkFeatureEdges, vtkTriangleFilter
+        out = []
+        for a in self.actors:
+            if not a.GetVisibility():
+                continue
+            ds = _mapper_data(a.GetMapper()) if a.GetMapper() is not None else None
+            if ds is None or not isinstance(ds, vtkPolyData) or ds.GetNumberOfPolys() == 0:
+                continue
+            tri = vtkTriangleFilter()
+            tri.SetInputData(ds)
+            tri.PassLinesOff()
+            tri.PassVertsOff()
+            weld = vtkCleanPolyData()
+            weld.SetInputConnection(tri.GetOutputPort())
+            weld.ConvertPolysToLinesOff()
+            weld.ConvertLinesToPointsOff()
+            weld.SetTolerance(1e-6)
+            fe = vtkFeatureEdges()
+            fe.SetInputConnection(weld.GetOutputPort())
+            fe.BoundaryEdgesOn()
+            fe.FeatureEdgesOn()
+            fe.NonManifoldEdgesOff()
+            fe.ManifoldEdgesOff()
+            fe.SetFeatureAngle(float(angle))
+            fe.ColoringOff()
+            fe.Update()
+            edges = vtkPolyData()
+            edges.ShallowCopy(fe.GetOutput())
+            if edges.GetNumberOfCells() == 0:
+                continue
+            m = vtkPolyDataMapper()
+            m.SetInputData(edges)
+            m.ScalarVisibilityOff()
+            la = vtkActor()
+            la.SetMapper(m)
+            la.SetUserMatrix(a.GetMatrix())
+            p = la.GetProperty()
+            p.SetColor(1.0, 1.0, 1.0)
+            p.LightingOff()
+            p.SetLineWidth(float(max(1, scale)))
+            la.SetPickable(False)
+            out.append(la)
+        return out
+
+    def render_control_maps(self, opt: dict) -> dict:
+        """{'depth': rgb, 'normal': rgb, 'canny': rgb} uint8 arrays of the current view (camera untouched)."""
+        want = set(opt["maps"])
+        target = int(opt.get("size") or 0)
+        vw, vh = self._view_px()
+        scale = control_scale(target, vw, vh, int(self.shot_scale))
+        cam = self.renderer.GetActiveCamera()
+        saved = {"env": copy.deepcopy(self.env), "mode": self.mode, "split": self.split_on,
+                 "edges": self.edges_on, "grid": self.grid_on,
+                 "axes": self._axes_widget is not None and self.axes_on,
+                 "orbit": self._orbit_timer.isActive()}
+        self._orbit_timer.stop()
+        if saved["axes"]:
+            self._axes_widget.SetEnabled(0)
+        self._annot_visible(False)
+        out = {}
+        try:
+            self.split_on = False
+            self.edges_on = False
+            self.grid_on = False
+            self.env = clean_env({**saved["env"], **SHEET_ENV})
+            self._env_refresh()
+            self.set_mode("surface", force=True)
+            self._sync_ground()
+            self.renderer.ResetCameraClippingRange()
+
+            # depth range from the visible parts' bounding boxes, in distance along the viewing axis
+            corners = []
+            for a in self.actors:
+                if a.GetVisibility():
+                    b = a.GetBounds()
+                    corners += [(x, y, z) for x in b[0:2] for y in b[2:4] for z in b[4:6]]
+            vm = cam.GetViewTransformMatrix()
+            near, far = depth_range(corners, [[vm.GetElement(r, c) for c in range(4)] for r in range(4)])
+
+            def run(code, bg):
+                for a in self.actors:
+                    sp = a.GetShaderProperty()
+                    sp.ClearAllFragmentShaderReplacements()
+                    sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
+                    sp.AddFragmentShaderReplacement("//VTK::TCoord::Impl", True,
+                                                    cutout_code(bool(opt.get("cutout", True)) and _tex_has_alpha(a)), False)
+                arr, _s = self._grab_pass(bg, scale)
+                if arr is None:
+                    raise RuntimeError("the viewport could not be captured")
+                return _fit_long_side(arr, target)
+
+            need_depth = want & {"depth", "canny", "lines"}
+            need_normal = want & {"normal", "canny"}
+            depth = run(depth_shader(near, far), (0.0, 0.0, 0.0)) if need_depth else None
+            normal = run(NORMAL_PASS_SHADER, (0.5, 0.5, 1.0)) if need_normal else None
+            if "depth" in want:
+                out["depth"] = depth
+            if "normal" in want:
+                out["normal"] = normal
+            if "lines" in want:
+                key = opt.get("lines", "mid")
+                angle = next((v for k, _l, v in LINE_DETAIL if k == key), 40.0)
+                ckey = opt.get("canny", "mid")
+                strength = next((v for k, _l, v in CANNY_SENSITIVITY if k == ckey), 0.18)
+                line_actors = self._feature_line_actors(angle, scale)
+                for la in line_actors:
+                    self.renderer.AddActor(la)
+                try:
+                    black = "  fragOutput0 = vec4(0.0, 0.0, 0.0, 1.0);\n"
+                    feat = run(black, (0.0, 0.0, 0.0))
+                finally:
+                    for la in line_actors:
+                        self.renderer.RemoveActor(la)
+                dmask = background_mask(depth, (0, 0, 0))
+                out["lines"] = combine_lines(feat, depth, dmask, strength=strength,
+                                             thickness=2 if max(depth.shape) >= 1400 else 1)
+            if "canny" in want:
+                key = opt.get("canny", "mid")
+                strength = next((v for k, _l, v in CANNY_SENSITIVITY if k == key), 0.18)
+                mask = background_mask(depth, (0, 0, 0))
+                out["canny"] = canny_from_passes(depth, normal, mask, strength=strength, sigma=1.0)
+        finally:
+            self.env = saved["env"]
+            self.split_on = saved["split"]
+            self.edges_on = saved["edges"]
+            self.grid_on = saved["grid"]
+            self._env_refresh()
+            self.set_mode(saved["mode"], force=True)
+            self._sync_ground()
+            if self._sky_added:
+                self.renderer.AddActor(self._skybox)
+            if self._bg_from_env:
+                self._sync_background()
+            else:
+                self.set_background(self.bg_idx, announce=False)
+            if saved["axes"]:
+                self._axes_widget.SetEnabled(1)
+            self._annot_visible(True)
+            self.renderer.ResetCameraClippingRange()
+            if saved["orbit"]:
+                self._orbit_timer.start(20)
+            self.rw.Render()
+        return out
 
     # ----- screenshots ------------------------------------------------------
     def _grab_pass(self, background, scale: int):

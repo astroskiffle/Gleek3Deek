@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
 from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
 
-from formats import _cells, _color_array, _face_count, _mapper_data, asset_ext, human_size
+from formats import _cells, _color_array, _face_count, _mapper_data, asset_ext, human_size, uv_v_down
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def collect_model_info(actors: list, path: str, up: str) -> dict:
 # (label, extension, kind, binary)
 EXPORT_FORMATS = [
     ("STL (binary)", ".stl", "stl", True), ("STL (ASCII)", ".stl", "stl", False),
-    ("OBJ", ".obj", "obj", True),
+    ("OBJ", ".obj", "obj", True), ("glTF binary (GLB)", ".glb", "glb", True),
     ("PLY (binary)", ".ply", "ply", True), ("PLY (ASCII)", ".ply", "ply", False),
 ]
 
@@ -125,10 +125,21 @@ def snapshot_export_parts(actors: list) -> list:
     return parts
 
 
-def build_export_polydata(parts: list, keep=None, normals: bool = False):
-    """Merge -> weld -> triangulate -> (optional) quadric decimation. Returns (mesh, n_in, n_out)."""
+def build_export_polydata(parts: list, keep=None, normals: bool = False, keep_layout: bool = False):
+    """Merge -> weld -> triangulate -> (optional) quadric decimation. Returns (mesh, n_in, n_out).
+    keep_layout=True (PLY without simplifying) skips the weld and the triangulation, so UV and colour seams
+    stay split and quads / n-gons are written as they are."""
     app = vtkAppendPolyData()
     for pd, flat in parts:
+        if uv_v_down(pd) and pd.GetPointData().GetTCoords() is not None:      # glTF V runs down; OBJ/PLY run up
+            cp = vtkPolyData()
+            cp.ShallowCopy(pd)
+            tc = numpy_support.vtk_to_numpy(pd.GetPointData().GetTCoords()).astype(np.float32)
+            tc[:, 1] = 1.0 - tc[:, 1]
+            arr = numpy_support.numpy_to_vtk(np.ascontiguousarray(tc), deep=True)
+            arr.SetName("TCoords")
+            cp.GetPointData().SetTCoords(arr)
+            pd = cp
         if flat != IDENTITY16:                       # bake the actor's placement into the points
             t = vtkTransform()
             t.SetMatrix(flat)
@@ -149,12 +160,15 @@ def build_export_polydata(parts: list, keep=None, normals: bool = False):
         c.Update()
         return c.GetOutput()
 
-    tri = vtkTriangleFilter()
-    tri.SetInputData(weld(app.GetOutput()))
-    tri.PassVertsOff()
-    tri.PassLinesOff()
-    tri.Update()
-    out = tri.GetOutput()
+    if keep_layout and (keep is None or keep >= 0.999):
+        out = app.GetOutput()
+    else:
+        tri = vtkTriangleFilter()
+        tri.SetInputData(weld(app.GetOutput()))
+        tri.PassVertsOff()
+        tri.PassLinesOff()
+        tri.Update()
+        out = tri.GetOutput()
     n_in = out.GetNumberOfPolys()
     if n_in == 0:
         raise ValueError("This model has no surface to export.")
@@ -1080,7 +1094,7 @@ SHEET_CELLS = [512, 768, 1024, 1536, 2048]
 
 # Flat, even light: with no sun, the hemispheric ambient depends only on how much a surface faces
 # up, so every side of the model is lit identically (no hard shadows, nothing that changes with angle).
-SHEET_ENV = {"enabled": True, "skybox": False, "lighting": True, "shadow": False, "gradient_bg": False,
+SHEET_ENV = {"enabled": True, "skybox": False, "lighting": True, "shadow": False, "gradient_bg": False, "floor": False,
              "sky": [0.95, 0.95, 0.95], "equator": [0.88, 0.88, 0.88], "ground": [0.76, 0.76, 0.76],
              "sun_int": 0.0, "highlight": 0.0, "ambient": 1.0, "exposure": 0.0, "tonemap": "none",
              "sky_blur": 0.0, "yaw": 0.0, "fake_ao": False, "pano_light": 0.0, "pbr": False}
@@ -1107,6 +1121,175 @@ def sheet_framing(lo, hi, dirs, up, pad: float = 0.06):
         right /= np.linalg.norm(right)
         half = max(half, float(np.abs(corners @ right).max()))
     return c, max(half, 1e-9) * (1.0 + pad)
+
+
+# ---------------------------------------------------------------------------
+# Control maps for AI image tools (depth, normal, Canny): plain maths on what the viewer already renders
+# ---------------------------------------------------------------------------
+CONTROL_MAPS = [("depth", "Depth map (near = white, far = dark, background = black)"),
+                ("normal", "Normal map (view space, flat purple background)"),
+                ("canny", "Canny edges (white lines on black, from depth + normals)"),
+                ("lines", "Line map (creases, borders and outline: clean hard-surface lines, white on black)")]
+LINE_DETAIL = [("low", "Fewer lines (only sharp creases)", 60.0), ("mid", "Balanced", 40.0),
+               ("high", "More lines (soft creases too)", 25.0)]
+CONTROL_SIZES = [0, 768, 1024, 1536, 2048, 3072]       # long side in px; 0 = as big as a screenshot (F12)
+DEPTH_FLOOR = 0.08          # the farthest surface of the model, so it stays brighter than the black background
+CANNY_SENSITIVITY = [("low", "Fewer lines", 0.30), ("mid", "Balanced", 0.18), ("high", "More lines", 0.10)]
+
+
+def control_scale(target: int, view_w: int, view_h: int, default: int, cap: int = 4) -> int:
+    """Whole-number capture scale for a wanted long side (0 = keep the screenshot scale)."""
+    if not target:
+        return int(default)
+    long_side = max(1, int(view_w), int(view_h))
+    return max(1, min(cap, -(-int(target) // long_side)))
+
+
+def depth_range(corners, view_matrix, eps: float = 1e-6):
+    """(near, far) distance along the viewing axis of 3D points, given the 4x4 world-to-view matrix."""
+    pts = np.asarray(corners, float).reshape(-1, 3)
+    m = np.asarray(view_matrix, float).reshape(4, 4)
+    d = -(pts @ m[2, :3] + m[2, 3])
+    near, far = float(d.min()), float(d.max())
+    near = max(near, eps)
+    if far - near < 1e-9:
+        far = near + 1.0
+    return near, far
+
+
+def depth_shader(near: float, far: float, floor: float = DEPTH_FLOOR) -> str:
+    """Fragment code ('Light::Impl' slot) that paints each pixel by its distance from the camera, linearly:
+    `near` -> white, `far` -> `floor` grey. Linear distance, not the GPU's non-linear depth buffer."""
+    span = max(far - near, 1e-9)
+    return (f"  float dd = clamp((-vertexVC.z - {near:.9g}) / {span:.9g}, 0.0, 1.0);\n"
+            f"  float dg = mix(1.0, {floor:.4f}, dd);\n"
+            f"  fragOutput0 = vec4(dg, dg, dg, 1.0);\n")
+
+
+def cutout_code(has_alpha: bool, threshold: float = 0.5) -> str:
+    """Replacement for VTK's 'TCoord::Impl' slot in the depth/normal passes. VTK normally multiplies the output colour by
+    the base texture there, which would tint the depth and normal values. This drops that multiply and, when the
+    texture has an alpha channel, discards pixels below `threshold` so cut-outs (leaves, fences, decals) stay cut out."""
+    if not has_alpha:
+        return "\n"
+    return (f"\n  if (texture(texture_0, tcoordVCVSOutput).a < {threshold:.3f}) discard;\n")
+
+
+NORMAL_PASS_SHADER = """
+  vec3 ncp = normalize(normalVCVSOutput) * 0.5 + 0.5;
+  fragOutput0 = vec4(ncp, 1.0);
+"""
+
+
+def _gauss_kernel(sigma: float):
+    r = max(1, int(round(3 * sigma)))
+    x = np.arange(-r, r + 1, dtype=np.float32)
+    k = np.exp(-(x * x) / (2 * sigma * sigma))
+    return k / k.sum()
+
+
+def _blur(img, sigma: float):
+    if sigma <= 0:
+        return img
+    k = _gauss_kernel(sigma)
+    r = len(k) // 2
+    out = np.pad(img, ((0, 0), (r, r)) + ((0, 0),) * (img.ndim - 2), mode="edge")
+    out = sum(k[i] * out[:, i:i + img.shape[1]] for i in range(len(k)))
+    out = np.pad(out, ((r, r), (0, 0)) + ((0, 0),) * (img.ndim - 2), mode="edge")
+    return sum(k[i] * out[i:i + img.shape[0]] for i in range(len(k)))
+
+
+def canny_edges(channels, mask=None, high: float = 0.18, low_ratio: float = 0.4, sigma: float = 1.0,
+                max_grow: int = 400):
+    """Canny edge detector in numpy. channels: float32 (H, W) or (H, W, C) in 0..1 (the strongest channel decides
+    at each pixel). high: gradient strength (0..1 of the largest) that starts an edge; low = high * low_ratio keeps
+    what touches one. mask: bool (H, W) marking the model, so its outline counts as an edge. Returns bool (H, W)."""
+    img = np.asarray(channels, np.float32)
+    if img.ndim == 2:
+        img = img[..., None]
+    if mask is not None:
+        img = np.concatenate([img, np.asarray(mask, np.float32)[..., None]], axis=2)
+    img = _blur(img, sigma)
+    gx = np.zeros_like(img)
+    gy = np.zeros_like(img)
+    gx[:, 1:-1] = (img[:, 2:] - img[:, :-2]) * 0.5
+    gy[1:-1] = (img[2:] - img[:-2]) * 0.5
+    mag_c = np.hypot(gx, gy)
+    best = mag_c.argmax(axis=2)
+    gxb = np.take_along_axis(gx, best[..., None], 2)[..., 0]
+    gyb = np.take_along_axis(gy, best[..., None], 2)[..., 0]
+    mag = np.take_along_axis(mag_c, best[..., None], 2)[..., 0]
+    top = float(mag.max())
+    if top <= 1e-9:
+        return np.zeros(mag.shape, bool)
+    mag = mag / top
+    # non-maximum suppression: keep a pixel only if it is the largest along its gradient direction
+    ang = (np.degrees(np.arctan2(gyb, gxb)) + 180.0) % 180.0
+    q = np.zeros(mag.shape, np.int8)
+    q[(ang >= 22.5) & (ang < 67.5)] = 1
+    q[(ang >= 67.5) & (ang < 112.5)] = 2
+    q[(ang >= 112.5) & (ang < 157.5)] = 3
+    p = np.pad(mag, 1)
+    H, W = mag.shape
+    off = {0: ((0, 1), (0, -1)), 1: ((1, 1), (-1, -1)), 2: ((1, 0), (-1, 0)), 3: ((1, -1), (-1, 1))}
+    keep = np.zeros(mag.shape, bool)
+    for k, ((dy1, dx1), (dy2, dx2)) in off.items():
+        a = p[1 + dy1:1 + dy1 + H, 1 + dx1:1 + dx1 + W]
+        b = p[1 + dy2:1 + dy2 + H, 1 + dx2:1 + dx2 + W]
+        keep |= (q == k) & (mag >= a) & (mag >= b)
+    thin = np.where(keep, mag, 0.0)
+    strong = thin >= high
+    weak = thin >= high * low_ratio
+    edges = strong.copy()
+    for _ in range(max_grow):                         # hysteresis: weak pixels touching an edge join it
+        grown = edges.copy()
+        grown[1:] |= edges[:-1]
+        grown[:-1] |= edges[1:]
+        grown[:, 1:] |= edges[:, :-1]
+        grown[:, :-1] |= edges[:, 1:]
+        grown[1:, 1:] |= edges[:-1, :-1]
+        grown[:-1, :-1] |= edges[1:, 1:]
+        grown[1:, :-1] |= edges[:-1, 1:]
+        grown[:-1, 1:] |= edges[1:, :-1]
+        grown &= weak
+        if (grown == edges).all():
+            break
+        edges = grown
+    return edges
+
+
+def canny_from_passes(depth_rgb, normal_rgb, mask, strength: float = 0.18, sigma: float = 1.0):
+    """White-on-black Canny image (uint8, H x W x 3) from the depth and normal renders and a model mask."""
+    d = np.asarray(depth_rgb, np.float32)[..., 0:1] / 255.0
+    n = np.asarray(normal_rgb, np.float32) / 255.0
+    edges = canny_edges(np.concatenate([d, n * 0.7], axis=2), mask, high=strength, sigma=sigma)
+    out = np.zeros(edges.shape + (3,), np.uint8)
+    out[edges] = 255
+    return out
+
+
+def combine_lines(feature_rgb, depth_rgb, mask, strength: float = 0.18, thickness: int = 1):
+    """Line map (uint8 H x W x 3, white on black): the 3D crease/border lines rendered with hidden lines removed,
+    plus the model's outline and depth jumps found in the depth render. thickness > 1 widens the lines."""
+    feat = np.asarray(feature_rgb)[..., 0] > 127
+    sil = canny_edges(np.asarray(depth_rgb, np.float32)[..., 0:1] / 255.0, mask, high=strength * 1.5, sigma=1.0)
+    lines = feat | sil
+    for _ in range(max(0, int(thickness) - 1)):
+        g = lines.copy()
+        g[1:] |= lines[:-1]
+        g[:-1] |= lines[1:]
+        g[:, 1:] |= lines[:, :-1]
+        g[:, :-1] |= lines[:, 1:]
+        lines = g
+    out = np.zeros(lines.shape + (3,), np.uint8)
+    out[lines] = 255
+    return out
+
+
+def background_mask(rgb, bg_rgb, tol: int = 2):
+    """True where a render differs from its flat background colour (0-255 triple): the model's pixels."""
+    diff = np.abs(np.asarray(rgb, np.int16) - np.asarray(bg_rgb, np.int16)[None, None, :]).max(axis=2)
+    return diff > tol
 
 
 # ---------------------------------------------------------------------------
@@ -1186,6 +1369,8 @@ def uv_collect_part(pd, cancel=None):
     if tc is None or pd.GetNumberOfPolys() == 0:
         return None
     uv = numpy_support.vtk_to_numpy(tc).astype(np.float64)[:, :2]
+    if uv_v_down(pd):                                   # glTF: V runs down the image; the UV view and OBJ run up
+        uv[:, 1] = 1.0 - uv[:, 1]
     polys = pd.GetPolys()
     tris, parent = fan_triangulate(numpy_support.vtk_to_numpy(polys.GetOffsetsArray()),
                                    numpy_support.vtk_to_numpy(polys.GetConnectivityArray()))

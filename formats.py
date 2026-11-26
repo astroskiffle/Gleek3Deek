@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import struct
@@ -18,7 +19,7 @@ from pathlib import Path
 import numpy as np
 from vtkmodules.util import numpy_support
 from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
-from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkImageData, vtkPolyData
 from vtkmodules.vtkFiltersCore import vtkAppendPolyData, vtkPolyDataNormals
 from vtkmodules.vtkFiltersGeometry import vtkCompositeDataGeometryFilter
 from vtkmodules.vtkIOGeometry import vtkGLTFReader, vtkOBJReader, vtkSTLReader
@@ -1131,10 +1132,333 @@ def _prepare_transparency(a: vtkActor, ds):
             pass
 
 
+UV_VDOWN_FIELD = "gleek_uv_v_down"
+
+
+def mark_uv_v_down(ds):
+    """glTF texture coordinates start at the top-left of the image (V grows downwards); OBJ, the UV view and
+    Blender start at the bottom-left. VTK's glTF importer keeps the glTF values, so the mesh is tagged and
+    everything that shows or writes UVs converts with v -> 1 - v."""
+    arr = numpy_support.numpy_to_vtk(np.array([1], dtype=np.int32), deep=True)
+    arr.SetName(UV_VDOWN_FIELD)
+    ds.GetFieldData().AddArray(arr)
+
+
+def uv_v_down(ds) -> bool:
+    try:
+        return ds is not None and ds.GetFieldData().GetArray(UV_VDOWN_FIELD) is not None
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# OBJ / MTL material maps
+# ---------------------------------------------------------------------------
+# VTK's OBJ importer only reads the colour map (map_Kd). The rest of the .mtl is read here and the maps are attached
+# to the actors under the same names a glTF import uses (materialTex, normalTex, emissiveTex), so the Textures
+# panel, the audit, the per-pixel metallic-roughness look and re-export all see them.
+_MTL_OPT_ARGS = {"-blendu": 1, "-blendv": 1, "-cc": 1, "-clamp": 1, "-mm": 2, "-o": 3, "-s": 3, "-t": 3,
+                 "-texres": 1, "-imfchan": 1, "-type": 1, "-bm": 1}
+_MTL_MAPS = {"map_kd": "base", "map_pr": "roughness", "map_pm": "metallic", "map_ke": "emissive",
+             "map_bump": "normal", "bump": "normal", "norm": "normal", "map_ka": "occlusion", "map_ao": "occlusion"}
+
+
+def _mtl_file_name(rest: str) -> str:
+    """The file name from the text after a map_ keyword: skips options such as '-bm 1.0'; names may hold spaces."""
+    toks, i = rest.split(), 0
+    while i < len(toks) and toks[i].startswith("-"):
+        i += 1 + _MTL_OPT_ARGS.get(toks[i].lower(), 0)
+    return " ".join(toks[i:]).strip().strip('"')
+
+
+def parse_mtl(path: str) -> dict:
+    """material name -> {"kd": (r,g,b) or None, "pr", "pm": float or None, "maps": {role: absolute file path}}."""
+    mats, cur = {}, None
+    base = os.path.dirname(path)
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return mats
+    for ln in lines:
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        key, _, rest = ln.partition(" ")
+        k = key.lower()
+        if k == "newmtl":
+            cur = mats.setdefault(rest.strip(), {"kd": None, "pr": None, "pm": None, "maps": {}})
+        elif cur is None:
+            continue
+        elif k in ("kd", "pr", "pm"):
+            try:
+                v = [float(x) for x in rest.split()]
+            except ValueError:
+                continue
+            if k == "kd" and len(v) >= 3:
+                cur["kd"] = tuple(v[:3])
+            elif k != "kd" and v:
+                cur[k] = v[0]
+        elif k in _MTL_MAPS:
+            name = _mtl_file_name(rest)
+            if not name:
+                continue
+            for cand in (os.path.join(base, name.replace("\\", "/")),
+                         os.path.join(base, os.path.basename(name.replace("\\", "/")))):
+                if os.path.isfile(cand):
+                    cur["maps"].setdefault(_MTL_MAPS[k], cand)
+                    break
+    return mats
+
+
+def obj_material_sequence(path: str) -> list:
+    """Material names in the order the OBJ file switches to them (one entry per 'usemtl' line)."""
+    seq = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for ln in fh:
+                if ln.startswith("usemtl"):
+                    seq.append(ln[6:].strip())
+    except OSError:
+        pass
+    return seq
+
+
+def _read_image_rows(path: str):
+    """Image file -> uint8 array (H, W, C) in VTK row order (row 0 = bottom), or None."""
+    try:
+        r = vtkImageReader2Factory.CreateImageReader2(path)
+        if r is None:
+            return None
+        r.SetFileName(path)
+        r.Update()
+        img = r.GetOutput()
+        w, h, _ = img.GetDimensions()
+        sc = img.GetPointData().GetScalars()
+        if sc is None or w == 0 or h == 0:
+            return None
+        arr = numpy_support.vtk_to_numpy(sc).reshape(h, w, sc.GetNumberOfComponents())
+        if arr.dtype == np.uint16:
+            arr = (arr >> 8).astype(np.uint8)
+        return np.ascontiguousarray(arr.astype(np.uint8, copy=False))
+    except Exception:
+        return None
+
+
+def _rows_to_texture(arr, srgb: bool = False):
+    h, w, c = arr.shape
+    img = vtkImageData()
+    img.SetDimensions(w, h, 1)
+    img.GetPointData().SetScalars(numpy_support.numpy_to_vtk(np.ascontiguousarray(arr).reshape(-1, c), deep=True))
+    t = vtkTexture()
+    t.SetInputData(img)
+    t.InterpolateOn()
+    t.MipmapOn()
+    t.SetColorModeToDirectScalars()
+    try:
+        t.UseSRGBColorSpaceOff()
+    except Exception:
+        pass
+    return t
+
+
+def _resize_nn(arr, h: int, w: int):
+    if arr.shape[0] == h and arr.shape[1] == w:
+        return arr
+    yi = (np.arange(h) * arr.shape[0] // h).clip(0, arr.shape[0] - 1)
+    xi = (np.arange(w) * arr.shape[1] // w).clip(0, arr.shape[1] - 1)
+    return arr[yi][:, xi]
+
+
+def _channel(arr, ch: int):
+    return arr[:, :, min(ch, arr.shape[2] - 1)]
+
+
+def ensure_tangents(a) -> bool:
+    """Give an actor's mesh per-vertex tangents when it has a normal map.
+
+    VTK builds the tangent-space basis for normal mapping from a point 'Tangents' array and does NOT fall back to
+    screen-space derivatives. vtkGLTFImporter generates that array itself (vtkPolyDataTangents), vtkOBJImporter does
+    not, so a normal map re-imported from an .obj/.mtl rendered perfectly smooth. Returns True when tangents were added."""
+    try:
+        from vtkmodules.vtkFiltersCore import vtkPolyDataNormals, vtkPolyDataTangents, vtkTriangleFilter
+        m = a.GetMapper()
+        ds = _mapper_data(m)
+        if ds is None or not isinstance(ds, vtkPolyData) or ds.GetNumberOfPoints() == 0:
+            return False
+        pd = ds.GetPointData()
+        if pd.GetTangents() is not None or pd.GetTCoords() is None:
+            return False
+        tri = vtkTriangleFilter()
+        tri.SetInputData(ds)
+        src = tri
+        if pd.GetNormals() is None:
+            nrm = vtkPolyDataNormals()
+            nrm.SetInputConnection(tri.GetOutputPort())
+            nrm.SplittingOff()
+            src = nrm
+        tan = vtkPolyDataTangents()
+        tan.SetInputConnection(src.GetOutputPort())
+        tan.Update()
+        out = vtkPolyData()
+        out.ShallowCopy(tan.GetOutput())
+        if out.GetNumberOfPoints() != ds.GetNumberOfPoints() or out.GetPointData().GetTangents() is None:
+            return False
+        m.SetInputData(out)
+        a._tangents_made = True
+        return True
+    except Exception:
+        return False
+
+
+def attach_mtl_material(a, mat: dict, cache: dict) -> list:
+    """Attach the non-colour maps of one .mtl material to an actor. Returns what was attached (for tests / logs)."""
+    prop, done = a.GetProperty(), []
+    maps = mat.get("maps", {})
+
+    def load(p):
+        if p not in cache:
+            cache[p] = _read_image_rows(p)
+        return cache[p]
+
+    for role, name in (("normal", "normalTex"), ("emissive", "emissiveTex")):
+        arr = load(maps[role]) if role in maps else None
+        if arr is not None:
+            key = (maps[role], "tex")
+            if key not in cache:
+                cache[key] = _rows_to_texture(arr)
+            prop.SetTexture(name, cache[key])
+            done.append(role)
+            if role == "normal":
+                ensure_tangents(a)
+    rough = load(maps["roughness"]) if "roughness" in maps else None
+    metal = load(maps["metallic"]) if "metallic" in maps else None
+    occ = load(maps["occlusion"]) if "occlusion" in maps else None
+    if rough is not None or metal is not None or occ is not None:
+        h = max(x.shape[0] for x in (rough, metal, occ) if x is not None)
+        w = max(x.shape[1] for x in (rough, metal, occ) if x is not None)
+        pr = 255 * (1.0 if mat.get("pr") is None else mat["pr"])
+        pm = 255 * (0.0 if mat.get("pm") is None else mat["pm"])
+        orm = np.empty((h, w, 3), np.uint8)
+        orm[:, :, 0] = 255 if occ is None else _resize_nn(_channel(occ, 0), h, w)
+        orm[:, :, 1] = int(round(pr)) if rough is None else _resize_nn(_channel(rough, 0), h, w)
+        orm[:, :, 2] = int(round(pm)) if metal is None else _resize_nn(_channel(metal, 0), h, w)
+        prop.SetTexture("materialTex", _rows_to_texture(orm))
+        a._pbr = (float(orm[:, :, 2].mean()) / 255.0, float(orm[:, :, 1].mean()) / 255.0)
+        a._pbr_map = (1.0, 1.0)                    # the factors are already inside the map
+        done += [r for r, x in (("roughness", rough), ("metallic", metal), ("occlusion", occ)) if x is not None]
+    elif mat.get("pr") is not None or mat.get("pm") is not None:
+        a._pbr = (min(max(mat.get("pm") or 0.0, 0.0), 1.0), min(max(1.0 if mat.get("pr") is None else mat["pr"], 0.0), 1.0))
+        done.append("factors")
+    return done
+
+
+def importer_material_names(imp) -> dict:
+    """importer output index -> material name, from vtkOBJImporter's own description of its outputs."""
+    try:
+        text = imp.GetOutputsDescription()
+    except Exception:
+        return {}
+    return {int(m.group(1)): m.group(2).strip()
+            for m in re.finditer(r"data output (\d+) with material named (.*?) texture file", str(text))}
+
+
+def pick_mtl_materials(actors: list, seq: list, mats: dict, names: dict | None = None) -> list:
+    """The .mtl material for each actor (or None). Best source: the importer's own list of which material each of its
+    outputs uses. Failing that the order of 'usemtl' lines in the file (when the counts agree), and last a match by
+    colour and by whether the actor has a colour map."""
+    if names and all(getattr(a, "_obj_out", None) in names for a in actors):
+        return [mats.get(names[a._obj_out]) for a in actors]
+    if len(seq) == len(actors):
+        return [mats.get(n) for n in seq]
+    out = []
+    for a in actors:
+        has_tex = a.GetTexture() is not None
+        col = a.GetProperty().GetColor()
+        best, best_d = None, 1e9
+        for m in mats.values():
+            if ("base" in m["maps"]) != has_tex:
+                continue
+            kd = m["kd"] or (0.8, 0.8, 0.8)
+            d = sum((kd[i] - col[i]) ** 2 for i in range(3)) if not has_tex else 0.0
+            if d < best_d:
+                best, best_d = m, d
+        out.append(best if (best is not None and (has_tex or best_d < 0.01)) else None)
+    if len(mats) == 1:
+        only = next(iter(mats.values()))
+        out = [m or only for m in out]
+    return out
+
+
+def attach_obj_material_maps(actors: list, obj_path: str, imp=None):
+    mtl = str(Path(obj_path).with_suffix(".mtl"))
+    mats = parse_mtl(mtl) if os.path.isfile(mtl) else {}
+    if not mats or not any(m["maps"].keys() - {"base"} or m["pr"] is not None or m["pm"] is not None
+                           for m in mats.values()):
+        return
+    chosen, cache = pick_mtl_materials(actors, obj_material_sequence(obj_path), mats,
+                                       importer_material_names(imp) if imp is not None else None), {}
+    for a, m in zip(actors, chosen):
+        if m is not None:
+            try:
+                attach_mtl_material(a, m, cache)
+            except Exception:
+                pass                                  # a bad map never stops the model from opening
+
+
+_OBJ_FACE_SPLIT = re.compile(rb"\s+")
+
+
+def patch_obj_missing_uv(data: bytes):
+    """vtkOBJImporter silently drops every face that has no texture coordinate ('f 1 2 3' or 'f 1//1 2//2 3//3').
+    Returns a copy of the .obj bytes in which such faces point at one dummy 'vt 0 0' line, or None when nothing needs
+    patching (or the file uses relative indices, which a patch could shift)."""
+    lines = data.split(b"\n")
+    n_vt, first_f, need = 0, None, False
+    for i, ln in enumerate(lines):
+        if ln.startswith(b"vt "):
+            n_vt += 1
+        elif ln.startswith(b"f "):
+            if first_f is None:
+                first_f = i
+            for tok in _OBJ_FACE_SPLIT.split(ln.strip())[1:]:
+                if tok.startswith(b"-") or b"/-" in tok:
+                    return None
+                parts = tok.split(b"/")
+                if len(parts) < 2 or not parts[1]:
+                    need = True
+    if not need or first_f is None:
+        return None
+    dummy = str(n_vt + 1).encode()
+    for i, ln in enumerate(lines):
+        if not ln.startswith(b"f "):
+            continue
+        toks = _OBJ_FACE_SPLIT.split(ln.strip())
+        fixed = [toks[0]]
+        for tok in toks[1:]:
+            parts = tok.split(b"/")
+            if len(parts) < 2 or not parts[1]:
+                parts = [parts[0], dummy] + parts[2:]
+            fixed.append(b"/".join(parts))
+        lines[i] = b" ".join(fixed)
+    lines.insert(first_f, b"vt 0 0")
+    return b"\n".join(lines)
+
+
+def _drop_dummy_uvs(ds) -> None:
+    """Remove texture coordinates that are all (0, 0): the placeholder patch_obj_missing_uv gave a UV-less part."""
+    try:
+        tc = ds.GetPointData().GetTCoords()
+        if tc is not None and tc.GetNumberOfTuples() and not numpy_support.vtk_to_numpy(tc).any():
+            ds.GetPointData().SetTCoords(None)
+    except Exception:
+        pass
+
+
 def _import_actors(path: str, ext: str) -> list:
     rw = vtkRenderWindow()                        # never rendered: no GL context is created
     ren = vtkRenderer()
     rw.AddRenderer(ren)
+    tmp_obj, patched_obj = None, False
     if ext in (".gltf", ".glb"):
         imp = vtkGLTFImporter()
         imp.SetFileName(path)
@@ -1143,13 +1467,32 @@ def _import_actors(path: str, ext: str) -> list:
         imp.SetFileName(path)
         imp.SetFileNameMTL(str(Path(path).with_suffix(".mtl")))
         imp.SetTexturePath(os.path.dirname(path))
+        try:                                      # faces without a 'vt' would be dropped: read a patched copy instead
+            with open(path, "rb") as fh:
+                fixed = patch_obj_missing_uv(fh.read())
+            if fixed is not None:
+                fd, tmp_obj = tempfile.mkstemp(suffix=".obj")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(fixed)
+                imp.SetFileName(tmp_obj)
+                patched_obj = True
+        except Exception:
+            pass
     imp.SetRenderWindow(rw)
-    imp.Update()
+    try:
+        imp.Update()
+    finally:
+        if tmp_obj:
+            try:
+                os.remove(tmp_obj)
+            except OSError:
+                pass
     col = ren.GetActors()
     col.InitTraversal()
     found = [col.GetNextActor() for _ in range(col.GetNumberOfItems())]
     out, seen = [], []
-    for a in found:
+    for fi, a in enumerate(found):
+        a._obj_out = fi                           # which importer output this actor came from
         ren.RemoveActor(a)
         m = a.GetMapper()
         if m is None:
@@ -1157,8 +1500,12 @@ def _import_actors(path: str, ext: str) -> list:
         m.Update()
         ds = _mapper_data(m)
         if ds is not None and ds.GetNumberOfPoints() > 0:
+            if patched_obj:
+                _drop_dummy_uvs(ds)
             a._faces = _face_count(ds)
             a._verts = ds.GetNumberOfPoints()
+            if ext in (".gltf", ".glb"):
+                mark_uv_v_down(ds)
             _phongify(a)
             tex = a.GetTexture()
             if tex is not None:
@@ -1169,6 +1516,11 @@ def _import_actors(path: str, ext: str) -> list:
                 _apply_color_mode(m, ds)
             _prepare_transparency(a, ds)
             out.append(a)
+    if ext == ".obj":
+        try:
+            attach_obj_material_maps(out, path, imp)
+        except Exception:
+            pass
     return out
 
 
