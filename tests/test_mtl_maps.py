@@ -60,3 +60,33 @@ def test_patch_obj_missing_uv_nothing_to_do():
     from formats import patch_obj_missing_uv
     assert patch_obj_missing_uv(b"v 0 0 0\nvt 0 0\nvn 0 0 1\nf 1/1/1 1/1/1 1/1/1\n") is None
     assert patch_obj_missing_uv(b"v 0 0 0\nf 1 1 1\nf -1 -1 -1\n") is None      # relative indices: leave alone
+
+
+def test_base_colour_map_attached_when_importer_lost_it(monkeypatch):
+    """vtkOBJImporter cuts 'map_Kd dir with spaces/a.png' at the first space: the .mtl parser's path is used instead."""
+    import numpy as np
+    import formats
+
+    class Prop:
+        color = None
+        def SetColor(self, *c): self.color = c
+
+    class Mapper:
+        sv = True
+        def ScalarVisibilityOff(self): self.sv = False
+
+    class Actor:
+        def __init__(self): self.tex, self.p, self.m = None, Prop(), Mapper()
+        def GetTexture(self): return self.tex
+        def SetTexture(self, t): self.tex = t
+        def GetProperty(self): return self.p
+        def GetMapper(self): return self.m
+
+    monkeypatch.setattr(formats, "_read_image_rows", lambda p: np.zeros((2, 2, 3), np.uint8))
+    monkeypatch.setattr(formats, "_rows_to_texture", lambda arr: ("tex", arr.shape))
+    a = Actor()
+    done = formats.attach_mtl_material(a, {"maps": {"base": "x/My Model_textures/a.png"}}, {})
+    assert done == ["base"] and a.tex == ("tex", (2, 2, 3)) and a.m.sv is False and a.p.color == (1, 1, 1)
+    b = Actor()
+    b.tex = "from importer"
+    assert formats.attach_mtl_material(b, {"maps": {"base": "x/a.png"}}, {}) == [] and b.tex == "from importer"
