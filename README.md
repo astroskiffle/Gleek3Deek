@@ -5,7 +5,6 @@
 [![Tests](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml/badge.svg)](https://github.com/astroskiffle/Gleek3Deek/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-
 ![Gleek3Deek screenshot](images/compare_2.jpg)
 
 > **Status:** early release. Expect rough edges, and please report them in the Issues tab.
@@ -46,6 +45,8 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Command-line mode** that audits whole folders and writes reports, read-only by design.
 - **Render mode** (`python main.py render model.glb --out renders`) that makes depth, normal, Canny, line and part-ID maps for AI image tools, reference sheets and screenshots from the command line, for one model or a whole folder.
 - **AI render via ComfyUI**: send a depth, normal, Canny, line or part-ID map of the current view to your own ComfyUI server (SDXL Turbo, ControlNet and so on) and get a picture back, from the AI panel (Ctrl+Shift+F12) or the command line. Nothing is bundled and nothing leaves your network.
+
+![Gleek3Deek comfyui](images/comfyui.jpg)
 
 ### Works with what you have
 glTF/GLB (including Draco and Meshopt compressed), OBJ, STL, PLY, FBX, DAE, USD, 3MF, STEP, `.blend` (with Blender installed) and dozens more through Assimp. See [Supported formats](GUIDE.md#supported-formats).
