@@ -25,7 +25,7 @@ Ensure the following models and custom nodes are installed in your ComfyUI envir
 > **⚠️ VRAM Warning:** While the workflow supports up to **7 reference images**, adding multiple images increases memory overhead and may exceed an **8GB VRAM** limit.
 
 ## Example Prompt
-In the included example, a depth map of an unfinished 3D female character model is passed as `<ref_image_0>` and transformed into a finished illustration using the following prompt:
+In the included example, a depth map of a 3D female character model is passed as `<ref_image_0>` and transformed into a finished illustration using the following prompt:
 
 ```text
 transform the <ref_image_0> depth image into an adorable chibi young fairy stands in a rustic cauldron at night, seen from the thighs up, holding a long stem mushroom. She has an oval face with smooth, clear skin, green eyes, arched brows, a small nose and coral lips, and blonde hair, polished stylized illustration, highly detailed, magical fantasy mood.
