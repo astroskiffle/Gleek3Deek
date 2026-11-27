@@ -29,7 +29,10 @@ The full details behind the [README](README.md): controls, every panel and tool,
 - **Output and automation**
   - [Export / convert and mesh simplification](#export--convert-and-mesh-simplification)
   - [Reference sheets for AI 3D tools](#reference-sheets-for-ai-3d-tools)
+  - [Control maps for AI image tools](#control-maps-for-ai-image-tools)
+  - [AI render with ComfyUI (the AI panel)](#ai-render-with-comfyui-the-ai-panel)
   - [Command-line mode](#command-line-mode)
+  - [Render mode (command line)](#render-mode-command-line)
 - **Reference**
   - [Supported formats](#supported-formats)
   - [Building the Windows .exe](#building-the-windows-exe)
@@ -105,6 +108,8 @@ python main.py
 | Hide/show the whole side panel | `Ctrl+B` (or the arrow on the right edge) |
 | Cycle material view: shaded, albedo, normals | `V` |
 | Reference sheet for AI 3D tools (Meshy, Tripo, Rodin, Luma) | `Shift+F12` (or **Main ▾ → Reference sheet…**) |
+| Control maps for AI image tools (depth, normal, Canny, lines, part IDs) | `Ctrl+F12` (or **Main ▾ → Control maps for AI image tools…**) |
+| AI render with ComfyUI (opens the AI panel) | `Ctrl+Shift+F12` (or **Panels → AI**) |
 | UV layout beside the model | `Shift+U` (or **Main ▾ → UV layout beside the model**) |
 | Measure between points (Measure tab) | `Shift+R` |
 | Split compare (MatCap on one side, normal shading on the other) | `D` (hide/show, keeps its position) |
@@ -189,15 +194,15 @@ Organise your assets without touching them. Everything is stored in one small te
 
 ## Side panels (a collapsible drawer on the right)
 
-The four side panels (**Materials**, **MatCap**, **Environment** and **Scene**) live in one drawer on the right edge of the window, so they sit beside the viewer instead of covering it. This helps most on a laptop screen.
+The five side panels (**Materials**, **MatCap**, **Environment**, **Scene** and **AI**) live in one drawer on the right edge of the window, so they sit beside the viewer instead of covering it. This helps most on a laptop screen.
 
-- **Open a panel** with its key (`Shift+M`, `E`, `Shift+L`, `Shift+G`) or by ticking it in the **Panels** menu. The menu lists the panels in the same left-to-right order as the tabs: Materials, MatCap, Environment, Scene. Untick a panel, or use the ✕ on its title bar, to put it away.
+- **Open a panel** with its key (`Shift+M`, `E`, `Shift+L`, `Shift+G`) or by ticking it in the **Panels** menu. The AI panel opens with `Ctrl+Shift+F12`. The menu lists the panels in the same left-to-right order as the tabs: Materials, MatCap, Environment, Scene, AI. Untick a panel, or use the ✕ on its title bar, to put it away.
 - **Collapse and expand the whole drawer:** click the slim arrow button on the right edge of the workspace, use **Panels → Show/Hide Panel**, or press `Ctrl+B`. The drawer slides out of the way and the workspace grows to fill the space; the arrow stays visible so you can bring it back. Which panels were open, and which tab was in front, are remembered.
 - **In the gallery** the drawer closes by itself and the arrow button is hidden, because the panels only apply to an open model. It comes back, as you left it, when you open a model.
 - **Docking is right-edge only.** Panels can't be docked to the top, left or bottom. Within the right edge you can rearrange them: drag a tab to reorder it, drag a panel's title bar onto another to group them as tabs, or to the top or bottom half of another to stack the two vertically. Drag a whole tab group by its title bar to move the group.
 - **Floating panels:** drag a panel out of the drawer and release it anywhere to leave it as its own window, for instance on a second screen. Drag either the tab itself or the panel's title text out of the drawer. Drag it back onto the right edge to dock it again. Floating panels are independent windows: they can overlap each other freely, and clicking one brings it to the front. A floating panel is not part of the drawer, so **Show/Hide Panel** and `Ctrl+B` leave it where it is. All panels, floating ones included, are put away in the gallery and return when you open a model.
 - **Scrolling:** every panel scrolls on its own, so nothing is clipped when a panel is short or narrow.
-- **Remembered:** your arrangement, the open panels, whether the drawer is expanded, its width and the window size are saved automatically and restored the next time you start the app. **Panels → Reset panel layout** puts the four tabs back in the default order (Materials, MatCap, Environment, Scene) with the drawer open.
+- **Remembered:** your arrangement, the open panels, whether the drawer is expanded, its width and the window size are saved automatically and restored the next time you start the app. **Panels → Reset panel layout** puts the tabs back in the default order (Materials, MatCap, Environment, Scene, AI) with the drawer open.
 
 ## Material views, textures and parts
 
@@ -415,6 +420,41 @@ Press **Shift+F12** (or **Main ▾ → Reference sheet for AI 3D tools…**) to 
 - **Shared baseline:** every view uses the same scale and the same centre height, so the top and the bottom of the model sit on exactly the same pixel rows in every view. All views look horizontally (no tilt), including the 3/4 view.
 - Views come from the live viewport, so a larger window gives a sharper result at the bigger sizes. The model uses its current colours and textures; hidden parts stay hidden.
 
+## Control maps for AI image tools
+
+Press **Ctrl+F12** (or **Main ▾ → Control maps for AI image tools…**) to save images that image generators such as Stable Diffusion with ControlNet, Flux or ComfyUI use to follow a shape. They are calculated from the 3D model, not guessed by an AI, so they are exact. Your camera angle, zoom, field of view and perspective or orthographic setting are used exactly as set in the viewer, so set up the view first.
+
+- **Maps:** *Depth* (near is white, far is black, with a grey floor so the model never vanishes into the background), *Normal* (the direction every surface faces, on the usual blue-purple background), *Canny edges* (outlines from depth, normals and the silhouette), *Line map* (clean hard-surface lines: creases and open borders found in 3D, drawn with hidden lines removed, plus the outline) and *Part IDs* (every visible part in its own flat colour on black, for segmentation or regional prompts). Tick any combination.
+- **Part IDs:** colours are exact (no shading, textures or blended edges), and a `<name>_parts.json` is saved beside the image listing each part's number, name and colour.
+- **Canny lines / Line map detail:** low, medium or high. For Canny, low gives fewer lines. For the line map, low keeps only sharp creases and high adds soft creases too.
+- **Keep cut-outs:** skips see-through texture pixels (leaves, fences, decals) so they leave gaps in the depth and normal maps instead of solid shapes.
+- **Output size:** the same as a screenshot, or a long side of your choice. The shape is kept, only the size changes.
+- **Saving:** choose a folder and a base name; each map is saved as `<name>_depth.png`, `<name>_normal.png` and so on.
+
+## AI render with ComfyUI (the AI panel)
+
+The **AI** panel sends a map of the current view to a [ComfyUI](https://github.com/comfyanonymous/ComfyUI) server, on this computer or your network, and shows the picture it makes. ComfyUI and its models are not part of Gleek3Deek and nothing leaves your network. Open the panel with `Ctrl+Shift+F12` or **Panels → AI**. It stays open while you work: move the camera, press **Generate** again.
+
+**Generate tab**
+- **Workflow:** *Built-in* (SDXL checkpoint plus ControlNet) or your own (see below).
+- **Maps to send:** depth, normal, Canny, line map, part IDs, or a plain screenshot of the view. The built-in workflow uses one map; your own workflow can take several, placed in order.
+- **Quality** (built-in workflow): *Fast* uses a few-step Turbo checkpoint at 512 px. *Balanced* (default) and *Best* use a full-step SDXL checkpoint at 768 or 1024 px with a detail pass, which is much sharper (about 45 seconds at 768 px on an 8 GB card).
+- **Prompt** and **Avoid:** what to draw and what to avoid.
+
+**Result tab:** the picture. Click it for a large pop-up with Save and Copy.
+
+**Settings tab:** the ComfyUI address (default `http://127.0.0.1:8188`) with **Connect**, which shows the version, GPU and VRAM and lists the checkpoints and ControlNets installed on the server. Also the checkpoint and ControlNet, output size, control strength, where the control stops (below 1.0 lets the AI add fine detail at the end), steps, the 1.5x detail pass, the seed (or a new random one each time) and, for your own workflow, **Apply the output size above to my workflow**.
+
+**Your own workflow.** Save a workflow in ComfyUI with *Save (API Format)* and choose it with **Load workflow…** (a file saved in the editor format is rejected with a message saying so). No editing is needed:
+- The ticked maps are placed in the workflow's Load Image nodes in order, so `<ref_image_0>` is the first ticked map, `<ref_image_1>` the second, and so on. The panel shows the mapping. Ticking more maps than the workflow has Load Image nodes adds more inputs to a *Set Reference Multi Latent* node.
+- The Prompt box replaces the positive prompt text. Leave it empty to keep the prompt saved in the workflow.
+- The seed is set on the workflow's samplers.
+- Everything else, including the size, is left as saved.
+- This suits image-edit models, for example Flux Klein, which can turn a normal map or a screenshot into a finished photo.
+- Workflows marked with placeholders (`{{prompt}}`, `{{image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{strength}}`, `{{checkpoint}}`, `{{controlnet}}`) are filled in from those instead.
+
+**If something goes wrong:** the message line shows ComfyUI's own error, for example a missing model or node. The first run after ComfyUI starts, or after its models were unloaded, is slower while it loads them. Cancel stops the job in ComfyUI. On an 8 GB card, several large reference images may run out of memory; use fewer maps or a smaller size.
+
 ## Command-line mode
 
 Run an audit from a console, without opening the window. Give a model file or a folder; any option starting with `-` selects this mode (`python main.py ...` and `python cli.py ...` do the same thing).
@@ -461,6 +501,24 @@ python cli.py ./assets -r --all --report audit.html     # one self-contained web
 
 **Notes.** The text output uses × and ≈, so it is written as UTF-8. The windowed Windows `.exe` prints to the terminal it was started from; for scripting, use `python cli.py` or a console build. Texel density and stretch figures use the default thresholds (×0.5 and ×2 of the median density, stretch 2).
 
+## Render mode (command line)
+
+`python main.py render model.glb --out renders` makes control maps, a reference sheet, screenshots and AI pictures without using the interface. It opens the 3D view briefly, so it needs a display and a graphics card; unlike the audit mode above it writes images. It never changes or deletes a model. Images go to `--out` (created if needed) and an existing image is never replaced unless you add `--force`. Your viewer settings are not touched. Give one model or a folder (`-r` includes sub-folders).
+
+```
+python main.py render model.glb --out renders --maps all --view iso --size 1024
+python main.py render "D:\Models" -r --out renders --maps depth,normal --sheet ortho4
+python main.py render model.glb --out renders --view iso --comfy "a red concept car, studio photo"
+python main.py render --help
+```
+
+- **What to make:** `--maps depth,normal,canny,lines,parts` (or `all`), `--sheet ortho4|hybrid4` (with `--sheet-cell`, `--sheet-bg`), `--screenshot`. With none of these, depth, normal and Canny are made. Files are named `<model>_<map>.png`.
+- **Camera:** `--view front|back|left|right|top|bottom|iso`, `--fov`, `--ortho`, `--size` (long side of the maps), `--window` (render window, default 1024x768).
+- **Map details:** `--canny low|mid|high`, `--detail low|mid|high`, `--no-cutout`.
+- **AI picture:** `--comfy "prompt"` sends a map to ComfyUI and saves `<model>_ai.png`. Related options: `--comfy-url`, `--comfy-map` (comma-separated, in the order the workflow uses them; `screenshot` is allowed), `--comfy-quality fast|balanced|best`, `--comfy-size`, `--comfy-seed` (default 1, so a run can be repeated), `--comfy-strength`, `--comfy-end`, `--comfy-steps`, `--no-detail-pass`, `--comfy-negative`, `--comfy-checkpoint`, `--comfy-controlnet`. `--comfy-workflow file.json` uses your own workflow (the prompt may then be left out), and `--comfy-set-size` applies the size to it.
+- **Other:** `--max-files`, `-q` (quiet), `--force`. Exit codes: 0 done, 2 bad usage, 3 some files could not be rendered.
+- **The packaged .exe** accepts `render` too. It prints nothing to the console, so start it with `start /wait` or redirect its output to a file if you need to see messages.
+
 ## Supported formats
 
 | Format | Extensions | How it's read | Notes |
@@ -476,6 +534,8 @@ python cli.py ./assets -r --all --report audit.html     # one self-contained web
 | Cinema 4D, Maya, 3ds Max | `.c4d` `.mb` `.ma` `.max` | not readable | Closed formats. Export to glTF, FBX or OBJ from the original app |
 
 Any file whose thumbnail can't be generated keeps the generic cube icon. Thumbnails are skipped outright for `.blend`, motion-capture and the closed formats, and for files over 200 MB (change with the `GLEEK_THUMB_MAX_MB` environment variable).
+
+**OBJ and its `.mtl`.** The colour (`map_Kd`), normal (`map_Bump` / `norm`), roughness, metallic, emissive and occlusion maps named in the `.mtl` are read, including texture folders with spaces in their names. Normal maps need tangents, which are generated for you. Parts of an OBJ that have no texture coordinates are still shown (a plain importer would drop them).
 
 ## Building the Windows .exe
 
@@ -510,6 +570,9 @@ Gleek3Deek/
 ├── formats.py                # file loading: format list, importers, GLB fixes (no windows)
 ├── analysis.py               # texture audit, mesh checks, measurements, UV maths, LOD, export (no windows)
 ├── cli.py                    # command-line mode (read-only audit of a file or folder)
+├── render_cli.py             # render mode: control maps, reference sheets, screenshots and AI pictures from the command line
+├── comfy_client.py           # talks to a ComfyUI server: uploads maps, builds or fills workflows, fetches the result (no windows)
+├── ai_panel.py               # the AI panel: Generate, Result and Settings tabs, and the large picture pop-up
 ├── matcap.py                 # MatCap shaders, custom MatCap parameters, editor and preview
 ├── gallery.py                # thumbnail grid, thumbnails, file icons, background loading
 ├── library.py                # tags, colour labels, ratings and smart folders (one JSON file, no windows)
@@ -539,7 +602,7 @@ Gleek3Deek/
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
-The tests cover the mesh checks, measurements, UV maths, texture audit, the command-line mode and reports, compressed-GLB conversion, Fake AO and panorama light, the tags/ratings library, and an import check of every module (about 110 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
+The tests cover the mesh checks, measurements, UV maths, texture audit, the command-line mode and reports, compressed-GLB conversion, Fake AO and panorama light, the tags/ratings library, OBJ/MTL texture handling, the control maps, render mode, the ComfyUI client (against a fake local server), and an import check of every module (about 240 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
 
 ## About dialog
 
