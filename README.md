@@ -46,7 +46,7 @@ You have a folder full of models from a dozen sources and you want to *see* them
 - **Render mode** (`python main.py render model.glb --out renders`) that makes depth, normal, Canny, line and part-ID maps for AI image tools, reference sheets and screenshots from the command line, for one model or a whole folder.
 - **AI render via ComfyUI**: send a depth, normal, Canny, line or part-ID map of the current view to your own ComfyUI server (SDXL Turbo, ControlNet and so on) and get a picture back, from the AI panel (Ctrl+Shift+F12) or the command line. Nothing is bundled and nothing leaves your network.
 
-![Gleek3Deek comfyui](images/comfyui.jpg)
+![Gleek3Deek comfyui](images/Gleek3Deek_Comfyui4.png)
 
 ### Works with what you have
 glTF/GLB (including Draco and Meshopt compressed), OBJ, STL, PLY, FBX, DAE, USD, 3MF, STEP, `.blend` (with Blender installed) and dozens more through Assimp. See [Supported formats](GUIDE.md#supported-formats).
