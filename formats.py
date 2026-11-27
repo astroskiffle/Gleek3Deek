@@ -1320,6 +1320,21 @@ def attach_mtl_material(a, mat: dict, cache: dict) -> list:
             cache[p] = _read_image_rows(p)
         return cache[p]
 
+    if "base" in maps and a.GetTexture() is None:
+        # vtkOBJImporter splits the map_Kd line at spaces, so a texture path such as "My Model_textures/a.png" is cut
+        # off and the colour map is lost. The .mtl was read properly here, so attach the colour map ourselves.
+        arr = load(maps["base"])
+        if arr is not None and arr.shape[2] in (1, 2, 3, 4):
+            key = (maps["base"], "base")
+            if key not in cache:
+                cache[key] = _rows_to_texture(arr)
+            a.SetTexture(cache[key])
+            try:
+                a.GetMapper().ScalarVisibilityOff()
+            except Exception:
+                pass
+            a.GetProperty().SetColor(1, 1, 1)
+            done.append("base")
     for role, name in (("normal", "normalTex"), ("emissive", "emissiveTex")):
         arr = load(maps[role]) if role in maps else None
         if arr is not None:
@@ -1392,8 +1407,7 @@ def pick_mtl_materials(actors: list, seq: list, mats: dict, names: dict | None =
 def attach_obj_material_maps(actors: list, obj_path: str, imp=None):
     mtl = str(Path(obj_path).with_suffix(".mtl"))
     mats = parse_mtl(mtl) if os.path.isfile(mtl) else {}
-    if not mats or not any(m["maps"].keys() - {"base"} or m["pr"] is not None or m["pm"] is not None
-                           for m in mats.values()):
+    if not mats or not any(m["maps"] or m["pr"] is not None or m["pm"] is not None for m in mats.values()):
         return
     chosen, cache = pick_mtl_materials(actors, obj_material_sequence(obj_path), mats,
                                        importer_material_names(imp) if imp is not None else None), {}
