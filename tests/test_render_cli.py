@@ -13,7 +13,7 @@ def test_parse_window():
 
 def test_parse_maps():
     assert parse_maps("lines,depth") == ["depth", "lines"]        # fixed order
-    assert parse_maps("all") == ["depth", "normal", "canny", "lines"]
+    assert parse_maps("all") == ["depth", "normal", "canny", "lines", "parts"]
     assert parse_maps("") == []
     with pytest.raises(ValueError):
         parse_maps("depth,bogus")

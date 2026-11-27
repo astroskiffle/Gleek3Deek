@@ -83,3 +83,25 @@ def test_combine_lines_merges_feature_lines_and_outline():
     assert out[:8].max() == 0
     thick = combine_lines(feat, d, d[..., 0] > 0, thickness=3)
     assert (thick > 0).sum() > (out > 0).sum()
+
+
+def test_part_palette_is_distinct_and_never_black():
+    from analysis import part_palette
+    pal = part_palette(40)
+    assert len(pal) == len(set(pal)) == 40 and (0, 0, 0) not in pal
+    assert all(max(c) >= 100 for c in pal)
+
+
+def test_part_id_shader_paints_flat_colour():
+    from analysis import part_id_shader
+    assert "vec4(1.000000, 0.000000, 0.501961, 1.0)" in part_id_shader((255, 0, 128))
+
+
+def test_snap_to_palette_removes_blended_edge_pixels():
+    import numpy as np
+    from analysis import snap_to_palette
+    red, blue = (200, 20, 20), (20, 20, 200)
+    img = np.zeros((1, 5, 3), np.uint8)
+    img[0, 0], img[0, 1], img[0, 2], img[0, 3] = red, (190, 25, 30), (30, 25, 190), blue
+    out = snap_to_palette(img, [red, blue])
+    assert [tuple(p) for p in out[0]] == [red, red, blue, blue, (0, 0, 0)]

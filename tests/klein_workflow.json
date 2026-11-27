@@ -1,0 +1,171 @@
+{
+  "2": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "flux3",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "7": {
+    "inputs": {
+      "seed": 479441418734982,
+      "steps": 25,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "62",
+        0
+      ],
+      "positive": [
+        "17",
+        0
+      ],
+      "negative": [
+        "17",
+        1
+      ],
+      "latent_image": [
+        "17",
+        2
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "8": {
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "9": {
+    "inputs": {
+      "filename_prefix": "image_flux3_klein_distilled_image_edit",
+      "images": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "17": {
+    "inputs": {
+      "resolution": "resize",
+      "resolution.megapixels": 1,
+      "positive": [
+        "63",
+        0
+      ],
+      "negative": [
+        "58",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "images.image0": [
+        "54",
+        0
+      ]
+    },
+    "class_type": "ReferenceMultiLatent",
+    "_meta": {
+      "title": "Set Reference Multi Latent",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "54": {
+    "inputs": {
+      "image": "gleek3deek_normal_be18c841.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "58": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Negative Prompt",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  },
+  "62": {
+    "inputs": {
+      "gguf_name": "flux-3-image-klein-UD-Q4_K_XL.gguf"
+    },
+    "class_type": "LoaderGGUF",
+    "_meta": {
+      "title": "GGUF Loader",
+      "cnr_id": "gguf",
+      "ver": "3.1.4"
+    }
+  },
+  "63": {
+    "inputs": {
+      "text": "In <ref_image_0>, convert the controlnet normal image into a high quality studio macro shot of a tradtional green jade statue of a chinese dragon. The dragon is on a dark reflective surface. dark background, rim light. The scene is lit so as to enhance the sub surface scattering effect on the statue.",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Prompt)",
+      "cnr_id": "comfy-core",
+      "ver": "0.41.3"
+    }
+  }
+}
