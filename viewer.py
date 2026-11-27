@@ -57,7 +57,7 @@ from formats import _face_count, _log_size, _mapper_data, _shader_error_since, h
 from analysis import (
     CANNY_SENSITIVITY, CONTROL_MAPS, CONTROL_SIZES, LINE_DETAIL, EXPORT_FORMATS, LOD_LEVELS, SHEET_BACKGROUNDS, SHEET_CELLS, SHEET_ENV, SHEET_LAYOUTS, UNITS,
     UV_COLOR_OK, UV_HEAT_DEFAULTS, UV_ISLAND_TESTS, UV_TESTS, _HEAT_STOPS, _STRETCH_STOPS, angle_at,
-    NORMAL_PASS_SHADER, background_mask, build_export_polydata, canny_from_passes, collect_model_info, combine_lines, control_scale, cutout_code, depth_range, depth_shader, export_default_name, fmt_num, lod_decimate,
+    NORMAL_PASS_SHADER, background_mask, part_id_shader, part_palette, snap_to_palette, build_export_polydata, canny_from_passes, collect_model_info, combine_lines, control_scale, cutout_code, depth_range, depth_shader, export_default_name, fmt_num, lod_decimate,
     measure_model, Cancelled, cavity_part, mesh_part_analysis, mesh_totals, run_parts, sheet_framing,
     sheet_views, snapshot_export_parts, texture_channel_rgb, texture_to_array, unit_scale,
     uv_collect_part, uv_heat_density, uv_heat_stretch, uv_poly_colors, weighted_median, world_parts,
@@ -1061,6 +1061,7 @@ class Viewer(QWidget):
         menu.addSeparator()
         menu.addAction("Reference sheet for AI 3D tools…\tShift+F12", lambda _=False: self.open_reference_sheet_dialog())
         menu.addAction("Control maps for AI image tools…\tCtrl+F12", lambda _=False: self.open_control_maps_dialog())
+        menu.addAction("AI render with ComfyUI…\tCtrl+Shift+F12", lambda _=False: self.open_ai_panel())
         menu.addAction("Save screenshot…\tF12", lambda _=False: self.save_screenshot())
         menu.addAction("Copy screenshot\tCtrl+C", lambda _=False: self.copy_screenshot())
 
@@ -2885,6 +2886,16 @@ class Viewer(QWidget):
         self.materials_panel().refresh()
         self.panel_requested.emit("materials")
 
+    def ai_panel(self):
+        if getattr(self, "_ai_panel", None) is None:
+            from ai_panel import AIPanel
+            self._ai_panel = AIPanel(None, self)
+        return self._ai_panel
+
+    def open_ai_panel(self):
+        self.ai_panel()
+        self.panel_requested.emit("ai")
+
     # ----- transparency (solid by default) ---------------------------------
     def _tr_actors(self):
         return [a for a in self.actors if getattr(a, "_tr", None) is not None]
@@ -3972,6 +3983,13 @@ class Viewer(QWidget):
                 n += 1
             if img.save(fn, "PNG"):
                 saved.append(os.path.basename(fn))
+                if key == "parts" and self.last_parts_legend:
+                    try:
+                        with open(os.path.splitext(fn)[0] + ".json", "w", encoding="utf-8") as fh:
+                            json.dump(self.last_parts_legend, fh, indent=2)
+                        saved.append(os.path.splitext(os.path.basename(fn))[0] + ".json")
+                    except OSError:
+                        pass
         if saved:
             self.message.emit("Saved " + ", ".join(saved))
 
@@ -4025,6 +4043,7 @@ class Viewer(QWidget):
     def render_control_maps(self, opt: dict) -> dict:
         """{'depth': rgb, 'normal': rgb, 'canny': rgb} uint8 arrays of the current view (camera untouched)."""
         want = set(opt["maps"])
+        self.last_parts_legend = []
         target = int(opt.get("size") or 0)
         vw, vh = self._view_px()
         scale = control_scale(target, vw, vh, int(self.shot_scale))
@@ -4065,7 +4084,8 @@ class Viewer(QWidget):
                     for a in self.actors:
                         sp = a.GetShaderProperty()
                         sp.ClearAllFragmentShaderReplacements()
-                        sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True, code, False)
+                        sp.AddFragmentShaderReplacement("//VTK::Light::Impl", True,
+                                                        code(a) if callable(code) else code, False)
                         sp.AddFragmentShaderReplacement("//VTK::TCoord::Impl", True,
                                                         cutout_code(use_cut[id(a)]), False)
                     arr, _s = self._grab_pass(bg, scale)
@@ -4082,6 +4102,15 @@ class Viewer(QWidget):
             need_normal = want & {"normal", "canny"}
             depth = run(depth_shader(near, far), (0.0, 0.0, 0.0)) if need_depth else None
             normal = run(NORMAL_PASS_SHADER, (0.5, 0.5, 1.0)) if need_normal else None
+            if "parts" in want:
+                pal = part_palette(len(self.actors))
+                where = {id(a): i for i, a in enumerate(self.actors)}
+                shown = [i for i, a in enumerate(self.actors) if a.GetVisibility()]
+                raw = run(lambda a: part_id_shader(pal[where[id(a)]]), (0.0, 0.0, 0.0))
+                out["parts"] = snap_to_palette(raw, [pal[i] for i in shown])
+                self.last_parts_legend = [
+                    {"part": i + 1, "name": getattr(self.actors[i], "_name", "") or f"Part {i + 1}",
+                     "color": list(pal[i]), "hex": "#%02x%02x%02x" % pal[i]} for i in shown]
             if "depth" in want:
                 out["depth"] = depth
             if "normal" in want:
@@ -4226,6 +4255,8 @@ class Viewer(QWidget):
         self.message.emit("Screenshot copied to clipboard")
 
     def shutdown(self):
+        if getattr(self, "_ai_panel", None) is not None:
+            self._ai_panel.stop()                       # a running AI request must end before the window goes
         self._uv_stop()
         self._mesh_stop()
         self._orbit_timer.stop()

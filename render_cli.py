@@ -6,6 +6,7 @@ Gleek3Deek render mode: make images from the command line, no clicking.
     python main.py render model.glb --out renders --maps all --view iso --fov 35 --size 1024
     python main.py render ./assets -r --out renders --maps depth,lines --view front
     python main.py render model.glb --out renders --sheet ortho4 --screenshot
+    python main.py render model.glb --out renders --view iso --comfy "a red concept car, studio photo"
 
 Maps are the same ones as Ctrl+F12 in the viewer (depth, normal, canny, lines); --sheet makes the Shift+F12
 reference sheet; --screenshot makes a plain screenshot. A window is opened briefly off to the side while it renders.
@@ -18,11 +19,12 @@ Exit codes:  0 = done   2 = bad usage   3 = some files could not be rendered
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
 
-MAP_KEYS = ["depth", "normal", "canny", "lines"]
+MAP_KEYS = ["depth", "normal", "canny", "lines", "parts"]
 VIEWS = ["front", "back", "left", "right", "top", "bottom", "iso"]
 LEVELS = ["low", "mid", "high"]
 SHEETS = ["ortho4", "hybrid4"]
@@ -40,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("path", help="a model file, or a folder of models")
     p.add_argument("--out", required=True, metavar="DIR", help="folder for the images (created if needed)")
     p.add_argument("-r", "--recursive", action="store_true", help="include sub-folders (symbolic links are never followed)")
-    p.add_argument("--maps", default="", metavar="LIST", help="comma-separated: depth,normal,canny,lines or all")
+    p.add_argument("--maps", default="", metavar="LIST", help="comma-separated: depth,normal,canny,lines,parts or all")
     p.add_argument("--sheet", choices=SHEETS, help="also make the reference sheet (ortho4 or hybrid4 layout)")
     p.add_argument("--sheet-cell", type=int, default=1024, metavar="PX", help="reference sheet: size of each view (default 1024)")
     p.add_argument("--sheet-bg", choices=["white", "grey"], default="white", help="reference sheet background")
@@ -54,6 +56,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--detail", choices=LEVELS, default="mid", help="line map: low = only sharp creases, high = soft creases too")
     p.add_argument("--no-cutout", action="store_true", help="do not skip see-through texture pixels in depth and normal maps")
     p.add_argument("--force", action="store_true", help="replace images that already exist")
+    g = p.add_argument_group("AI render (needs a running ComfyUI server)")
+    g.add_argument("--comfy", metavar="PROMPT", nargs="?", const="", default=None,
+                   help="also send control map(s) to ComfyUI with this prompt; saves <model>_ai.png. With --comfy-workflow "
+                        "the prompt may be left out to use the one saved in the workflow")
+    g.add_argument("--comfy-url", default="http://127.0.0.1:8188", metavar="URL", help="ComfyUI address (default http://127.0.0.1:8188)")
+    g.add_argument("--comfy-map", default="depth", metavar="MAPS",
+                   help="which map(s) to send, comma-separated, in the order the workflow uses them (ref_image_0, "
+                        "ref_image_1, ...): depth, normal, canny, lines, parts, screenshot (default depth)")
+    g.add_argument("--comfy-negative", default="text, watermark, blurry, low quality", metavar="TEXT", help="what to avoid")
+    g.add_argument("--comfy-quality", choices=["fast", "balanced", "best"], default="balanced",
+                   help="fast = few-step Turbo checkpoint at 512 px; balanced = full steps, 768 px, detail pass (default); "
+                        "best = 1024 px")
+    g.add_argument("--comfy-strength", type=float, default=0.7, metavar="X", help="ControlNet strength (default 0.7)")
+    g.add_argument("--comfy-end", type=float, default=0.85, metavar="X", help="ControlNet stops at this fraction of the steps (default 0.85)")
+    g.add_argument("--comfy-steps", type=int, default=0, metavar="N", help="sampling steps (default: automatic)")
+    g.add_argument("--no-detail-pass", action="store_true", help="skip the extra 1.5x detail pass")
+    g.add_argument("--comfy-seed", type=int, default=1, metavar="N", help="seed (default 1, so a run can be repeated)")
+    g.add_argument("--comfy-size", type=int, default=0, metavar="PX", help="long side of the AI picture (default: set by the quality)")
+    g.add_argument("--comfy-checkpoint", metavar="NAME", help="checkpoint file name (default: a Turbo one if installed)")
+    g.add_argument("--comfy-controlnet", metavar="NAME", help="ControlNet file name (default: chosen for the checkpoint)")
+    g.add_argument("--comfy-set-size", action="store_true", help="apply --comfy-size to your own workflow (otherwise its saved size is used)")
+    g.add_argument("--comfy-workflow", metavar="FILE", help="your own workflow saved with ComfyUI's 'Save (API Format)'")
     p.add_argument("--max-files", type=int, default=500, metavar="N", help="stop after this many models in a folder (default 500)")
     p.add_argument("-q", "--quiet", action="store_true", help="print nothing except errors")
     return p
@@ -103,6 +127,17 @@ def _say(args, text):
         print(text)
 
 
+def _once():
+    """A progress printer that only speaks when the message changes."""
+    last = [None]
+
+    def say(t):
+        if t != last[0]:
+            last[0] = t
+            print("  " + t)
+    return say
+
+
 def _models(path: str, recursive: bool, limit: int):
     if os.path.isfile(path):
         return [path]
@@ -133,8 +168,39 @@ def run(argv: list) -> int:
     except ValueError as e:
         print("error: " + str(e), file=sys.stderr)
         return 2
-    if not maps and not args.sheet and not args.screenshot:
+    use_comfy = args.comfy is not None or bool(args.comfy_workflow)
+    if not maps and not args.sheet and not args.screenshot and not use_comfy:
         maps = ["depth", "normal", "canny"]
+    comfy = None
+    if use_comfy:
+        import comfy_client as cc
+        cmaps = [k.strip() for k in args.comfy_map.split(",") if k.strip()]
+        bad = [k for k in cmaps if k not in cc.MAP_LABELS]
+        if bad or not cmaps:
+            print("error: --comfy-map must be a comma-separated list of: " + ", ".join(cc.MAP_LABELS), file=sys.stderr)
+            return 2
+        if not args.comfy_workflow:
+            if not (args.comfy or "").strip():
+                print("error: --comfy needs a prompt (or use --comfy-workflow with a prompt saved in it)", file=sys.stderr)
+                return 2
+            cmaps = cmaps[:1]
+        try:
+            base = cc.normalize_url(args.comfy_url)
+            info = cc.server_info(base)
+            template = cc.load_template(args.comfy_workflow) if args.comfy_workflow else None
+        except cc.ComfyError as e:
+            print("error: " + str(e), file=sys.stderr)
+            return 2
+        ckpt = args.comfy_checkpoint or cc.pick_checkpoint(info["checkpoints"], args.comfy_quality)
+        cnet = args.comfy_controlnet or cc.pick_controlnet(info["controlnets"], cmaps[0], ckpt)
+        if template is None and (not ckpt or not cnet):
+            print("error: the server has no checkpoint or ControlNet to use; name them with --comfy-checkpoint / --comfy-controlnet",
+                  file=sys.stderr)
+            return 2
+        qual = cc.QUALITY[args.comfy_quality]
+        comfy = {"cc": cc, "base": base, "template": template, "checkpoint": ckpt, "controlnet": cnet, "maps": cmaps,
+                 "size": args.comfy_size or qual["size"], "hires": qual["hires"] and not args.no_detail_pass}
+        _say(args, f"ComfyUI {info['version']} at {base}: {ckpt} + {cnet}")
     if args.fov is not None and not (10.0 <= args.fov <= 90.0):
         print("error: --fov must be between 10 and 90", file=sys.stderr)
         return 2
@@ -156,7 +222,7 @@ def run(argv: list) -> int:
     tmp = tempfile.mkdtemp(prefix="gleek_render_")
     QSettings.setDefaultFormat(QSettings.IniFormat)
     QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, tmp)
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
     from PySide6.QtGui import QImage
     from PySide6.QtWidgets import QApplication
     import numpy as np
@@ -206,7 +272,41 @@ def run(argv: list) -> int:
                 made = v.render_control_maps({"maps": maps, "canny": args.canny, "lines": args.detail,
                                               "size": args.size, "cutout": not args.no_cutout})
                 for key, arr in made.items():
-                    save(to_qimage(arr), stem, key)
+                    wrote = save(to_qimage(arr), stem, key)
+                    if key == "parts" and wrote and getattr(v, "last_parts_legend", None):
+                        with open(os.path.join(out_dir, f"{stem}_parts.json"), "w", encoding="utf-8") as fh:
+                            json.dump(v.last_parts_legend, fh, indent=2)
+                        _say(args, f"  wrote {stem}_parts.json")
+            if comfy:
+                cc, keys = comfy["cc"], comfy["maps"]
+                wanted = [k for k in keys if k != "screenshot"]
+                arrs = (v.render_control_maps({"maps": wanted, "canny": args.canny, "lines": args.detail,
+                                               "size": comfy["size"], "cutout": not args.no_cutout}) if wanted else {})
+                images, dims = [], None
+                for k in keys:
+                    if k == "screenshot":
+                        qi = v.grab_image()
+                        if qi is None or qi.isNull():
+                            raise RuntimeError("the viewport could not be captured")
+                        dims = dims or (qi.width(), qi.height())
+                    else:
+                        qi = to_qimage(arrs[k])
+                        dims = dims or (qi.width(), qi.height())
+                    buf = QBuffer()
+                    buf.open(QIODevice.WriteOnly)
+                    qi.save(buf, "PNG")
+                    images.append((k, bytes(buf.data())))
+                fw, fh = cc.fit_size(dims[0], dims[1], comfy["size"])
+                opt = {"checkpoint": comfy["checkpoint"], "controlnet": comfy["controlnet"], "map": keys[0],
+                       "prompt": args.comfy or "", "negative": args.comfy_negative, "seed": args.comfy_seed,
+                       "width": fw, "height": fh, "strength": args.comfy_strength, "end_percent": args.comfy_end,
+                       "steps": args.comfy_steps, "hires": comfy["hires"]}
+                png = cc.generate(comfy["base"], images, opt, comfy["template"],
+                                  None if args.quiet else _once(), args.comfy_set_size)
+                ai = QImage.fromData(QByteArray(png))
+                if ai.isNull():
+                    raise RuntimeError("ComfyUI returned something that is not an image")
+                save(ai, stem, "ai")
             if args.sheet:
                 sheet, _cells = v.render_reference_sheet({"layout": args.sheet, "bg": args.sheet_bg,
                                                           "cell": args.sheet_cell, "labels": False, "single": False})

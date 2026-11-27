@@ -719,7 +719,7 @@ class MainWindow(QMainWindow):
             ("A", v.act_axes.toggle), ("C", v.act_ortho.toggle), ("U", v.toggle_up_axis),
             ("T", v.toggle_transparency),
             ("F12", v.save_screenshot), ("Shift+F12", v.open_reference_sheet_dialog),
-            ("Ctrl+F12", v.open_control_maps_dialog), ("Ctrl+C", v.copy_screenshot),
+            ("Ctrl+F12", v.open_control_maps_dialog), ("Ctrl+Shift+F12", v.open_ai_panel), ("Ctrl+C", v.copy_screenshot),
             ("K", self._toggle_compare), ("Shift+K", v.act_link.toggle),
             ("Left", lambda: self._step(-1)), ("Right", lambda: self._step(1)),
             ("E", v.open_matcap_editor),
@@ -1062,11 +1062,12 @@ class MainWindow(QMainWindow):
     # Native QDockWidget does the tabbing and vertical stacking. Panels may only dock on the right.
     # The whole right-hand group slides in and out as a "drawer" (YouTube-style), driven by the
     # edge button, the Panels menu or Ctrl+B, and it collapses automatically in the gallery.
-    DOCK_STATE_VERSION = 3                           # bumped: older layouts allowed other edges / grouped floating windows
+    DOCK_STATE_VERSION = 4                           # bumped: older layouts allowed other edges / grouped floating windows
     DOCK_SPECS = [("materials", "Materials", "materials_panel"),
                   ("matcap", "MatCap", "matcap_editor"),
                   ("environment", "Environment", "environment_panel"),
-                  ("scene", "Scene", "scene_panel")]
+                  ("scene", "Scene", "scene_panel"),
+                  ("ai", "AI", "ai_panel")]
     DRAWER_DEFAULT_WIDTH = 380
 
     def _make_dock(self, key: str, title: str, panel) -> "PanelDock":

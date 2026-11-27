@@ -1129,12 +1129,48 @@ def sheet_framing(lo, hi, dirs, up, pad: float = 0.06):
 CONTROL_MAPS = [("depth", "Depth map (near = white, far = dark, background = black)"),
                 ("normal", "Normal map (view space, flat purple background)"),
                 ("canny", "Canny edges (white lines on black, from depth + normals)"),
-                ("lines", "Line map (creases, borders and outline: clean hard-surface lines, white on black)")]
+                ("lines", "Line map (creases, borders and outline: clean hard-surface lines, white on black)"),
+                ("parts", "Part ID map (a flat colour for every part, for segmentation and regional prompts)")]
 LINE_DETAIL = [("low", "Fewer lines (only sharp creases)", 60.0), ("mid", "Balanced", 40.0),
                ("high", "More lines (soft creases too)", 25.0)]
 CONTROL_SIZES = [0, 768, 1024, 1536, 2048, 3072]       # long side in px; 0 = as big as a screenshot (F12)
 DEPTH_FLOOR = 0.08          # the farthest surface of the model, so it stays brighter than the black background
 CANNY_SENSITIVITY = [("low", "Fewer lines", 0.30), ("mid", "Balanced", 0.18), ("high", "More lines", 0.10)]
+
+
+def part_palette(n: int) -> list:
+    """n clearly different, fairly bright (r, g, b) 0-255 colours, never black: golden-ratio hue steps with the
+    saturation / brightness alternating, so neighbouring part numbers do not look alike."""
+    import colorsys
+    out = []
+    for i in range(max(0, n)):
+        h = (i * 0.61803398875) % 1.0
+        s_, v = (0.85, 0.95) if i % 2 == 0 else (0.60, 0.78)
+        if i % 3 == 2:
+            s_, v = 0.95, 0.65
+        r, g, b = colorsys.hsv_to_rgb(h, s_, v)
+        out.append((int(round(r * 255)), int(round(g * 255)), int(round(b * 255))))
+    return out
+
+
+def part_id_shader(rgb) -> str:
+    """Fragment code that paints a surface one flat colour (0-255 triple), unlit."""
+    r, g, b = (max(0, min(255, int(c))) / 255.0 for c in rgb)
+    return f"  fragOutput0 = vec4({r:.6f}, {g:.6f}, {b:.6f}, 1.0);\n"
+
+
+def snap_to_palette(rgb, colors) -> "np.ndarray":
+    """Move every pixel to the nearest colour of `colors` or to black (background). Anti-aliased edge pixels that
+    blend two parts become one of them, so the map holds only the exact part colours."""
+    arr = np.ascontiguousarray(rgb, np.uint8)
+    pal = np.array([(0, 0, 0)] + [tuple(c) for c in colors], np.int32)
+    flat = arr.reshape(-1, 3)
+    packed = (flat[:, 0].astype(np.uint32) << 16) | (flat[:, 1].astype(np.uint32) << 8) | flat[:, 2].astype(np.uint32)
+    uniq, inv = np.unique(packed, return_inverse=True)
+    uc = np.stack([(uniq >> 16) & 255, (uniq >> 8) & 255, uniq & 255], axis=1).astype(np.int32)
+    d = ((uc[:, None, :] - pal[None, :, :]) ** 2).sum(axis=2)
+    mapped = pal[d.argmin(axis=1)].astype(np.uint8)
+    return mapped[inv.reshape(-1)].reshape(arr.shape)
 
 
 def control_scale(target: int, view_w: int, view_h: int, default: int, cap: int = 4) -> int:
