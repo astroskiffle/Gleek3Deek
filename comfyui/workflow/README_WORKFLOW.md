@@ -31,6 +31,8 @@ In the included example, a depth map of an unfinished 3D female character model 
 transform the <ref_image_0> depth image into an adorable chibi young fairy stands in a rustic cauldron at night, seen from the thighs up, holding a long stem mushroom. She has an oval face with smooth, clear skin, green eyes, arched brows, a small nose and coral lips, and blonde hair, polished stylized illustration, highly detailed, magical fantasy mood.
 ```
 
+If you encounter issues getting the .json file to run in Gleek3Deek, load it directly into ComfyUI. Errors can be debugged more easily from there.
+
 
 
 
