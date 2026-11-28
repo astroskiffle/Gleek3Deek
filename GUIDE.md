@@ -31,6 +31,7 @@ The full details behind the [README](README.md): controls, every panel and tool,
   - [Reference sheets for AI 3D tools](#reference-sheets-for-ai-3d-tools)
   - [Control maps for AI image tools](#control-maps-for-ai-image-tools)
   - [AI render with ComfyUI (the AI panel)](#ai-render-with-comfyui-the-ai-panel)
+  - [AI actions and texture editing](#ai-actions-and-texture-editing)
   - [Command-line mode](#command-line-mode)
   - [Render mode (command line)](#render-mode-command-line)
 - **Reference**
@@ -221,6 +222,7 @@ Press **V** to cycle the view through **Shaded**, **Albedo** and **Normals**, or
 **Textures tab**
 - Lists the distinct textures with a thumbnail, size and how many parts use them. Base colour is always shown; occlusion/roughness/metallic, normal and emissive maps appear when the file provides them (glTF/GLB does).
 - Double-click one for a large preview, with **R, G, B and A** buttons to look at a single channel. This is handy for checking a roughness map or whether a texture hides stray transparency.
+- **Edit with AI…** sends the selected texture to ComfyUI and shows the result next to the original; **Upscale textures…** enlarges several at once. Both need a ComfyUI server, see [AI actions and texture editing](#ai-actions-and-texture-editing).
 
 ## Scene settings (ground, camera, display, screenshots)
 
@@ -443,6 +445,8 @@ The **AI** panel sends a map of the current view to a [ComfyUI](https://github.c
 
 **Result tab:** the picture. Click it for a large pop-up with Save and Copy.
 
+**Actions tab:** your saved ComfyUI workflows (upscale, restyle and your own), run on the current view. See [AI actions and texture editing](#ai-actions-and-texture-editing).
+
 **Settings tab:** the ComfyUI address (default `http://127.0.0.1:8188`) with **Connect**, which shows the version, GPU and VRAM and lists the checkpoints and ControlNets installed on the server. Also the checkpoint and ControlNet, output size, control strength, where the control stops (below 1.0 lets the AI add fine detail at the end), steps, the 1.5x detail pass, the seed (or a new random one each time) and, for your own workflow, **Apply the output size above to my workflow**.
 
 **Your own workflow.** Save a workflow in ComfyUI with *Save (API Format)* and choose it with **Load workflow…** (a file saved in the editor format is rejected with a message saying so). No editing is needed:
@@ -453,7 +457,32 @@ The **AI** panel sends a map of the current view to a [ComfyUI](https://github.c
 - This suits image-edit models, for example Flux Klein, which can turn a normal map or a screenshot into a finished photo.
 - Workflows marked with placeholders (`{{prompt}}`, `{{image}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{strength}}`, `{{checkpoint}}`, `{{controlnet}}`) are filled in from those instead.
 
+**Progress:** while a job runs, a bar under the Generate and Actions tabs shows the sampler step (for example 12/30), the elapsed time and an estimate of the time left, as ComfyUI's own KSampler bar does. If ComfyUI reports nothing for a minute the bar warns that the job may be stalled or still loading a model. **Cancel** stops the job.
+
 **If something goes wrong:** the message line shows ComfyUI's own error, for example a missing model or node. The first run after ComfyUI starts, or after its models were unloaded, is slower while it loads them. Cancel stops the job in ComfyUI. On an 8 GB card, several large reference images may run out of memory; use fewer maps or a smaller size.
+
+## AI actions and texture editing
+
+These tools use the same ComfyUI server as the AI panel (set its address on the Settings tab first). Nothing is bundled, and your texture files on disk are never changed: results are new PNG files, and the model's textures can be put back with **Revert**.
+
+**Actions.** An action is a saved ComfyUI job: a name, a workflow, an optional prompt and a maximum input size. Two are built in: **Upscale** (an upscale model) and **Edit with a checkpoint (img2img)** (re-draws a picture from a prompt, with a *denoise* setting for how far it may stray). To add your own, open the **Actions** tab in the AI panel, press **Add workflow…** and choose a workflow saved with *Save (API Format)*; **Change…** and **Remove** edit or delete it. Actions are stored one file each in the app's data folder. **Run on the view** runs the chosen action on a screenshot of the current view.
+
+**Edit with AI… (Textures tab).** Select a texture and press **Edit with AI…**.
+- Pick the action, then fill in the **Prompt**, **Avoid**, checkpoint, **Denoise** (low keeps the texture, high changes it), upscale model, **Scale the result back to the original size** and **Seed**.
+- **Run** shows the original and the result side by side, with a progress bar. **Cancel** stops the job. **Larger view** opens a big preview.
+- **Apply to model** puts the result on the model in the viewer; **Revert** puts the original back. **Save as…** writes a PNG (the prompt and settings are stored in the file's comment text). Applying does not touch the file on disk.
+- **Only change the painted parts (UV mask):** paints only the pixels the mesh actually uses and leaves the empty parts of the atlas alone. Edges are blended into the surroundings with a small border so no seam shows.
+- **Edit in tiles to keep full detail:** for textures larger than the AI model can take (about 1024 px for most checkpoints). A reduced overview is edited first for overall consistency, then overlapping tiles are edited at full detail, matched in colour to the overview and blended with soft edges. A run estimate shows how many tiles it will take. Tiles with no used pixels are skipped.
+- Edits while the UV heatmap is on are applied to the real texture underneath and appear when you turn the heatmap off.
+
+**Upscale textures… (Textures tab).** Enlarges many textures in one go.
+- Choose the textures and the upscale model. The factor is read from the model's name (4x-, x2 and so on).
+- **Limits:** results are capped at 8192 px on the long side, so a texture whose result would exceed that is flagged in the plan, and inputs are never shrunk first. Very large inputs can run out of memory on small graphics cards; use tiling or a smaller factor.
+- **Warnings:** a texture is flagged when 10% or more of its triangles have a low texel density (more pixels would help), and a note appears when 25% or more are stretched in UV space. Upscaling adds pixels but cannot fix UV stretching; repair the UVs first.
+- **Normal maps** are renormalised after upscaling so their vectors stay unit length.
+- Results are saved as new files in an `<model>_upscaled` folder beside the model and never overwrite the originals. Tick **Also show them on the model in the view** to apply them; **Revert the view** restores the originals. The files stay saved.
+
+**If something goes wrong:** a missing model or node is reported in ComfyUI's own words. Large textures can fail with an out-of-memory error: tick **Edit in tiles**, lower the maximum input size or use a smaller upscale model.
 
 ## Command-line mode
 
@@ -572,7 +601,9 @@ Gleek3Deek/
 ├── cli.py                    # command-line mode (read-only audit of a file or folder)
 ├── render_cli.py             # render mode: control maps, reference sheets, screenshots and AI pictures from the command line
 ├── comfy_client.py           # talks to a ComfyUI server: uploads maps, builds or fills workflows, fetches the result (no windows)
-├── ai_panel.py               # the AI panel: Generate, Result and Settings tabs, and the large picture pop-up
+├── comfy_actions.py          # saved actions, built-in upscale and edit workflows, upscale planning, UV masks and tiling maths (no windows)
+├── texture_ai.py             # Edit with AI and Upscale textures dialogs, applying and reverting textures
+├── ai_panel.py               # the AI panel: Generate, Result, Actions and Settings tabs, and the large picture pop-up
 ├── matcap.py                 # MatCap shaders, custom MatCap parameters, editor and preview
 ├── gallery.py                # thumbnail grid, thumbnails, file icons, background loading
 ├── library.py                # tags, colour labels, ratings and smart folders (one JSON file, no windows)
@@ -602,7 +633,7 @@ Gleek3Deek/
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
-The tests cover the mesh checks, measurements, UV maths, texture audit, the command-line mode and reports, compressed-GLB conversion, Fake AO and panorama light, the tags/ratings library, OBJ/MTL texture handling, the control maps, render mode, the ComfyUI client (against a fake local server), and an import check of every module (about 240 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
+The tests cover the mesh checks, measurements, UV maths, texture audit, the command-line mode and reports, compressed-GLB conversion, Fake AO and panorama light, the tags/ratings library, OBJ/MTL texture handling, the control maps, render mode, the ComfyUI client (against a fake local server, including its progress connection), actions, upscale planning, UV masks, tiling, and an import check of every module (about 275 tests, a few seconds). They need only numpy and pytest: VTK and Qt are replaced by stand-ins when they are not installed, so they also run on a plain CI machine. `.github/workflows/tests.yml` runs them on every push.
 
 ## About dialog
 
